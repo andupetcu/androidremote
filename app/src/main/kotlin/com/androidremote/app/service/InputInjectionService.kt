@@ -3,6 +3,7 @@ package com.androidremote.app.service
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
 import android.graphics.Path
+import android.view.KeyEvent
 import android.view.accessibility.AccessibilityEvent
 import com.androidremote.feature.input.GestureSpec
 
@@ -81,14 +82,28 @@ class InputInjectionService : AccessibilityService() {
     }
 
     /**
-     * Dispatches a key event.
+     * Dispatches a key event via accessibility global actions.
+     *
+     * Note: AccessibilityService can only perform certain global actions,
+     * not arbitrary key events. This maps common navigation keys to their
+     * corresponding global actions.
      *
      * @param keyCode The Android key code to dispatch
-     * @return true if the key event was dispatched successfully
+     * @return true if the key event was dispatched successfully, false if unsupported
      */
     fun dispatchKeyEvent(keyCode: Int): Boolean {
+        val globalAction = when (keyCode) {
+            KeyEvent.KEYCODE_BACK -> GLOBAL_ACTION_BACK
+            KeyEvent.KEYCODE_HOME -> GLOBAL_ACTION_HOME
+            KeyEvent.KEYCODE_APP_SWITCH -> GLOBAL_ACTION_RECENTS
+            KeyEvent.KEYCODE_NOTIFICATION -> GLOBAL_ACTION_NOTIFICATIONS
+            KeyEvent.KEYCODE_POWER -> GLOBAL_ACTION_LOCK_SCREEN
+            KeyEvent.KEYCODE_SEARCH -> GLOBAL_ACTION_QUICK_SETTINGS
+            else -> return false // Unsupported key code
+        }
+
         return try {
-            performGlobalAction(keyCode)
+            performGlobalAction(globalAction)
         } catch (e: Exception) {
             false
         }
