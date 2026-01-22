@@ -104,7 +104,10 @@ dependencies {
     // Unit Testing
     testImplementation(libs.bundles.testing.unit)
     testImplementation(libs.ktor.client.mock)
+    testImplementation(libs.robolectric)
+    testImplementation(libs.junit4)
     testRuntimeOnly(libs.junit5.engine)
+    testRuntimeOnly(libs.junit5.vintage.engine)
 
     // Android Testing
     androidTestImplementation(libs.bundles.testing.android)
