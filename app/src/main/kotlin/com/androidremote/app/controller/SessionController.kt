@@ -29,7 +29,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 class SessionController(
     private val inputHandler: InputHandler,
     private val textInputHandler: TextInputHandler,
-    private val sessionFactory: (serverUrl: String, sessionToken: String) -> RemoteSession,
+    private val sessionFactory: (serverUrl: String, deviceId: String) -> RemoteSession,
     private val commandChannelFactory: (session: RemoteSession) -> DeviceCommandChannel,
     private val scope: CoroutineScope = CoroutineScope(Dispatchers.Default),
     private val maxReconnectAttempts: Int = 5,
@@ -184,9 +184,9 @@ class SessionController(
         connectJob = scope.launch {
             try {
                 val serverUrl = currentServerUrl ?: throw IllegalStateException("Server URL not set")
-                val token = currentToken ?: throw IllegalStateException("Token not set")
+                val deviceId = currentDeviceId ?: throw IllegalStateException("Device ID not set")
 
-                val session = sessionFactory(serverUrl, token)
+                val session = sessionFactory(serverUrl, deviceId)
                 currentSession = session
 
                 // Monitor session state changes

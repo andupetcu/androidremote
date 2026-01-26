@@ -21,7 +21,7 @@ import kotlinx.serialization.json.Json
  */
 class RemoteSession(
     private val serverUrl: String,
-    private val sessionToken: String,
+    private val deviceId: String,
     private val webSocketProvider: WebSocketProvider,
     private val peerConnectionFactory: PeerConnectionFactoryInterface,
     private val scope: CoroutineScope = CoroutineScope(Dispatchers.Default),
@@ -97,7 +97,7 @@ class RemoteSession(
             withTimeout(timeoutMs) {
                 val client = SignalingClient(
                     serverUrl = serverUrl,
-                    sessionToken = sessionToken,
+                    deviceId = deviceId,
                     webSocketProvider = webSocketProvider,
                     scope = scope
                 )

@@ -118,7 +118,7 @@ class RemoteSessionService : Service() {
         return SessionController(
             inputHandler = inputHandler,
             textInputHandler = textInputHandler,
-            sessionFactory = { serverUrl, sessionToken -> createRemoteSession(serverUrl, sessionToken) },
+            sessionFactory = { serverUrl, deviceId -> createRemoteSession(serverUrl, deviceId) },
             commandChannelFactory = { session -> createCommandChannel(session) },
             scope = serviceScope
         )
@@ -128,10 +128,10 @@ class RemoteSessionService : Service() {
      * Creates a RemoteSession with real WebSocket and WebRTC providers.
      *
      * @param serverUrl The signaling server URL
-     * @param sessionToken The session authentication token
+     * @param deviceId The unique device identifier for the session room
      * @return A configured RemoteSession ready for connection
      */
-    private fun createRemoteSession(serverUrl: String, sessionToken: String): RemoteSession {
+    private fun createRemoteSession(serverUrl: String, deviceId: String): RemoteSession {
         // Dispose any previous resources before creating new ones
         disposeCurrentResources()
 
@@ -144,7 +144,7 @@ class RemoteSessionService : Service() {
 
         return RemoteSession(
             serverUrl = serverUrl,
-            sessionToken = sessionToken,
+            deviceId = deviceId,
             webSocketProvider = webSocketProvider,
             peerConnectionFactory = peerConnectionFactory,
             scope = serviceScope,

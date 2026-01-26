@@ -247,7 +247,7 @@ class WebRtcPeerConnectionWrapper(
         fun toWebRtcIceCandidate(candidate: IceCandidate): WebRtcIceCandidate {
             return WebRtcIceCandidate(
                 candidate.sdpMid,
-                candidate.sdpMLineIndex,
+                candidate.sdpMLineIndex ?: 0,
                 candidate.candidate
             )
         }
