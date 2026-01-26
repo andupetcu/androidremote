@@ -101,6 +101,9 @@ dependencies {
     // QR Code generation
     implementation(libs.zxing.core)
 
+    // WebRTC
+    implementation(libs.webrtc.android)
+
     // Unit Testing
     testImplementation(libs.bundles.testing.unit)
     testImplementation(libs.ktor.client.mock)

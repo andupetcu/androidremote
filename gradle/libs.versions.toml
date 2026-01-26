@@ -37,6 +37,9 @@ bouncycastle = "1.79"
 okhttp = "4.12.0"
 ktor = "3.0.2"
 
+# WebRTC
+webrtc = "120.0.0"
+
 # QR Code
 zxing = "3.5.3"
 
@@ -108,6 +111,9 @@ zxing-core = { module = "com.google.zxing:core", version.ref = "zxing" }
 
 # Security
 androidx-security-crypto = { module = "androidx.security:security-crypto", version.ref = "securityCrypto" }
+
+# WebRTC
+webrtc-android = { module = "ch.threema:webrtc-android", version.ref = "webrtc" }
 
 [bundles]
 testing-unit = ["junit5-api", "junit5-params", "mockk", "truth", "kotlinx-coroutines-test"]
