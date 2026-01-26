@@ -7,6 +7,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.media.projection.MediaProjectionManager
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
@@ -17,13 +18,19 @@ import com.androidremote.app.controller.SessionController
 import com.androidremote.app.controller.TextInputHandler
 import com.androidremote.app.webrtc.WebRtcPeerConnectionFactory
 import com.androidremote.feature.input.TextInputService
+import com.androidremote.feature.screen.EncoderConfig
+import com.androidremote.feature.screen.ScreenCaptureManager
 import com.androidremote.transport.DeviceCommandChannel
+import com.androidremote.transport.FrameData
 import com.androidremote.transport.KtorWebSocketProvider
 import com.androidremote.transport.RemoteSession
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.launch
 
 /**
  * Foreground service that owns the SessionController.
@@ -59,6 +66,11 @@ class RemoteSessionService : Service() {
     private var currentPeerConnectionFactory: WebRtcPeerConnectionFactory? = null
     private var currentWebSocketProvider: KtorWebSocketProvider? = null
 
+    // Screen capture resources
+    private var screenCaptureManager: ScreenCaptureManager? = null
+    private val _frameDataFlow = MutableSharedFlow<FrameData>(replay = 0, extraBufferCapacity = 64)
+    private val frameDataFlow: SharedFlow<FrameData> = _frameDataFlow
+
     inner class LocalBinder : Binder() {
         fun getController(): SessionController = sessionController
     }
@@ -86,6 +98,7 @@ class RemoteSessionService : Service() {
     }
 
     override fun onDestroy() {
+        stopScreenCapture()
         sessionController.disconnect()
         disposeCurrentResources()
         serviceScope.cancel()
@@ -163,6 +176,55 @@ class RemoteSessionService : Service() {
             ?: throw IllegalStateException("Data channel not available - session may not be fully connected")
 
         return DeviceCommandChannel(dataChannel)
+    }
+
+    /**
+     * Start screen capture and stream to connected session.
+     *
+     * @param resultCode MediaProjection result code from Activity
+     * @param data MediaProjection result Intent from Activity
+     */
+    fun startScreenCapture(resultCode: Int, data: Intent) {
+        val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+        val mediaProjection = projectionManager.getMediaProjection(resultCode, data)
+            ?: throw IllegalStateException("Failed to get MediaProjection")
+
+        val manager = ScreenCaptureManager(this)
+        screenCaptureManager = manager
+
+        val config = EncoderConfig(
+            width = 1280,
+            height = 720,
+            bitrate = 2_000_000,
+            frameRate = 30
+        )
+
+        manager.start(mediaProjection, config)
+
+        // Collect encoded frames and forward to FrameData flow
+        serviceScope.launch {
+            manager.encodedFrames.collect { encodedFrame ->
+                _frameDataFlow.emit(
+                    FrameData(
+                        data = encodedFrame.data,
+                        presentationTimeUs = encodedFrame.presentationTimeUs,
+                        isKeyFrame = encodedFrame.isKeyFrame
+                    )
+                )
+            }
+        }
+
+        // Start video streaming to session
+        sessionController.startVideoStream(frameDataFlow)
+    }
+
+    /**
+     * Stop screen capture and streaming.
+     */
+    fun stopScreenCapture() {
+        sessionController.stopVideoStream()
+        screenCaptureManager?.stop()
+        screenCaptureManager = null
     }
 
     private fun createNotificationChannel() {
