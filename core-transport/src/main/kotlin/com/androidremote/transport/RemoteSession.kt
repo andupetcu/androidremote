@@ -36,6 +36,7 @@ class RemoteSession(
     private var signalingClient: SignalingClient? = null
     private var peerConnection: PeerConnectionWrapper? = null
     private var _commandChannel: CommandChannel? = null
+    private var _videoChannel: VideoChannel? = null
     private var _dataChannelInterface: DataChannelInterface? = null
 
     private val _state = MutableStateFlow(SessionState.DISCONNECTED)
@@ -77,6 +78,13 @@ class RemoteSession(
      */
     val dataChannelInterface: DataChannelInterface?
         get() = _dataChannelInterface
+
+    /**
+     * Video channel for sending encoded video frames.
+     * Available after WebRTC connection is established.
+     */
+    val videoChannel: VideoChannel?
+        get() = _videoChannel
 
     /**
      * Connect to the signaling server.
@@ -129,6 +137,8 @@ class RemoteSession(
                         if (channel.label == "commands") {
                             _dataChannelInterface = channel
                             _dataChannelAvailable.value = true
+                            // Create video channel wrapper for sending encoded frames
+                            _videoChannel = VideoChannel(channel)
                             // Only create CommandChannel if enabled (web client mode)
                             // Device mode should use dataChannelInterface to create DeviceCommandChannel
                             if (createCommandChannel) {
@@ -222,6 +232,7 @@ class RemoteSession(
 
         _commandChannel?.close()
         _commandChannel = null
+        _videoChannel = null
         _dataChannelInterface = null
         _dataChannelAvailable.value = false
 
