@@ -2,9 +2,11 @@ package com.androidremote.app.controller
 
 import com.androidremote.transport.CommandEnvelope
 import com.androidremote.transport.DeviceCommandChannel
+import com.androidremote.transport.FrameData
 import com.androidremote.transport.RemoteCommand
 import com.androidremote.transport.RemoteSession
 import com.androidremote.transport.SessionState as TransportSessionState
+import com.androidremote.transport.VideoChannel
 import com.google.common.truth.Truth.assertThat
 import io.mockk.*
 import kotlinx.coroutines.CoroutineScope
@@ -317,6 +319,116 @@ class SessionControllerTest {
         // After max attempts, should be in Error state
         assertThat(controller.state.value).isInstanceOf(SessionState.Error::class.java)
         assertThat((controller.state.value as SessionState.Error).message).contains("Max reconnection attempts")
+
+        controller.cancelJobs()
+    }
+
+    @Test
+    fun `startVideoStream creates and starts bridge`() = testScope.runTest {
+        controller = createController(this)
+        val mockFramesFlow = MutableSharedFlow<FrameData>(extraBufferCapacity = 64)
+        val mockVideoChannel = mockk<VideoChannel>(relaxed = true)
+
+        every { mockVideoChannel.isOpen } returns true
+        every { mockSession.videoChannel } returns mockVideoChannel
+
+        // Setup connected state
+        coEvery { mockSession.connect(any()) } just Runs
+        coEvery { mockSession.startAsAnswerer() } just Runs
+
+        controller.connect("server-url", "token", "device-123")
+        advanceUntilIdle()
+        dataChannelAvailableFlow.value = true
+        sessionStateFlow.value = TransportSessionState.CONNECTED
+        advanceUntilIdle()
+
+        controller.startVideoStream(mockFramesFlow)
+
+        assertThat(controller.isVideoStreaming).isTrue()
+
+        controller.stopVideoStream()
+        controller.cancelJobs()
+    }
+
+    @Test
+    fun `stopVideoStream stops bridge`() = testScope.runTest {
+        controller = createController(this)
+        val mockFramesFlow = MutableSharedFlow<FrameData>(extraBufferCapacity = 64)
+        val mockVideoChannel = mockk<VideoChannel>(relaxed = true)
+
+        every { mockVideoChannel.isOpen } returns true
+        every { mockSession.videoChannel } returns mockVideoChannel
+
+        coEvery { mockSession.connect(any()) } just Runs
+        coEvery { mockSession.startAsAnswerer() } just Runs
+
+        controller.connect("server-url", "token", "device-123")
+        advanceUntilIdle()
+        dataChannelAvailableFlow.value = true
+        sessionStateFlow.value = TransportSessionState.CONNECTED
+        advanceUntilIdle()
+
+        controller.startVideoStream(mockFramesFlow)
+        assertThat(controller.isVideoStreaming).isTrue()
+
+        controller.stopVideoStream()
+        assertThat(controller.isVideoStreaming).isFalse()
+
+        controller.cancelJobs()
+    }
+
+    @Test
+    fun `disconnect stops video streaming`() = testScope.runTest {
+        controller = createController(this)
+        val mockFramesFlow = MutableSharedFlow<FrameData>(extraBufferCapacity = 64)
+        val mockVideoChannel = mockk<VideoChannel>(relaxed = true)
+
+        every { mockVideoChannel.isOpen } returns true
+        every { mockSession.videoChannel } returns mockVideoChannel
+        coEvery { mockSession.connect(any()) } just Runs
+        coEvery { mockSession.startAsAnswerer() } just Runs
+        coEvery { mockSession.disconnect() } just Runs
+
+        controller.connect("server-url", "token", "device-123")
+        advanceUntilIdle()
+        dataChannelAvailableFlow.value = true
+        sessionStateFlow.value = TransportSessionState.CONNECTED
+        advanceUntilIdle()
+
+        controller.startVideoStream(mockFramesFlow)
+        assertThat(controller.isVideoStreaming).isTrue()
+
+        controller.disconnect()
+        advanceUntilIdle()
+
+        assertThat(controller.isVideoStreaming).isFalse()
+    }
+
+    @Test
+    fun `startVideoStream throws when video channel not available`() = testScope.runTest {
+        controller = createController(this)
+        val mockFramesFlow = MutableSharedFlow<FrameData>(extraBufferCapacity = 64)
+
+        every { mockSession.videoChannel } returns null
+
+        coEvery { mockSession.connect(any()) } just Runs
+        coEvery { mockSession.startAsAnswerer() } just Runs
+
+        controller.connect("server-url", "token", "device-123")
+        advanceUntilIdle()
+        dataChannelAvailableFlow.value = true
+        sessionStateFlow.value = TransportSessionState.CONNECTED
+        advanceUntilIdle()
+
+        var exceptionThrown = false
+        try {
+            controller.startVideoStream(mockFramesFlow)
+        } catch (e: IllegalStateException) {
+            exceptionThrown = true
+            assertThat(e.message).contains("Video channel not available")
+        }
+
+        assertThat(exceptionThrown).isTrue()
 
         controller.cancelJobs()
     }

@@ -3,14 +3,17 @@ package com.androidremote.app.controller
 import com.androidremote.transport.CommandAck
 import com.androidremote.transport.CommandEnvelope
 import com.androidremote.transport.DeviceCommandChannel
+import com.androidremote.transport.FrameData
 import com.androidremote.transport.RemoteCommand
 import com.androidremote.transport.RemoteSession
 import com.androidremote.transport.SessionState as TransportSessionState
+import com.androidremote.transport.VideoStreamBridge
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
@@ -56,6 +59,13 @@ class SessionController(
     private var connectJob: Job? = null
     private var reconnectAttempt: Int = 0
     private var wasConnected: Boolean = false
+    private var videoStreamBridge: VideoStreamBridge? = null
+
+    /**
+     * True if video streaming is active.
+     */
+    val isVideoStreaming: Boolean
+        get() = videoStreamBridge?.isRunning == true
 
     /**
      * Connect to a remote session.
@@ -80,6 +90,7 @@ class SessionController(
      */
     fun disconnect() {
         cancelJobs()
+        stopVideoStream()
 
         scope.launch {
             try {
@@ -139,6 +150,31 @@ class SessionController(
                 processCommand(envelope, commandChannel)
             }
         }
+    }
+
+    /**
+     * Start streaming video frames over the session.
+     *
+     * @param framesFlow Flow of encoded frames to transmit
+     * @throws IllegalStateException if video channel is not available
+     */
+    fun startVideoStream(framesFlow: SharedFlow<FrameData>) {
+        val videoChannel = currentSession?.videoChannel
+            ?: throw IllegalStateException("Video channel not available")
+
+        stopVideoStream()
+
+        videoStreamBridge = VideoStreamBridge(videoChannel, framesFlow, scope).apply {
+            start()
+        }
+    }
+
+    /**
+     * Stop streaming video frames.
+     */
+    fun stopVideoStream() {
+        videoStreamBridge?.stop()
+        videoStreamBridge = null
     }
 
     private fun performConnect() {
