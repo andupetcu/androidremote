@@ -259,8 +259,8 @@ describe('RemoteScreen', () => {
       fireEvent.keyDown(canvas, { key: 'Escape' });
 
       expect(mockSendCommand).toHaveBeenCalledWith({
-        type: 'KEY',
-        code: 4, // KEYCODE_BACK
+        type: 'KEY_PRESS',
+        keyCode: 4, // KEYCODE_BACK
       });
     });
 
@@ -271,8 +271,8 @@ describe('RemoteScreen', () => {
       fireEvent.keyDown(canvas, { key: 'h', ctrlKey: true });
 
       expect(mockSendCommand).toHaveBeenCalledWith({
-        type: 'KEY',
-        code: 3, // KEYCODE_HOME
+        type: 'KEY_PRESS',
+        keyCode: 3, // KEYCODE_HOME
       });
     });
   });

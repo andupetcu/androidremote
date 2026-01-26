@@ -3,18 +3,6 @@ import { useWebRTC } from '../hooks/useWebRTC';
 import type { ConnectionState } from '../hooks/useWebRTC';
 import { FrameDecoder } from '../lib/FrameDecoder';
 
-export interface Command {
-  type: 'TAP' | 'SWIPE' | 'LONG_PRESS' | 'KEY' | 'TEXT';
-  x?: number;
-  y?: number;
-  startX?: number;
-  startY?: number;
-  endX?: number;
-  endY?: number;
-  code?: number;
-  text?: string;
-}
-
 export interface RemoteScreenProps {
   deviceId: string | null;
   signalingUrl: string;
@@ -178,8 +166,8 @@ export function RemoteScreen({
 
     if (keyCode !== null) {
       sendCommand({
-        type: 'KEY',
-        code: keyCode,
+        type: 'KEY_PRESS',
+        keyCode,
       });
     }
   }, [sendCommand]);

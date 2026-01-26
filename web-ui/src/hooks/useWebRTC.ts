@@ -2,11 +2,37 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 
 export type ConnectionState = 'connecting' | 'connected' | 'disconnected' | 'failed';
 
+/**
+ * Command types matching Android's RemoteCommand sealed class.
+ */
+export type RemoteCommand =
+  | { type: 'TAP'; x: number; y: number }
+  | { type: 'SWIPE'; startX: number; startY: number; endX: number; endY: number; durationMs?: number }
+  | { type: 'LONG_PRESS'; x: number; y: number; durationMs?: number }
+  | { type: 'KEY_PRESS'; keyCode: number }
+  | { type: 'TYPE_TEXT'; text: string }
+  | { type: 'PINCH'; centerX: number; centerY: number; scale: number; durationMs?: number }
+  | { type: 'SCROLL'; x: number; y: number; deltaX: number; deltaY: number };
+
+/**
+ * Command envelope matching Android's CommandEnvelope.
+ */
+interface CommandEnvelope {
+  id: string;
+  command: RemoteCommand;
+  timestamp: number;
+}
+
+let commandIdCounter = 0;
+function generateCommandId(): string {
+  return `cmd-${Date.now()}-${++commandIdCounter}`;
+}
+
 export interface UseWebRTCResult {
   connectionState: ConnectionState;
   dataChannel: RTCDataChannel | null;
   error: string | null;
-  sendCommand: (command: object) => void;
+  sendCommand: (command: RemoteCommand) => void;
 }
 
 const ICE_SERVERS: RTCIceServer[] = [
@@ -23,10 +49,15 @@ export function useWebRTC(deviceId: string | null, signalingUrl: string): UseWeb
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const dataChannelRef = useRef<RTCDataChannel | null>(null);
 
-  const sendCommand = useCallback((command: object) => {
+  const sendCommand = useCallback((command: RemoteCommand) => {
     const dc = dataChannelRef.current;
     if (dc && dc.readyState === 'open') {
-      dc.send(JSON.stringify(command));
+      const envelope: CommandEnvelope = {
+        id: generateCommandId(),
+        command,
+        timestamp: Date.now(),
+      };
+      dc.send(JSON.stringify(envelope));
     }
   }, []);
 
