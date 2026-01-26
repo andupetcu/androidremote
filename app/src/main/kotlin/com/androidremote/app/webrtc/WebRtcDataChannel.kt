@@ -17,6 +17,7 @@ class WebRtcDataChannel(
 ) : DataChannelInterface {
 
     private var observer: DataChannelObserver? = null
+    private var registeredObserver: DataChannel.Observer? = null
 
     override val label: String
         get() = nativeChannel.label()
@@ -36,12 +37,20 @@ class WebRtcDataChannel(
     }
 
     override fun close() {
+        registeredObserver?.let { nativeChannel.unregisterObserver() }
+        registeredObserver = null
+        observer = null
         nativeChannel.close()
     }
 
     override fun setObserver(observer: DataChannelObserver) {
+        // Unregister any existing observer first to prevent memory leaks
+        registeredObserver?.let { nativeChannel.unregisterObserver() }
+
         this.observer = observer
-        nativeChannel.registerObserver(WebRtcDataChannelObserver(observer))
+        val webrtcObserver = WebRtcDataChannelObserver(observer)
+        registeredObserver = webrtcObserver
+        nativeChannel.registerObserver(webrtcObserver)
     }
 
     /**

@@ -6,6 +6,7 @@ import com.androidremote.transport.NativePeerConnection
 import com.androidremote.transport.PeerConnectionObserver
 import com.androidremote.transport.SessionDescription
 import kotlinx.coroutines.suspendCancellableCoroutine
+import org.webrtc.AddIceObserver
 import org.webrtc.DataChannel
 import org.webrtc.IceCandidate as WebRtcIceCandidate
 import org.webrtc.MediaConstraints
@@ -46,6 +47,10 @@ class WebRtcPeerConnectionWrapper(
 
     override suspend fun createOffer(): SessionDescription {
         return suspendCancellableCoroutine { continuation ->
+            continuation.invokeOnCancellation {
+                // WebRTC createOffer cannot be cancelled once started; operation will complete but result will be ignored
+            }
+
             val constraints = MediaConstraints().apply {
                 mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "false"))
                 mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", "false"))
@@ -73,6 +78,10 @@ class WebRtcPeerConnectionWrapper(
 
     override suspend fun createAnswer(): SessionDescription {
         return suspendCancellableCoroutine { continuation ->
+            continuation.invokeOnCancellation {
+                // WebRTC createAnswer cannot be cancelled once started; operation will complete but result will be ignored
+            }
+
             val constraints = MediaConstraints().apply {
                 mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "false"))
                 mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", "false"))
@@ -100,6 +109,10 @@ class WebRtcPeerConnectionWrapper(
 
     override suspend fun setLocalDescription(description: SessionDescription) {
         return suspendCancellableCoroutine { continuation ->
+            continuation.invokeOnCancellation {
+                // WebRTC setLocalDescription cannot be cancelled once started; operation will complete but result will be ignored
+            }
+
             val webRtcSdp = toWebRtcSessionDescription(description)
 
             nativeConnection.setLocalDescription(object : SdpObserver {
@@ -124,6 +137,10 @@ class WebRtcPeerConnectionWrapper(
 
     override suspend fun setRemoteDescription(description: SessionDescription) {
         return suspendCancellableCoroutine { continuation ->
+            continuation.invokeOnCancellation {
+                // WebRTC setRemoteDescription cannot be cancelled once started; operation will complete but result will be ignored
+            }
+
             val webRtcSdp = toWebRtcSessionDescription(description)
 
             nativeConnection.setRemoteDescription(object : SdpObserver {
@@ -147,8 +164,22 @@ class WebRtcPeerConnectionWrapper(
     }
 
     override suspend fun addIceCandidate(candidate: IceCandidate) {
-        val webRtcCandidate = toWebRtcIceCandidate(candidate)
-        nativeConnection.addIceCandidate(webRtcCandidate)
+        return suspendCancellableCoroutine { continuation ->
+            continuation.invokeOnCancellation {
+                // WebRTC addIceCandidate cannot be cancelled once started; operation will complete but result will be ignored
+            }
+
+            val webRtcCandidate = toWebRtcIceCandidate(candidate)
+            nativeConnection.addIceCandidate(webRtcCandidate, object : AddIceObserver {
+                override fun onAddSuccess() {
+                    continuation.resume(Unit)
+                }
+
+                override fun onAddFailure(error: String) {
+                    continuation.resumeWithException(WebRtcException("Failed to add ICE candidate: $error"))
+                }
+            })
+        }
     }
 
     override fun close() {
