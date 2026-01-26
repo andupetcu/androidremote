@@ -15,12 +15,10 @@ import com.androidremote.app.MainActivity
 import com.androidremote.app.controller.InputHandler
 import com.androidremote.app.controller.SessionController
 import com.androidremote.app.controller.TextInputHandler
-import com.androidremote.feature.input.AccessibilityNode
-import com.androidremote.feature.input.AccessibilityServiceProvider
-import com.androidremote.feature.input.ClipboardProvider
-import com.androidremote.feature.input.KeyAction
+import com.androidremote.app.webrtc.WebRtcPeerConnectionFactory
 import com.androidremote.feature.input.TextInputService
 import com.androidremote.transport.DeviceCommandChannel
+import com.androidremote.transport.KtorWebSocketProvider
 import com.androidremote.transport.RemoteSession
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -92,17 +90,9 @@ class RemoteSessionService : Service() {
     private fun createSessionController(): SessionController {
         val inputHandler = InputHandler()
 
-        // Create stub providers - will be connected to real implementations later
-        val accessibilityServiceProvider = object : AccessibilityServiceProvider {
-            override fun getFocusedNode(): AccessibilityNode? = null
-            override fun setText(text: String): Boolean = false
-            override fun performPaste(): Boolean = false
-            override fun sendKeyAction(action: KeyAction): Boolean = false
-        }
-        val clipboardProvider = object : ClipboardProvider {
-            override fun getText(): String? = null
-            override fun setText(text: String) {}
-        }
+        // Create real provider implementations
+        val accessibilityServiceProvider = InputInjectionAccessibilityProvider()
+        val clipboardProvider = AndroidClipboardProvider(this)
 
         val textInputService = TextInputService(accessibilityServiceProvider, clipboardProvider)
         val textInputHandler = TextInputHandler(textInputService)
@@ -110,20 +100,45 @@ class RemoteSessionService : Service() {
         return SessionController(
             inputHandler = inputHandler,
             textInputHandler = textInputHandler,
-            sessionFactory = { createRemoteSession() },
-            commandChannelFactory = { createCommandChannel() },
+            sessionFactory = { serverUrl, sessionToken -> createRemoteSession(serverUrl, sessionToken) },
+            commandChannelFactory = { session -> createCommandChannel(session) },
             scope = serviceScope
         )
     }
 
-    private fun createRemoteSession(): RemoteSession {
-        // Placeholder - will be properly implemented with WebRTC integration
-        throw NotImplementedError("RemoteSession creation requires WebRTC setup")
+    /**
+     * Creates a RemoteSession with real WebSocket and WebRTC providers.
+     *
+     * @param serverUrl The signaling server URL
+     * @param sessionToken The session authentication token
+     * @return A configured RemoteSession ready for connection
+     */
+    private fun createRemoteSession(serverUrl: String, sessionToken: String): RemoteSession {
+        val webSocketProvider = KtorWebSocketProvider()
+        val peerConnectionFactory = WebRtcPeerConnectionFactory.createDataChannelOnly(this)
+
+        return RemoteSession(
+            serverUrl = serverUrl,
+            sessionToken = sessionToken,
+            webSocketProvider = webSocketProvider,
+            peerConnectionFactory = peerConnectionFactory,
+            scope = serviceScope,
+            createCommandChannel = false // Device mode - we create DeviceCommandChannel instead
+        )
     }
 
-    private fun createCommandChannel(): DeviceCommandChannel {
-        // Placeholder - will be properly implemented with signaling integration
-        throw NotImplementedError("DeviceCommandChannel creation requires signaling setup")
+    /**
+     * Creates a DeviceCommandChannel from the session's data channel.
+     *
+     * @param session The RemoteSession to get the data channel from
+     * @return A DeviceCommandChannel wrapping the session's data channel
+     * @throws IllegalStateException if the data channel is not available
+     */
+    private fun createCommandChannel(session: RemoteSession): DeviceCommandChannel {
+        val dataChannel = session.dataChannelInterface
+            ?: throw IllegalStateException("Data channel not available - session may not be fully connected")
+
+        return DeviceCommandChannel(dataChannel)
     }
 
     private fun createNotificationChannel() {

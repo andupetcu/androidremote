@@ -24,8 +24,8 @@ import kotlinx.coroutines.launch
 class SessionController(
     private val inputHandler: InputHandler,
     private val textInputHandler: TextInputHandler,
-    private val sessionFactory: () -> RemoteSession,
-    private val commandChannelFactory: () -> DeviceCommandChannel,
+    private val sessionFactory: (serverUrl: String, sessionToken: String) -> RemoteSession,
+    private val commandChannelFactory: (session: RemoteSession) -> DeviceCommandChannel,
     private val scope: CoroutineScope = CoroutineScope(Dispatchers.Default),
     private val maxReconnectAttempts: Int = 5,
     private val initialReconnectDelayMs: Long = 1000
@@ -138,7 +138,10 @@ class SessionController(
         connectJob?.cancel()
         connectJob = scope.launch {
             try {
-                val session = sessionFactory()
+                val serverUrl = currentServerUrl ?: throw IllegalStateException("Server URL not set")
+                val token = currentToken ?: throw IllegalStateException("Token not set")
+
+                val session = sessionFactory(serverUrl, token)
                 currentSession = session
 
                 // Monitor session state changes
@@ -167,6 +170,12 @@ class SessionController(
                 reconnectAttempt = 0
                 currentDeviceId?.let { deviceId ->
                     _state.value = SessionState.Connected(deviceId)
+                }
+
+                // Create command channel and start processing commands
+                currentSession?.let { session ->
+                    val commandChannel = commandChannelFactory(session)
+                    startCommandProcessing(commandChannel)
                 }
             }
             TransportSessionState.DISCONNECTED -> {

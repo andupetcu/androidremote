@@ -53,8 +53,8 @@ class SessionControllerTest {
     private fun createController(scope: CoroutineScope) = SessionController(
         inputHandler = mockInputHandler,
         textInputHandler = mockTextInputHandler,
-        sessionFactory = { mockSession },
-        commandChannelFactory = { mockCommandChannel },
+        sessionFactory = { _, _ -> mockSession },
+        commandChannelFactory = { _ -> mockCommandChannel },
         scope = scope,
         maxReconnectAttempts = 3,
         initialReconnectDelayMs = 100
