@@ -39,6 +39,7 @@ class RemoteSession(
     private var _dataChannelInterface: DataChannelInterface? = null
 
     private val _state = MutableStateFlow(SessionState.DISCONNECTED)
+    private val _dataChannelAvailable = MutableStateFlow(false)
     private var messageCollectionJob: Job? = null
     private var iceCandidateJob: Job? = null
     private var remoteIceCandidateJob: Job? = null
@@ -49,6 +50,12 @@ class RemoteSession(
      * Current session state.
      */
     val state: StateFlow<SessionState> = _state.asStateFlow()
+
+    /**
+     * Whether the data channel is available for use.
+     * Use this to wait for the data channel before creating command channel wrappers.
+     */
+    val dataChannelAvailable: StateFlow<Boolean> = _dataChannelAvailable.asStateFlow()
 
     /**
      * Whether the session is connected to the signaling server.
@@ -121,6 +128,7 @@ class RemoteSession(
                     pc.dataChannels.collect { channel ->
                         if (channel.label == "commands") {
                             _dataChannelInterface = channel
+                            _dataChannelAvailable.value = true
                             // Only create CommandChannel if enabled (web client mode)
                             // Device mode should use dataChannelInterface to create DeviceCommandChannel
                             if (createCommandChannel) {
@@ -215,6 +223,7 @@ class RemoteSession(
         _commandChannel?.close()
         _commandChannel = null
         _dataChannelInterface = null
+        _dataChannelAvailable.value = false
 
         peerConnection?.close()
         peerConnection = null

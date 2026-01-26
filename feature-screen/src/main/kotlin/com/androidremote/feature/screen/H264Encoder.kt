@@ -8,11 +8,10 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
 import android.view.Surface
-import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.channels.awaitClose
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.buffer
-import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -42,28 +41,23 @@ class H264Encoder {
     private val isConfigured = AtomicBoolean(false)
     private var currentConfig: EncoderConfig? = null
 
-    // Channel for encoded frames - buffered to handle bursts
-    private var frameChannel: Channel<EncodedFrame>? = null
+    // SharedFlow for encoded frames - hot flow that persists across collectors
+    // Uses extraBufferCapacity to handle frame bursts and drops oldest when full
+    private val _encodedFrames = MutableSharedFlow<EncodedFrame>(
+        replay = 0,
+        extraBufferCapacity = 64,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST
+    )
 
     /**
      * Flow of encoded frames from the encoder.
      *
-     * This flow emits EncodedFrame objects as they are produced by MediaCodec.
-     * The flow is active only while the encoder is running.
+     * This is a hot SharedFlow that emits EncodedFrame objects as they are
+     * produced by MediaCodec. Multiple collectors can subscribe to this flow.
+     * If no collectors are active, frames will be buffered up to capacity
+     * and oldest frames dropped when full.
      */
-    val encodedFrames: Flow<EncodedFrame> = callbackFlow {
-        val channel = Channel<EncodedFrame>(Channel.BUFFERED)
-        frameChannel = channel
-
-        // Forward frames from internal channel to flow
-        for (frame in channel) {
-            send(frame)
-        }
-
-        awaitClose {
-            frameChannel = null
-        }
-    }.buffer(Channel.BUFFERED)
+    val encodedFrames: SharedFlow<EncodedFrame> = _encodedFrames.asSharedFlow()
 
     /**
      * Configures the encoder with the specified parameters.
@@ -224,8 +218,8 @@ class H264Encoder {
                 flags = info.flags
             )
 
-            // Send to channel (non-blocking)
-            frameChannel?.trySend(frame)
+            // Emit to SharedFlow (non-blocking, drops oldest if buffer full)
+            _encodedFrames.tryEmit(frame)
 
             // Release the buffer back to codec
             codec.releaseOutputBuffer(index, false)
@@ -285,15 +279,12 @@ class H264Encoder {
      *
      * Must be called when the encoder is no longer needed.
      * After release(), configure() must be called again before use.
+     * Note: The SharedFlow does not need explicit cleanup.
      */
     fun release() {
         Log.d(TAG, "Releasing encoder resources")
 
         stop()
-
-        // Close frame channel
-        frameChannel?.close()
-        frameChannel = null
 
         // Release input surface
         inputSurface?.release()

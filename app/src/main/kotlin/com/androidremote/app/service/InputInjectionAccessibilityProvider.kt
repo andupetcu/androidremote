@@ -26,10 +26,16 @@ class InputInjectionAccessibilityProvider : AccessibilityServiceProvider {
         return try {
             val nodeInfo = accessibilityService.rootInActiveWindow
                 ?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+                ?: return null
 
-            nodeInfo?.let { node ->
-                InputInjectionAccessibilityNode(node)
-            }
+            // Extract values from nodeInfo, then recycle immediately to prevent memory leak
+            val node = InputInjectionAccessibilityNode(
+                isEditable = nodeInfo.isEditable,
+                text = nodeInfo.text?.toString() ?: "",
+                cursorPosition = nodeInfo.textSelectionEnd.takeIf { it >= 0 } ?: (nodeInfo.text?.length ?: 0)
+            )
+            nodeInfo.recycle()
+            node
         } catch (e: Exception) {
             null
         }
@@ -207,17 +213,12 @@ class InputInjectionAccessibilityProvider : AccessibilityServiceProvider {
 
 /**
  * Wrapper for AccessibilityNodeInfo that implements our AccessibilityNode interface.
+ *
+ * Values are extracted at construction time and the original AccessibilityNodeInfo
+ * is recycled immediately to prevent memory leaks.
  */
-private class InputInjectionAccessibilityNode(
-    private val nodeInfo: AccessibilityNodeInfo
-) : AccessibilityNode {
-
-    override val isEditable: Boolean
-        get() = nodeInfo.isEditable
-
-    override val text: String
-        get() = nodeInfo.text?.toString() ?: ""
-
+private data class InputInjectionAccessibilityNode(
+    override val isEditable: Boolean,
+    override val text: String,
     override val cursorPosition: Int
-        get() = nodeInfo.textSelectionEnd.takeIf { it >= 0 } ?: text.length
-}
+) : AccessibilityNode

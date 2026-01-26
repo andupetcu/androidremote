@@ -55,6 +55,10 @@ class RemoteSessionService : Service() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private lateinit var sessionController: SessionController
 
+    // Track resources that need to be disposed
+    private var currentPeerConnectionFactory: WebRtcPeerConnectionFactory? = null
+    private var currentWebSocketProvider: KtorWebSocketProvider? = null
+
     inner class LocalBinder : Binder() {
         fun getController(): SessionController = sessionController
     }
@@ -83,6 +87,7 @@ class RemoteSessionService : Service() {
 
     override fun onDestroy() {
         sessionController.disconnect()
+        disposeCurrentResources()
         serviceScope.cancel()
         super.onDestroy()
     }
@@ -114,8 +119,15 @@ class RemoteSessionService : Service() {
      * @return A configured RemoteSession ready for connection
      */
     private fun createRemoteSession(serverUrl: String, sessionToken: String): RemoteSession {
+        // Dispose any previous resources before creating new ones
+        disposeCurrentResources()
+
         val webSocketProvider = KtorWebSocketProvider()
         val peerConnectionFactory = WebRtcPeerConnectionFactory.createDataChannelOnly(this)
+
+        // Track resources for cleanup
+        currentWebSocketProvider = webSocketProvider
+        currentPeerConnectionFactory = peerConnectionFactory
 
         return RemoteSession(
             serverUrl = serverUrl,
@@ -125,6 +137,18 @@ class RemoteSessionService : Service() {
             scope = serviceScope,
             createCommandChannel = false // Device mode - we create DeviceCommandChannel instead
         )
+    }
+
+    /**
+     * Disposes the current WebRTC and WebSocket resources.
+     * Call this when session is disconnected or service is destroyed.
+     */
+    private fun disposeCurrentResources() {
+        currentWebSocketProvider?.close()
+        currentWebSocketProvider = null
+
+        currentPeerConnectionFactory?.dispose()
+        currentPeerConnectionFactory = null
     }
 
     /**

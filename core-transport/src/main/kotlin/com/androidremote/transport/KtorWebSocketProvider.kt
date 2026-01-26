@@ -14,6 +14,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.isActive
+import java.io.Closeable
 import java.net.URI
 
 /**
@@ -21,10 +22,13 @@ import java.net.URI
  *
  * Uses Ktor's WebSocket client with OkHttp engine for reliable WebSocket
  * connections. Suitable for WebRTC signaling and other real-time communication.
+ *
+ * Implements Closeable to ensure the HttpClient resources (thread pools,
+ * connection pools) are properly released when no longer needed.
  */
 class KtorWebSocketProvider(
     private val httpClient: HttpClient = createDefaultClient()
-) : WebSocketProvider {
+) : WebSocketProvider, Closeable {
 
     companion object {
         /**
@@ -74,6 +78,14 @@ class KtorWebSocketProvider(
                 e
             )
         }
+    }
+
+    /**
+     * Closes the HttpClient and releases all resources.
+     * Call this when the provider is no longer needed.
+     */
+    override fun close() {
+        httpClient.close()
     }
 }
 

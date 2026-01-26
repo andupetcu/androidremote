@@ -13,7 +13,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Central coordinator for remote control sessions.
@@ -30,6 +32,13 @@ class SessionController(
     private val maxReconnectAttempts: Int = 5,
     private val initialReconnectDelayMs: Long = 1000
 ) {
+    companion object {
+        /**
+         * Timeout for waiting for the data channel to become available.
+         * The data channel arrives via a separate callback after the connection is established.
+         */
+        private const val DATA_CHANNEL_TIMEOUT_MS = 10_000L
+    }
     private val _state = MutableStateFlow<SessionState>(SessionState.Disconnected)
 
     /**
@@ -173,9 +182,25 @@ class SessionController(
                 }
 
                 // Create command channel and start processing commands
+                // Must wait for data channel to be available (comes via separate callback)
                 currentSession?.let { session ->
-                    val commandChannel = commandChannelFactory(session)
-                    startCommandProcessing(commandChannel)
+                    scope.launch {
+                        // Wait for data channel with timeout
+                        val dataChannelReady = withTimeoutOrNull(DATA_CHANNEL_TIMEOUT_MS) {
+                            session.dataChannelAvailable.first { it }
+                        }
+
+                        if (dataChannelReady == true) {
+                            try {
+                                val commandChannel = commandChannelFactory(session)
+                                startCommandProcessing(commandChannel)
+                            } catch (e: Exception) {
+                                _state.value = SessionState.Error("Failed to create command channel: ${e.message}")
+                            }
+                        } else {
+                            _state.value = SessionState.Error("Data channel not available after timeout")
+                        }
+                    }
                 }
             }
             TransportSessionState.DISCONNECTED -> {

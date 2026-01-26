@@ -30,6 +30,7 @@ class SessionControllerTest {
 
     private lateinit var commandsFlow: MutableSharedFlow<CommandEnvelope>
     private lateinit var sessionStateFlow: MutableStateFlow<TransportSessionState>
+    private lateinit var dataChannelAvailableFlow: MutableStateFlow<Boolean>
 
     private val testDispatcher = StandardTestDispatcher()
     private val testScope = TestScope(testDispatcher)
@@ -43,8 +44,10 @@ class SessionControllerTest {
 
         commandsFlow = MutableSharedFlow(replay = 1)
         sessionStateFlow = MutableStateFlow(TransportSessionState.DISCONNECTED)
+        dataChannelAvailableFlow = MutableStateFlow(false)
 
         every { mockSession.state } returns sessionStateFlow
+        every { mockSession.dataChannelAvailable } returns dataChannelAvailableFlow
         every { mockSession.commandChannel } returns null
         every { mockCommandChannel.commands } returns commandsFlow
         every { mockCommandChannel.isOpen } returns true
@@ -83,7 +86,8 @@ class SessionControllerTest {
         controller.connect("server-url", "token", "device-123")
         advanceUntilIdle()
 
-        // Simulate connection success
+        // Simulate connection success - data channel must be available first
+        dataChannelAvailableFlow.value = true
         sessionStateFlow.value = TransportSessionState.CONNECTED
         advanceUntilIdle()
 
@@ -117,6 +121,7 @@ class SessionControllerTest {
 
         controller.connect("server-url", "token", "device-123")
         advanceUntilIdle()
+        dataChannelAvailableFlow.value = true
         sessionStateFlow.value = TransportSessionState.CONNECTED
         advanceUntilIdle()
 
@@ -138,6 +143,7 @@ class SessionControllerTest {
 
         controller.connect("server-url", "token", "device-123")
         advanceUntilIdle()
+        dataChannelAvailableFlow.value = true
         sessionStateFlow.value = TransportSessionState.CONNECTED
         advanceUntilIdle()
 
@@ -166,6 +172,7 @@ class SessionControllerTest {
 
         controller.connect("server-url", "token", "device-123")
         advanceUntilIdle()
+        dataChannelAvailableFlow.value = true
         sessionStateFlow.value = TransportSessionState.CONNECTED
         advanceUntilIdle()
 
@@ -195,6 +202,7 @@ class SessionControllerTest {
 
         controller.connect("server-url", "token", "device-123")
         advanceUntilIdle()
+        dataChannelAvailableFlow.value = true
         sessionStateFlow.value = TransportSessionState.CONNECTED
         advanceUntilIdle()
 
@@ -227,6 +235,7 @@ class SessionControllerTest {
 
         controller.connect("server-url", "token", "device-123")
         advanceUntilIdle()
+        dataChannelAvailableFlow.value = true
         sessionStateFlow.value = TransportSessionState.CONNECTED
         advanceUntilIdle()
 
@@ -258,7 +267,8 @@ class SessionControllerTest {
         controller.connect("server-url", "token", "device-123")
         advanceUntilIdle()
 
-        // First establish connection
+        // First establish connection - data channel must be available first
+        dataChannelAvailableFlow.value = true
         sessionStateFlow.value = TransportSessionState.CONNECTED
         advanceUntilIdle()
 
