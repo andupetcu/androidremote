@@ -29,8 +29,25 @@ class RemoteSession(
      * Whether to auto-create CommandChannel when data channel is established.
      * Set to false on device side where DeviceCommandChannel will be created instead.
      */
-    private val createCommandChannel: Boolean = true
+    private val createCommandChannel: Boolean = true,
+    /**
+     * Configuration for the peer connection including ICE servers.
+     * Defaults to standard STUN/TURN servers for development.
+     */
+    private val peerConnectionConfig: PeerConnectionConfig = DEFAULT_CONFIG
 ) {
+    companion object {
+        /**
+         * Default ICE servers with STUN only for local network connections.
+         * TURN is disabled as it may cause stability issues on some devices.
+         */
+        val DEFAULT_CONFIG = PeerConnectionConfig(
+            iceServers = listOf(
+                IceServer(urls = listOf("stun:stun.l.google.com:19302")),
+                IceServer(urls = listOf("stun:stun1.l.google.com:19302"))
+            )
+        )
+    }
     private val json = Json { ignoreUnknownKeys = true }
 
     private var signalingClient: SignalingClient? = null
@@ -104,8 +121,8 @@ class RemoteSession(
                 client.connect()
                 signalingClient = client
 
-                // Create peer connection
-                val pc = PeerConnectionWrapper(peerConnectionFactory)
+                // Create peer connection with configured ICE servers
+                val pc = PeerConnectionWrapper(peerConnectionFactory, peerConnectionConfig)
                 peerConnection = pc
 
                 // Set up ICE candidate forwarding

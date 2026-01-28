@@ -1,6 +1,5 @@
 package com.androidremote.app.webrtc
 
-import android.content.Context
 import com.androidremote.transport.IceServer
 import com.androidremote.transport.NativePeerConnection
 import com.androidremote.transport.PeerConnectionConfig
@@ -18,18 +17,14 @@ import org.webrtc.PeerConnectionFactory
  * Handles WebRTC initialization and peer connection creation.
  */
 class WebRtcPeerConnectionFactory(
-    context: Context,
     private val eglBase: EglBase? = null
 ) : PeerConnectionFactoryInterface {
 
     private val factory: PeerConnectionFactory
 
     init {
-        // Initialize WebRTC
-        val initOptions = PeerConnectionFactory.InitializationOptions.builder(context.applicationContext)
-            .setEnableInternalTracer(false)
-            .createInitializationOptions()
-        PeerConnectionFactory.initialize(initOptions)
+        // NOTE: PeerConnectionFactory.initialize() is called once in AndroidRemoteApplication
+        // Do NOT call it here - calling it multiple times corrupts native state and causes SIGSEGV
 
         // Build factory with appropriate options
         val options = PeerConnectionFactory.Options()
@@ -56,11 +51,14 @@ class WebRtcPeerConnectionFactory(
             // Enable unified plan for modern WebRTC
             sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
 
-            // Configure ICE candidate pool for faster connection
-            iceCandidatePoolSize = 2
+            // Disable ICE candidate pooling - can cause issues on some devices
+            iceCandidatePoolSize = 0
 
             // Use all available network interfaces
             candidateNetworkPolicy = PeerConnection.CandidateNetworkPolicy.ALL
+
+            // Simplify ICE transport policy - use all (host, srflx, relay)
+            iceTransportsType = PeerConnection.IceTransportsType.ALL
         }
 
         // Create our wrapper that implements PeerConnection.Observer
@@ -99,17 +97,23 @@ class WebRtcPeerConnectionFactory(
         /**
          * Creates a factory with minimal configuration (no video encoding/decoding).
          * Suitable for data-channel only connections.
+         *
+         * NOTE: Requires WebRTC to be initialized via PeerConnectionFactory.initialize()
+         * before calling this. This is done in AndroidRemoteApplication.
          */
-        fun createDataChannelOnly(context: Context): WebRtcPeerConnectionFactory {
-            return WebRtcPeerConnectionFactory(context, eglBase = null)
+        fun createDataChannelOnly(): WebRtcPeerConnectionFactory {
+            return WebRtcPeerConnectionFactory(eglBase = null)
         }
 
         /**
          * Creates a factory with video support.
          * Requires an EglBase for hardware video encoding/decoding.
+         *
+         * NOTE: Requires WebRTC to be initialized via PeerConnectionFactory.initialize()
+         * before calling this. This is done in AndroidRemoteApplication.
          */
-        fun createWithVideoSupport(context: Context, eglBase: EglBase): WebRtcPeerConnectionFactory {
-            return WebRtcPeerConnectionFactory(context, eglBase)
+        fun createWithVideoSupport(eglBase: EglBase): WebRtcPeerConnectionFactory {
+            return WebRtcPeerConnectionFactory(eglBase)
         }
     }
 }

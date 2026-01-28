@@ -245,6 +245,22 @@ class CommandStore {
   }
 
   /**
+   * Get all commands (limited for performance)
+   */
+  getAllCommands(limit: number = 100): DeviceCommand[] {
+    this.initialize();
+    const db = this.getDb();
+
+    const rows = db.prepare(`
+      SELECT * FROM device_commands
+      ORDER BY created_at DESC
+      LIMIT ?
+    `).all(limit) as CommandRow[];
+
+    return rows.map(row => this.rowToCommand(row));
+  }
+
+  /**
    * Get count of pending commands for a device
    */
   getPendingCount(deviceId: string): number {

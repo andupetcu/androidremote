@@ -5,16 +5,22 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.media.projection.MediaProjectionManager
+import android.util.Log
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import com.androidremote.app.MainActivity
+import com.androidremote.app.ScreenCaptureRequestActivity
 import com.androidremote.app.controller.InputHandler
+import com.androidremote.app.controller.MdmHandler
 import com.androidremote.app.controller.SessionController
+import com.androidremote.app.controller.SessionState
 import com.androidremote.app.controller.TextInputHandler
 import com.androidremote.app.webrtc.WebRtcPeerConnectionFactory
 import com.androidremote.feature.input.TextInputService
@@ -41,8 +47,15 @@ import kotlinx.coroutines.launch
 class RemoteSessionService : Service() {
 
     companion object {
+        private const val TAG = "RemoteSessionService"
         private const val NOTIFICATION_ID = 1001
         private const val CHANNEL_ID = "remote_session_channel"
+
+        // Intent extras for auto-start from BootReceiver
+        const val EXTRA_AUTO_START = "auto_start"
+        const val EXTRA_SERVER_URL = "server_url"
+        const val EXTRA_SESSION_TOKEN = "session_token"
+        const val EXTRA_DEVICE_ID = "device_id"
 
         fun startService(context: Context) {
             val intent = Intent(context, RemoteSessionService::class.java)
@@ -66,10 +79,26 @@ class RemoteSessionService : Service() {
     private var currentPeerConnectionFactory: WebRtcPeerConnectionFactory? = null
     private var currentWebSocketProvider: KtorWebSocketProvider? = null
 
-    // Screen capture resources
+    // Screen capture resources (MediaProjection-based - fallback)
     private var screenCaptureManager: ScreenCaptureManager? = null
     private val _frameDataFlow = MutableSharedFlow<FrameData>(replay = 0, extraBufferCapacity = 64)
     private val frameDataFlow: SharedFlow<FrameData> = _frameDataFlow
+
+    // Screen server client (scrcpy-style - preferred)
+    private var screenServerClient: ScreenServerClient? = null
+    private var screenServerManager: ScreenServerManager? = null
+
+    // Track whether this is an auto-started session (needs automatic screen capture)
+    private var isAutoStartedSession = false
+    private var screenCaptureReceiver: BroadcastReceiver? = null
+
+    // Capture mode preference
+    private var useScreenServer = true
+
+    // Device Owner manager for checking MDM privileges
+    private val deviceOwnerManager by lazy {
+        com.androidremote.app.admin.DeviceOwnerManager(this)
+    }
 
     inner class LocalBinder : Binder() {
         fun getController(): SessionController = sessionController
@@ -79,6 +108,42 @@ class RemoteSessionService : Service() {
         super.onCreate()
         sessionController = createSessionController()
         createNotificationChannel()
+        registerScreenCaptureReceiver()
+    }
+
+    private fun registerScreenCaptureReceiver() {
+        screenCaptureReceiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                if (intent?.action == ScreenCaptureRequestActivity.ACTION_SCREEN_CAPTURE_RESULT) {
+                    val resultCode = intent.getIntExtra(ScreenCaptureRequestActivity.EXTRA_RESULT_CODE, 0)
+                    val data = intent.getParcelableExtra<Intent>(ScreenCaptureRequestActivity.EXTRA_RESULT_DATA)
+
+                    if (resultCode == android.app.Activity.RESULT_OK && data != null) {
+                        Log.i(TAG, "Screen capture permission received, starting capture")
+                        startScreenCapture(resultCode, data)
+                    } else {
+                        Log.w(TAG, "Screen capture permission denied or data missing")
+                    }
+                }
+            }
+        }
+
+        val filter = IntentFilter(ScreenCaptureRequestActivity.ACTION_SCREEN_CAPTURE_RESULT)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(screenCaptureReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            @Suppress("UnspecifiedRegisterReceiverFlag")
+            registerReceiver(screenCaptureReceiver, filter)
+        }
+    }
+
+    /**
+     * Launch the screen capture permission request activity.
+     * This shows a system dialog for the user to grant screen capture permission.
+     */
+    private fun requestScreenCapturePermission() {
+        val intent = ScreenCaptureRequestActivity.createIntent(this)
+        startActivity(intent)
     }
 
     override fun onBind(intent: Intent): IBinder = binder
@@ -94,10 +159,56 @@ class RemoteSessionService : Service() {
 
         val notification = createNotification()
         startForeground(NOTIFICATION_ID, notification)
+
+        // Handle auto-start from BootReceiver (MDM mode)
+        if (intent?.getBooleanExtra(EXTRA_AUTO_START, false) == true) {
+            val serverUrl = intent.getStringExtra(EXTRA_SERVER_URL)
+            val sessionToken = intent.getStringExtra(EXTRA_SESSION_TOKEN)
+            val deviceId = intent.getStringExtra(EXTRA_DEVICE_ID)
+
+            if (serverUrl != null && sessionToken != null && deviceId != null) {
+                isAutoStartedSession = true
+
+                // Observe session state to request screen capture when connected
+                serviceScope.launch {
+                    sessionController.state.collect { state ->
+                        if (state is SessionState.Connected && isAutoStartedSession) {
+                            Log.i(TAG, "Session connected, starting screen capture")
+                            isAutoStartedSession = false // Only request once
+
+                            if (useScreenServer) {
+                                // Try scrcpy-style screen server first
+                                startScreenServerCapture()
+                            } else {
+                                // Fall back to MediaProjection
+                                requestScreenCapturePermission()
+                            }
+                        }
+                    }
+                }
+
+                serviceScope.launch {
+                    try {
+                        sessionController.connect(serverUrl, sessionToken, deviceId)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Auto-connect failed", e)
+                    }
+                }
+            }
+        }
+
         return START_STICKY
     }
 
     override fun onDestroy() {
+        screenCaptureReceiver?.let {
+            try {
+                unregisterReceiver(it)
+            } catch (e: Exception) {
+                Log.w(TAG, "Error unregistering receiver", e)
+            }
+        }
+        screenCaptureReceiver = null
         stopScreenCapture()
         sessionController.disconnect()
         disposeCurrentResources()
@@ -115,9 +226,13 @@ class RemoteSessionService : Service() {
         val textInputService = TextInputService(accessibilityServiceProvider, clipboardProvider)
         val textInputHandler = TextInputHandler(textInputService)
 
+        // Create MDM handler for Device Owner features
+        val mdmHandler = MdmHandler(this)
+
         return SessionController(
             inputHandler = inputHandler,
             textInputHandler = textInputHandler,
+            mdmHandler = mdmHandler,
             sessionFactory = { serverUrl, deviceId -> createRemoteSession(serverUrl, deviceId) },
             commandChannelFactory = { session -> createCommandChannel(session) },
             scope = serviceScope
@@ -136,7 +251,7 @@ class RemoteSessionService : Service() {
         disposeCurrentResources()
 
         val webSocketProvider = KtorWebSocketProvider()
-        val peerConnectionFactory = WebRtcPeerConnectionFactory.createDataChannelOnly(this)
+        val peerConnectionFactory = WebRtcPeerConnectionFactory.createDataChannelOnly()
 
         // Track resources for cleanup
         currentWebSocketProvider = webSocketProvider
@@ -214,8 +329,82 @@ class RemoteSessionService : Service() {
             }
         }
 
-        // Start video streaming to session
-        sessionController.startVideoStream(frameDataFlow)
+        // Start video streaming to session (waits for video channel to be available)
+        serviceScope.launch {
+            try {
+                sessionController.startVideoStream(frameDataFlow)
+                Log.i(TAG, "Video streaming started successfully")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to start video streaming", e)
+            }
+        }
+    }
+
+    /**
+     * Start screen capture using the scrcpy-style screen server.
+     *
+     * The screen server provides consent-free screen capture using SurfaceControl.
+     * It must be started via adb shell with elevated privileges:
+     *   adb shell CLASSPATH=/data/local/tmp/screen-server.apk \
+     *     app_process / com.androidremote.screenserver.Server
+     *
+     * In Device Owner mode with root access, we attempt to auto-start it.
+     */
+    private fun startScreenServerCapture() {
+        serviceScope.launch {
+            // Initialize screen server manager if needed
+            if (screenServerManager == null) {
+                screenServerManager = ScreenServerManager(this@RemoteSessionService)
+            }
+            val manager = screenServerManager!!
+
+            // Try to auto-start screen server if not running (Device Owner + root)
+            if (!manager.isScreenServerRunning()) {
+                if (deviceOwnerManager.isDeviceOwner() || manager.isRooted()) {
+                    Log.i(TAG, "Attempting to auto-start screen server...")
+                    val started = manager.startScreenServer()
+                    if (started) {
+                        Log.i(TAG, "Screen server auto-started successfully")
+                        // Wait a bit for it to initialize
+                        kotlinx.coroutines.delay(500)
+                    } else {
+                        Log.w(TAG, "Failed to auto-start screen server")
+                    }
+                }
+            }
+
+            val client = ScreenServerClient()
+            screenServerClient = client
+
+            if (client.connect()) {
+                Log.i(TAG, "Connected to screen server: ${client.videoWidth}x${client.videoHeight}")
+
+                // Forward frames to WebRTC
+                launch {
+                    client.frames.collect { frame ->
+                        _frameDataFlow.emit(frame)
+                    }
+                }
+
+                // Start video streaming to session
+                try {
+                    sessionController.startVideoStream(frameDataFlow)
+                    Log.i(TAG, "Video streaming started via screen server")
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to start video streaming", e)
+                    client.disconnect()
+                    screenServerClient = null
+
+                    // Fall back to MediaProjection
+                    Log.i(TAG, "Falling back to MediaProjection")
+                    requestScreenCapturePermission()
+                }
+            } else {
+                Log.w(TAG, "Screen server not available, falling back to MediaProjection")
+                screenServerClient = null
+                requestScreenCapturePermission()
+            }
+        }
     }
 
     /**
@@ -223,6 +412,10 @@ class RemoteSessionService : Service() {
      */
     fun stopScreenCapture() {
         sessionController.stopVideoStream()
+
+        screenServerClient?.disconnect()
+        screenServerClient = null
+
         screenCaptureManager?.stop()
         screenCaptureManager = null
     }

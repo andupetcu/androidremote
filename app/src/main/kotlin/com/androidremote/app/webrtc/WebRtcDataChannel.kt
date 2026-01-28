@@ -26,14 +26,32 @@ class WebRtcDataChannel(
         get() = mapDataChannelState(nativeChannel.state())
 
     override fun send(data: ByteArray): Boolean {
-        val buffer = DataChannel.Buffer(ByteBuffer.wrap(data), true)
-        return nativeChannel.send(buffer)
+        // Guard against sending on closed channel
+        if (state != DataChannelState.OPEN) {
+            return false
+        }
+        return try {
+            val buffer = DataChannel.Buffer(ByteBuffer.wrap(data), true)
+            nativeChannel.send(buffer)
+        } catch (e: Exception) {
+            // Channel may have closed between state check and send
+            false
+        }
     }
 
     override fun send(text: String): Boolean {
-        val bytes = text.toByteArray(StandardCharsets.UTF_8)
-        val buffer = DataChannel.Buffer(ByteBuffer.wrap(bytes), false)
-        return nativeChannel.send(buffer)
+        // Guard against sending on closed channel
+        if (state != DataChannelState.OPEN) {
+            return false
+        }
+        return try {
+            val bytes = text.toByteArray(StandardCharsets.UTF_8)
+            val buffer = DataChannel.Buffer(ByteBuffer.wrap(bytes), false)
+            nativeChannel.send(buffer)
+        } catch (e: Exception) {
+            // Channel may have closed between state check and send
+            false
+        }
     }
 
     override fun close() {

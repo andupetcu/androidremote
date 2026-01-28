@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Backup rules for Android 11 and below (fullBackupContent).
+    Preserves enrollment data across app updates and reinstalls.
+
+    Note: Encrypted SharedPreferences (session_prefs.xml) are backed up but
+    will NOT restore correctly because Android Keystore keys are not backed up.
+    Enrollment data in enrollment_prefs.xml survives because it's unencrypted.
+-->
+<full-backup-content>
+    <!-- Include enrollment data (regular SharedPreferences - survives backup/restore) -->
+    <include domain="sharedpref" path="enrollment_prefs.xml" />
+
+    <!-- Include secure prefs fallback (used when Keystore unavailable) -->
+    <include domain="sharedpref" path="session_prefs_fallback.xml" />
+
+    <!-- Exclude encrypted prefs (Keystore keys won't restore) -->
+    <exclude domain="sharedpref" path="session_prefs.xml" />
+
+    <!-- Exclude any temporary data -->
+    <exclude domain="cache" path="." />
+    <exclude domain="no_backup" path="." />
+</full-backup-content>

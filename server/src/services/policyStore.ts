@@ -3,6 +3,16 @@ import type Database from 'better-sqlite3';
 import { getDatabase } from '../db/connection';
 import { initializeSchema } from '../db/schema';
 
+/**
+ * Configuration for a required app in policy
+ */
+export interface RequiredAppConfig {
+  packageName: string;
+  autoStartAfterInstall?: boolean;   // Launch app after installation
+  foregroundApp?: boolean;           // This is the primary foreground app (only one per policy)
+  autoStartOnBoot?: boolean;         // Start app on device boot
+}
+
 export interface Policy {
   id: string;
   name: string;
@@ -53,6 +63,12 @@ export interface Policy {
   allowOtaUpdates: boolean;
   allowDateTimeChange: boolean;
 
+  // Required apps (auto-install on devices with this policy)
+  requiredApps: RequiredAppConfig[] | null;
+
+  // Sound / Notifications
+  silentMode: boolean;
+
   createdAt: number;
   updatedAt: number;
 }
@@ -98,6 +114,10 @@ export interface PolicyInput {
   allowFactoryReset?: boolean;
   allowOtaUpdates?: boolean;
   allowDateTimeChange?: boolean;
+
+  requiredApps?: RequiredAppConfig[];
+
+  silentMode?: boolean;
 }
 
 interface PolicyRow {
@@ -142,6 +162,10 @@ interface PolicyRow {
   allow_factory_reset: number;
   allow_ota_updates: number;
   allow_date_time_change: number;
+
+  required_apps: string | null;
+
+  silent_mode: number;
 
   created_at: number;
   updated_at: number;
@@ -201,8 +225,9 @@ class PolicyStore {
         vpn_required, vpn_package, allowed_wifi_ssids,
         adb_enabled, developer_options_enabled,
         allow_factory_reset, allow_ota_updates, allow_date_time_change,
+        required_apps, silent_mode,
         created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       input.name,
@@ -238,6 +263,8 @@ class PolicyStore {
       input.allowFactoryReset !== false ? 1 : 0,
       input.allowOtaUpdates !== false ? 1 : 0,
       input.allowDateTimeChange !== false ? 1 : 0,
+      input.requiredApps ? JSON.stringify(input.requiredApps) : null,
+      input.silentMode ? 1 : 0,
       now,
       now
     );
@@ -313,6 +340,8 @@ class PolicyStore {
         allow_factory_reset = ?,
         allow_ota_updates = ?,
         allow_date_time_change = ?,
+        required_apps = ?,
+        silent_mode = ?,
         updated_at = ?
       WHERE id = ?
     `).run(
@@ -349,6 +378,8 @@ class PolicyStore {
       updates.allowFactoryReset !== undefined ? (updates.allowFactoryReset ? 1 : 0) : (existing.allowFactoryReset ? 1 : 0),
       updates.allowOtaUpdates !== undefined ? (updates.allowOtaUpdates ? 1 : 0) : (existing.allowOtaUpdates ? 1 : 0),
       updates.allowDateTimeChange !== undefined ? (updates.allowDateTimeChange ? 1 : 0) : (existing.allowDateTimeChange ? 1 : 0),
+      updates.requiredApps !== undefined ? (updates.requiredApps ? JSON.stringify(updates.requiredApps) : null) : (existing.requiredApps ? JSON.stringify(existing.requiredApps) : null),
+      updates.silentMode !== undefined ? (updates.silentMode ? 1 : 0) : (existing.silentMode ? 1 : 0),
       Date.now(),
       id
     );
@@ -435,6 +466,8 @@ class PolicyStore {
       allowFactoryReset: row.allow_factory_reset === 1,
       allowOtaUpdates: row.allow_ota_updates === 1,
       allowDateTimeChange: row.allow_date_time_change === 1,
+      requiredApps: row.required_apps ? JSON.parse(row.required_apps) : null,
+      silentMode: row.silent_mode === 1,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };

@@ -2,6 +2,7 @@ package com.androidremote.app.controller
 
 import com.androidremote.transport.CommandAck
 import com.androidremote.transport.CommandEnvelope
+import com.androidremote.transport.CommandResponseData
 import com.androidremote.transport.DeviceCommandChannel
 import com.androidremote.transport.FrameData
 import com.androidremote.transport.RemoteCommand
@@ -29,6 +30,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 class SessionController(
     private val inputHandler: InputHandler,
     private val textInputHandler: TextInputHandler,
+    private val mdmHandler: MdmHandler? = null,
     private val sessionFactory: (serverUrl: String, deviceId: String) -> RemoteSession,
     private val commandChannelFactory: (session: RemoteSession) -> DeviceCommandChannel,
     private val scope: CoroutineScope = CoroutineScope(Dispatchers.Default),
@@ -155,11 +157,25 @@ class SessionController(
     /**
      * Start streaming video frames over the session.
      *
+     * This suspends until the video channel becomes available (up to timeout).
+     *
      * @param framesFlow Flow of encoded frames to transmit
-     * @throws IllegalStateException if video channel is not available
+     * @throws IllegalStateException if video channel is not available after timeout
      */
-    fun startVideoStream(framesFlow: SharedFlow<FrameData>) {
-        val videoChannel = currentSession?.videoChannel
+    suspend fun startVideoStream(framesFlow: SharedFlow<FrameData>) {
+        val session = currentSession
+            ?: throw IllegalStateException("No active session")
+
+        // Wait for the data channel (and video channel) to be available
+        val channelReady = withTimeoutOrNull(DATA_CHANNEL_TIMEOUT_MS) {
+            session.dataChannelAvailable.first { it }
+        }
+
+        if (channelReady != true) {
+            throw IllegalStateException("Video channel not available after timeout")
+        }
+
+        val videoChannel = session.videoChannel
             ?: throw IllegalStateException("Video channel not available")
 
         stopVideoStream()
@@ -240,12 +256,18 @@ class SessionController(
                 }
             }
             TransportSessionState.DISCONNECTED -> {
+                // Stop video streaming immediately to prevent crashes on dead channel
+                stopVideoStream()
+
                 if (wasConnected && _state.value.isConnected) {
                     // Unexpected disconnection - start reconnect
                     startReconnectSequence()
                 }
             }
             TransportSessionState.FAILED -> {
+                // Stop video streaming immediately to prevent crashes on dead channel
+                stopVideoStream()
+
                 if (wasConnected) {
                     startReconnectSequence()
                 } else {
@@ -289,26 +311,58 @@ class SessionController(
     }
 
     private fun processCommand(envelope: CommandEnvelope, commandChannel: DeviceCommandChannel) {
-        val result = routeCommand(envelope.command)
+        val (success, errorMessage, data) = routeCommand(envelope.command)
 
         val ack = CommandAck(
             commandId = envelope.id,
-            success = result.success,
-            errorMessage = result.errorMessage
+            success = success,
+            errorMessage = errorMessage,
+            data = data
         )
 
         commandChannel.sendAck(ack)
     }
 
-    private fun routeCommand(command: RemoteCommand): CommandResult {
+    /**
+     * Route result that can include response data for MDM commands.
+     */
+    private data class RouteResult(
+        val success: Boolean,
+        val errorMessage: String?,
+        val data: CommandResponseData? = null
+    )
+
+    private fun routeCommand(command: RemoteCommand): RouteResult {
         return when (command) {
-            is RemoteCommand.Tap -> inputHandler.handleTap(command)
-            is RemoteCommand.Swipe -> inputHandler.handleSwipe(command)
-            is RemoteCommand.LongPress -> inputHandler.handleLongPress(command)
-            is RemoteCommand.Pinch -> inputHandler.handlePinch(command)
-            is RemoteCommand.Scroll -> inputHandler.handleScroll(command)
-            is RemoteCommand.KeyPress -> inputHandler.handleKeyPress(command)
-            is RemoteCommand.TypeText -> textInputHandler.handleTypeText(command)
+            // Input commands
+            is RemoteCommand.Tap -> inputHandler.handleTap(command).toRouteResult()
+            is RemoteCommand.Swipe -> inputHandler.handleSwipe(command).toRouteResult()
+            is RemoteCommand.LongPress -> inputHandler.handleLongPress(command).toRouteResult()
+            is RemoteCommand.Pinch -> inputHandler.handlePinch(command).toRouteResult()
+            is RemoteCommand.Scroll -> inputHandler.handleScroll(command).toRouteResult()
+            is RemoteCommand.KeyPress -> inputHandler.handleKeyPress(command).toRouteResult()
+            is RemoteCommand.TypeText -> textInputHandler.handleTypeText(command).toRouteResult()
+
+            // MDM commands
+            is RemoteCommand.GetDeviceInfo -> handleMdmCommand { it.handleGetDeviceInfo() }
+            is RemoteCommand.LockDevice -> handleMdmCommand { it.handleLockDevice() }
+            is RemoteCommand.RebootDevice -> handleMdmCommand { it.handleRebootDevice() }
+            is RemoteCommand.WipeDevice -> handleMdmCommand { it.handleWipeDevice(command) }
+            is RemoteCommand.ListApps -> handleMdmCommand { it.handleListApps(command) }
+            is RemoteCommand.InstallApp -> handleMdmCommand { it.handleInstallApp(command) }
+            is RemoteCommand.UninstallApp -> handleMdmCommand { it.handleUninstallApp(command) }
         }
+    }
+
+    private fun handleMdmCommand(action: (MdmHandler) -> MdmCommandResult): RouteResult {
+        val handler = mdmHandler
+            ?: return RouteResult(false, "MDM handler not available", null)
+
+        val result = action(handler)
+        return RouteResult(result.success, result.errorMessage, result.data)
+    }
+
+    private fun CommandResult.toRouteResult(): RouteResult {
+        return RouteResult(success, errorMessage, null)
     }
 }

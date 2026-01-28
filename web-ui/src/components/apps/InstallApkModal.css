@@ -1,0 +1,193 @@
+.install-apk-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+/* Package Info */
+.install-apk-modal__package {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 1rem;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+}
+
+.install-apk-modal__package-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  background: var(--color-primary);
+  color: white;
+  border-radius: 8px;
+  font-weight: 600;
+  font-size: 0.75rem;
+  flex-shrink: 0;
+}
+
+.install-apk-modal__package-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.install-apk-modal__package-name {
+  font-weight: 600;
+  color: var(--color-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.install-apk-modal__package-details {
+  font-size: 0.875rem;
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Controls */
+.install-apk-modal__controls {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.install-apk-modal__filters {
+  flex: 1;
+}
+
+.install-apk-modal__select {
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  font-size: 0.875rem;
+  background: var(--color-surface);
+  color: var(--color-text);
+  min-width: 150px;
+}
+
+.install-apk-modal__quick-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.install-apk-modal__quick-btn {
+  padding: 0.375rem 0.75rem;
+  border: none;
+  background: none;
+  color: var(--color-primary);
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+
+.install-apk-modal__quick-btn:hover {
+  text-decoration: underline;
+}
+
+/* Device List */
+.install-apk-modal__devices {
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.install-apk-modal__loading,
+.install-apk-modal__empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  padding: 2rem;
+  color: var(--color-text-secondary);
+}
+
+.install-apk-modal__device-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.install-apk-modal__device {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  cursor: pointer;
+  transition: background 0.15s ease;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.install-apk-modal__device:last-child {
+  border-bottom: none;
+}
+
+.install-apk-modal__device:hover {
+  background: var(--color-surface-hover);
+}
+
+.install-apk-modal__device--selected {
+  background: var(--color-primary-light, rgba(99, 102, 241, 0.1));
+}
+
+.install-apk-modal__checkbox {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--color-primary);
+}
+
+.install-apk-modal__device-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  min-width: 0;
+}
+
+.install-apk-modal__device-name {
+  font-weight: 500;
+  color: var(--color-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.install-apk-modal__device-model {
+  font-size: 0.75rem;
+  color: var(--color-text-secondary);
+}
+
+/* Summary */
+.install-apk-modal__summary {
+  padding: 0.5rem 0;
+  font-size: 0.875rem;
+  color: var(--color-text-secondary);
+  text-align: center;
+}
+
+/* Error */
+.install-apk-modal__error {
+  padding: 0.75rem 1rem;
+  background: var(--color-error-light, rgba(239, 68, 68, 0.1));
+  border: 1px solid var(--color-error);
+  border-radius: 6px;
+  color: var(--color-error);
+  font-size: 0.875rem;
+}
+
+/* Actions */
+.install-apk-modal__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--color-border);
+}

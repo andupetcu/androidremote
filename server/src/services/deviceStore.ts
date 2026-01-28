@@ -323,8 +323,16 @@ class DeviceStore {
 
   /**
    * Convert database row to Device object
+   * Status is computed dynamically: online if seen within last 2 minutes
    */
   private rowToDevice(row: DeviceRow): Device {
+    // Compute online status based on last seen time
+    // Device is online if seen within last 2 minutes (120,000 ms)
+    const ONLINE_THRESHOLD_MS = 2 * 60 * 1000;
+    const now = Date.now();
+    const isOnline = row.last_seen_at !== null &&
+      (now - row.last_seen_at) < ONLINE_THRESHOLD_MS;
+
     return {
       id: row.id,
       name: row.name,
@@ -332,7 +340,7 @@ class DeviceStore {
       androidVersion: row.android_version,
       enrolledAt: row.enrolled_at,
       lastSeenAt: row.last_seen_at,
-      status: row.status as 'online' | 'offline',
+      status: isOnline ? 'online' : 'offline',
       publicKey: row.public_key,
 
       // Extended fields

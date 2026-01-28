@@ -75,11 +75,23 @@ class VideoStreamBridge(
             framesFlow.collect { frame ->
                 if (!running.get()) return@collect
 
-                videoChannel.sendFrame(
-                    data = frame.data,
-                    presentationTimeUs = frame.presentationTimeUs,
-                    isKeyFrame = frame.isKeyFrame
-                )
+                // Check if channel is still open before sending
+                if (!videoChannel.isOpen) {
+                    stop()
+                    return@collect
+                }
+
+                try {
+                    videoChannel.sendFrame(
+                        data = frame.data,
+                        presentationTimeUs = frame.presentationTimeUs,
+                        isKeyFrame = frame.isKeyFrame
+                    )
+                } catch (e: Exception) {
+                    // Channel may have closed between check and send
+                    stop()
+                    return@collect
+                }
             }
         }
     }

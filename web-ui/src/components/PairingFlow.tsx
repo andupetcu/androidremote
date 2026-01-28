@@ -70,7 +70,10 @@ export function PairingFlow({ onPaired }: PairingFlowProps): ReactElement {
       const response = await fetch('/api/pair/complete', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code: manualCode }),
+        body: JSON.stringify({
+          pairingCode: manualCode,
+          controllerPublicKey: `controller-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        }),
       });
 
       if (!response.ok) {

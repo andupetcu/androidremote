@@ -65,8 +65,15 @@ class H264Encoder {
      * Must be called before start(). Creates the MediaCodec instance
      * and configures it for Surface input mode.
      *
+     * Uses progressive fallback for device compatibility:
+     * 1. Try with LOW_LATENCY + VBR (best quality, API 30+)
+     * 2. Try with VBR only (good quality)
+     * 3. Try with CBR (most compatible)
+     * 4. Try with minimal settings (basic encoding)
+     *
      * @param config Encoder configuration (resolution, bitrate, etc.)
      * @throws IllegalStateException if already configured
+     * @throws RuntimeException if no compatible configuration found
      */
     fun configure(config: EncoderConfig) {
         check(!isConfigured.get()) { "Encoder already configured. Call release() first." }
@@ -79,6 +86,49 @@ class H264Encoder {
             encoderHandler = Handler(looper)
         }
 
+        // Try different configurations for device compatibility
+        val configAttempts = listOf(
+            ConfigAttempt("LOW_LATENCY+VBR", lowLatency = true, bitrateMode = MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR),
+            ConfigAttempt("VBR", lowLatency = false, bitrateMode = MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR),
+            ConfigAttempt("CBR", lowLatency = false, bitrateMode = MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR),
+            ConfigAttempt("MINIMAL", lowLatency = false, bitrateMode = null)
+        )
+
+        var lastError: Exception? = null
+
+        for (attempt in configAttempts) {
+            try {
+                Log.d(TAG, "Trying encoder config: ${attempt.name}")
+                configureWithSettings(config, attempt)
+                Log.d(TAG, "Encoder configured successfully with: ${attempt.name}")
+                return
+            } catch (e: Exception) {
+                Log.w(TAG, "Config attempt '${attempt.name}' failed: ${e.message}")
+                lastError = e
+                // Clean up failed codec before retry
+                try {
+                    codec?.release()
+                } catch (releaseError: Exception) {
+                    Log.w(TAG, "Error releasing failed codec", releaseError)
+                }
+                codec = null
+            }
+        }
+
+        // All attempts failed
+        encoderThread?.quitSafely()
+        encoderThread = null
+        encoderHandler = null
+        throw RuntimeException("Failed to configure encoder after all attempts", lastError)
+    }
+
+    private data class ConfigAttempt(
+        val name: String,
+        val lowLatency: Boolean,
+        val bitrateMode: Int?
+    )
+
+    private fun configureWithSettings(config: EncoderConfig, attempt: ConfigAttempt) {
         // Create MediaFormat for H.264 encoding
         val format = MediaFormat.createVideoFormat(
             config.mimeType,
@@ -93,16 +143,15 @@ class H264Encoder {
                 MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface
             )
 
-            // Enable low latency mode if available (API 30+)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            // Enable low latency mode if requested and available (API 30+)
+            if (attempt.lowLatency && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
             }
 
-            // Set bitrate mode to VBR for better quality
-            setInteger(
-                MediaFormat.KEY_BITRATE_MODE,
-                MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR
-            )
+            // Set bitrate mode if specified
+            if (attempt.bitrateMode != null) {
+                setInteger(MediaFormat.KEY_BITRATE_MODE, attempt.bitrateMode)
+            }
         }
 
         // Create encoder
@@ -114,8 +163,6 @@ class H264Encoder {
 
         currentConfig = config
         isConfigured.set(true)
-
-        Log.d(TAG, "Encoder configured successfully")
     }
 
     /**

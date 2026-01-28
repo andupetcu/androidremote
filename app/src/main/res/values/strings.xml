@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Android Remote</string>
+
+    <!-- Accessibility Service -->
+    <string name="accessibility_service_description">Enables remote touch control by injecting gestures on behalf of the paired controller.</string>
+
+    <!-- Notifications -->
+    <string name="notification_channel_remote_session">Remote Session</string>
+    <string name="notification_channel_remote_session_description">Shows when a remote session is active</string>
+    <string name="notification_remote_session_title">Remote session active</string>
+    <string name="notification_remote_session_text">Screen is being shared</string>
+
+    <!-- Pairing -->
+    <string name="pairing_title">Pair Device</string>
+    <string name="pairing_code_label">Pairing Code</string>
+    <string name="pairing_instructions">Enter this code on your controller device or scan the QR code</string>
+
+    <!-- Actions -->
+    <string name="action_start_session">Start Session</string>
+    <string name="action_stop_session">Stop Session</string>
+    <string name="action_disconnect">Disconnect</string>
+
+    <!-- Settings -->
+    <string name="settings">Settings</string>
+    <string name="server_settings">Server Settings</string>
+    <string name="server_address">Server Address</string>
+    <string name="server_port">Port</string>
+    <string name="server_settings_hint">Enter the IP address or hostname of your MDM server</string>
+    <string name="save">Save</string>
+    <string name="cancel">Cancel</string>
+    <string name="error_invalid_address">Please enter a valid server address</string>
+    <string name="error_invalid_port">Please enter a valid port (1-65535)</string>
+    <string name="settings_saved">Server settings saved</string>
+
+    <!-- Reset Config -->
+    <string name="reset_config">Reset Configuration</string>
+    <string name="reset_config_title">Reset Configuration?</string>
+    <string name="reset_config_message">This will clear all enrollment data and allow you to re-enroll the device with a new token.\n\nThis action cannot be undone.</string>
+    <string name="reset">Reset</string>
+    <string name="config_reset_success">Configuration reset. Please re-enroll.</string>
+</resources>

@@ -1,10 +1,12 @@
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
+import path from 'path';
 import rateLimit, { MemoryStore } from 'express-rate-limit';
+import multer from 'multer';
 import { pairingStore } from './services/pairingStore';
 import { deviceStore } from './services/deviceStore';
 import { enrollmentStore } from './services/enrollmentStore';
-import { commandStore, CommandType } from './services/commandStore';
+import { commandStore, CommandType, CommandStatus } from './services/commandStore';
 import { telemetryStore, TelemetryInput } from './services/telemetryStore';
 import { appInventoryStore, AppInput } from './services/appInventoryStore';
 import { groupStore, GroupInput } from './services/groupStore';
@@ -13,8 +15,33 @@ import { eventStore, EventInput, DeviceEventType, EventSeverity } from './servic
 import { fileTransferStore, TransferInput } from './services/fileTransferStore';
 import { auditStore, AuditInput } from './services/auditStore';
 import { COMMAND_TYPES } from './db/schema';
+import { LocalStorageProvider, setStorageProvider, getStorageProvider } from './services/storageProvider';
+import * as appPackageStore from './services/appPackageStore';
+import { syncRequiredApps, syncPolicyRequiredApps } from './services/appSyncService';
+import { getDatabase } from './db/connection';
+
+// Initialize storage provider
+const uploadsDir = path.join(__dirname, '..', 'uploads');
+const storageProvider = new LocalStorageProvider(uploadsDir, '/api/uploads');
+setStorageProvider(storageProvider);
+
+// Configure multer for APK uploads
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 500 * 1024 * 1024 }, // 500MB max
+  fileFilter: (_req, file, cb) => {
+    if (file.originalname.endsWith('.apk')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only APK files are allowed'));
+    }
+  },
+});
 
 export const app = express();
+
+// Serve uploaded files statically
+app.use('/api/uploads', express.static(uploadsDir));
 
 // Middleware
 app.use(cors({
@@ -35,6 +62,14 @@ app.use(cors({
   credentials: true,
 }));
 app.use(express.json());
+
+// Request logging for debugging
+app.use((req: Request, _res: Response, next: NextFunction) => {
+  if (req.method !== 'GET' || req.path.includes('telemetry')) {
+    console.log(`[HTTP] ${req.method} ${req.path}`);
+  }
+  next();
+});
 
 // Rate limiter stores (exported for testing)
 const initiateStore = new MemoryStore();
@@ -338,20 +373,89 @@ app.post('/api/enroll/device', (req: Request, res: Response) => {
     return;
   }
 
-  // Build server URL from request
-  const protocol = req.protocol === 'https' ? 'wss' : 'ws';
+  // Build server URL from request (HTTP base URL for API calls)
+  const protocol = req.protocol || 'http';
   const host = req.get('host') || 'localhost:7899';
 
   res.status(201).json({
     deviceId: result.deviceId,
     sessionToken: result.sessionToken,
-    serverUrl: `${protocol}://${host}/ws`,
+    serverUrl: `${protocol}://${host}`,
   });
 });
 
 // ============================================
 // Device Command Queue
 // ============================================
+
+/**
+ * POST /api/commands - Queue a command for a device (used by web UI)
+ */
+app.post('/api/commands', (req: Request, res: Response) => {
+  const { deviceId, type, payload } = req.body;
+
+  if (!deviceId) {
+    res.status(400).json({ error: 'deviceId is required' });
+    return;
+  }
+
+  // Validate device exists
+  const device = deviceStore.getDevice(deviceId);
+  if (!device) {
+    res.status(404).json({ error: 'Device not found' });
+    return;
+  }
+
+  // Validate command type
+  if (!type || !COMMAND_TYPES.includes(type)) {
+    res.status(400).json({
+      error: `Invalid command type. Must be one of: ${COMMAND_TYPES.join(', ')}`,
+    });
+    return;
+  }
+
+  // Validate payload for specific commands
+  if (type === 'INSTALL_APK') {
+    if (!payload?.url || !payload?.packageName) {
+      res.status(400).json({
+        error: 'INSTALL_APK requires payload with url and packageName',
+      });
+      return;
+    }
+  }
+
+  if (type === 'UNINSTALL_APP') {
+    if (!payload?.packageName) {
+      res.status(400).json({
+        error: 'UNINSTALL_APP requires payload with packageName',
+      });
+      return;
+    }
+  }
+
+  const command = commandStore.queueCommand(deviceId, type as CommandType, payload || {});
+
+  res.status(201).json({ command });
+});
+
+/**
+ * GET /api/commands - List all commands with optional filters (used by web UI)
+ */
+app.get('/api/commands', (req: Request, res: Response) => {
+  const { deviceId, status } = req.query;
+
+  let commands;
+  if (deviceId) {
+    commands = commandStore.getCommandHistory(deviceId as string, {
+      status: status as CommandStatus | undefined,
+    });
+  } else {
+    // Get all commands (limited to recent ones for performance)
+    commands = commandStore.getAllCommands();
+  }
+
+  res.json({ commands });
+});
 
 /**
  * POST /api/devices/:id/commands - Queue a command for a device
@@ -531,7 +635,18 @@ app.get('/api/devices/:id/telemetry', (req: Request, res: Response) => {
 
   const telemetry = telemetryStore.getTelemetry(id);
   if (!telemetry) {
-    res.status(404).json({ error: 'No telemetry data for device' });
+    // Return empty telemetry object instead of 404 when no data exists yet
+    res.json({
+      deviceId: id,
+      timestamp: null,
+      batteryLevel: null,
+      batteryCharging: null,
+      networkType: null,
+      storageUsedBytes: null,
+      storageTotalBytes: null,
+      memoryUsedBytes: null,
+      memoryTotalBytes: null,
+    });
     return;
   }
 
@@ -627,6 +742,20 @@ app.get('/api/apps', (req: Request, res: Response) => {
   res.json({ apps: catalog, count: catalog.length });
 });
 
+// ============================================
+// App Packages (APK Upload & Install)
+// IMPORTANT: These routes must come BEFORE /api/apps/:packageName
+// to avoid "packages" being matched as a packageName parameter
+// ============================================
+
+/**
+ * GET /api/apps/packages - List uploaded APK packages
+ */
+app.get('/api/apps/packages', (_req: Request, res: Response) => {
+  const packages = appPackageStore.listAppPackages();
+  res.json({ packages });
+});
+
 /**
  * GET /api/apps/:packageName - Get app catalog entry
  */
@@ -674,6 +803,153 @@ app.put('/api/apps/:packageName', (req: Request, res: Response) => {
   });
 
   res.json(entry);
+});
+
+/**
+ * POST /api/apps/upload - Upload an APK file
+ */
+app.post('/api/apps/upload', upload.single('file'), async (req: Request, res: Response) => {
+  try {
+    if (!req.file) {
+      res.status(400).json({ error: 'No file uploaded' });
+      return;
+    }
+
+    const { packageName, appName, versionName, versionCode } = req.body;
+
+    if (!packageName) {
+      res.status(400).json({ error: 'packageName is required' });
+      return;
+    }
+
+    // Generate unique filename
+    const timestamp = Date.now();
+    const filename = `apks/${packageName}-${timestamp}.apk`;
+
+    // Save file using storage provider
+    const storage = getStorageProvider();
+    const filePath = await storage.save(filename, req.file.buffer);
+
+    // Check if package already exists
+    const existing = appPackageStore.getAppPackageByName(packageName);
+
+    let pkg;
+    if (existing) {
+      // Delete old file
+      await storage.delete(existing.filePath);
+      // Update existing entry
+      pkg = appPackageStore.updateAppPackage(packageName, {
+        appName,
+        versionName,
+        versionCode: versionCode ? parseInt(versionCode, 10) : undefined,
+        fileSize: req.file.size,
+        filePath,
+      });
+    } else {
+      // Create new entry
+      pkg = appPackageStore.createAppPackage({
+        packageName,
+        appName,
+        versionName,
+        versionCode: versionCode ? parseInt(versionCode, 10) : undefined,
+        fileSize: req.file.size,
+        filePath,
+      });
+    }
+
+    auditStore.log({
+      actorType: 'admin',
+      action: existing ? 'app.updated' : 'app.uploaded',
+      resourceType: 'app',
+      resourceId: packageName,
+      details: { versionName, fileSize: req.file.size },
+    });
+
+    res.status(201).json(pkg);
+  } catch (err) {
+    console.error('Upload error:', err);
+    res.status(500).json({ error: 'Failed to upload APK' });
+  }
+});
+
+/**
+ * GET /api/apps/packages/:packageName - Get package details
+ */
+app.get('/api/apps/packages/:packageName', (req: Request, res: Response) => {
+  const { packageName } = req.params;
+
+  const pkg = appPackageStore.getAppPackageByName(packageName);
+  if (!pkg) {
+    res.status(404).json({ error: 'Package not found' });
+    return;
+  }
+
+  res.json(pkg);
+});
+
+/**
+ * DELETE /api/apps/packages/:packageName - Delete an uploaded package
+ */
+app.delete('/api/apps/packages/:packageName', async (req: Request, res: Response) => {
+  const { packageName } = req.params;
+
+  const deleted = await appPackageStore.deleteAppPackage(packageName);
+  if (!deleted) {
+    res.status(404).json({ error: 'Package not found' });
+    return;
+  }
+
+  auditStore.log({
+    actorType: 'admin',
+    action: 'app.deleted',
+    resourceType: 'app',
+    resourceId: packageName,
+  });
+
+  res.json({ success: true });
+});
+
+/**
+ * POST /api/apps/packages/:packageName/install - Install package on devices
+ */
+app.post('/api/apps/packages/:packageName/install', (req: Request, res: Response) => {
+  const { packageName } = req.params;
+  const { deviceIds } = req.body;
+
+  const pkg = appPackageStore.getAppPackageByName(packageName);
+  if (!pkg) {
+    res.status(404).json({ error: 'Package not found' });
+    return;
+  }
+
+  if (!Array.isArray(deviceIds) || deviceIds.length === 0) {
+    res.status(400).json({ error: 'deviceIds array is required' });
+    return;
+  }
+
+  const commands = [];
+  for (const deviceId of deviceIds) {
+    const device = deviceStore.getDevice(deviceId);
+    if (device) {
+      const cmd = commandStore.queueCommand(deviceId, 'INSTALL_APK', {
+        url: pkg.downloadUrl,
+        packageName: pkg.packageName,
+        appName: pkg.appName,
+        versionName: pkg.versionName,
+      });
+      commands.push(cmd);
+
+      auditStore.log({
+        actorType: 'admin',
+        action: 'command.queued',
+        resourceType: 'command',
+        resourceId: cmd.id,
+        details: { deviceId, type: 'INSTALL_APK', packageName },
+      });
+    }
+  }
+
+  res.json({ success: true, commands, queued: commands.length });
 });
 
 // ============================================
@@ -883,26 +1159,73 @@ app.get('/api/policies', (_req: Request, res: Response) => {
 
 /**
  * POST /api/policies - Create policy
+ * Translates frontend field names to server field names
  */
 app.post('/api/policies', (req: Request, res: Response) => {
-  const input: PolicyInput = req.body;
+  try {
+    const body = req.body;
 
-  if (!input.name) {
-    res.status(400).json({ error: 'name is required' });
-    return;
+    if (!body.name) {
+      res.status(400).json({ error: 'name is required' });
+      return;
+    }
+
+    // Translate frontend field names to server field names
+    const input: PolicyInput = {
+      name: body.name,
+      description: body.description,
+      priority: body.priority ?? 0,
+      kioskMode: body.kioskMode,
+      kioskPackage: body.kioskPackage,
+      kioskExitPassword: body.kioskExitPassword,
+      // Frontend uses allowedApps/blockedApps, server uses appWhitelist/appBlacklist
+      appWhitelist: body.appWhitelist ?? body.allowedApps,
+      appBlacklist: body.appBlacklist ?? body.blockedApps,
+      // Frontend uses playStoreEnabled/unknownSourcesEnabled
+      allowPlayStore: body.allowPlayStore ?? body.playStoreEnabled,
+      allowUnknownSources: body.allowUnknownSources ?? body.unknownSourcesEnabled,
+      passwordRequired: body.passwordRequired,
+      passwordMinLength: body.passwordMinLength,
+      passwordRequireNumeric: body.passwordRequireNumeric,
+      passwordRequireSymbol: body.passwordRequireSymbol,
+      maxPasswordAge: body.maxPasswordAge,
+      maxFailedAttempts: body.maxFailedAttempts,
+      lockAfterInactivity: body.lockAfterInactivity,
+      encryptionRequired: body.encryptionRequired,
+      cameraEnabled: body.cameraEnabled,
+      microphoneEnabled: body.microphoneEnabled,
+      bluetoothEnabled: body.bluetoothEnabled,
+      wifiEnabled: body.wifiEnabled,
+      nfcEnabled: body.nfcEnabled,
+      usbEnabled: body.usbEnabled,
+      sdCardEnabled: body.sdCardEnabled,
+      vpnRequired: body.vpnRequired,
+      vpnPackage: body.vpnPackage,
+      allowedWifiSsids: body.allowedWifiSsids,
+      adbEnabled: body.adbEnabled,
+      developerOptionsEnabled: body.developerOptionsEnabled,
+      // Frontend uses factoryResetEnabled/otaUpdatesEnabled
+      allowFactoryReset: body.allowFactoryReset ?? body.factoryResetEnabled,
+      allowOtaUpdates: body.allowOtaUpdates ?? body.otaUpdatesEnabled,
+      allowDateTimeChange: body.allowDateTimeChange,
+      requiredApps: body.requiredApps,
+    };
+
+    const policy = policyStore.createPolicy(input);
+
+    auditStore.log({
+      actorType: 'admin',
+      action: 'policy.created',
+      resourceType: 'policy',
+      resourceId: policy.id,
+      details: { name: input.name },
+    });
+
+    res.status(201).json(policy);
+  } catch (err) {
+    console.error('Failed to create policy:', err);
+    res.status(500).json({ error: 'Failed to create policy', details: String(err) });
   }
-
-  const policy = policyStore.createPolicy(input);
-
-  auditStore.log({
-    actorType: 'admin',
-    action: 'policy.created',
-    resourceType: 'policy',
-    resourceId: policy.id,
-    details: { name: input.name },
-  });
-
-  res.status(201).json(policy);
 });
 
 /**
@@ -925,26 +1248,117 @@ app.get('/api/policies/:id', (req: Request, res: Response) => {
 
 /**
  * PUT /api/policies/:id - Update policy
+ * Translates frontend field names to server field names
  */
 app.put('/api/policies/:id', (req: Request, res: Response) => {
-  const { id } = req.params;
-  const input: Partial<PolicyInput> = req.body;
+  try {
+    const { id } = req.params;
+    const body = req.body;
 
-  const policy = policyStore.updatePolicy(id, input);
-  if (!policy) {
-    res.status(404).json({ error: 'Policy not found' });
-    return;
+    // Translate frontend field names to server field names
+    const input: Partial<PolicyInput> = {};
+
+    // Copy directly compatible fields
+    if (body.name !== undefined) input.name = body.name;
+    if (body.description !== undefined) input.description = body.description;
+    if (body.priority !== undefined) input.priority = body.priority;
+    if (body.kioskMode !== undefined) input.kioskMode = body.kioskMode;
+    if (body.kioskPackage !== undefined) input.kioskPackage = body.kioskPackage;
+    if (body.kioskExitPassword !== undefined) input.kioskExitPassword = body.kioskExitPassword;
+
+    // Translate allowedApps/blockedApps to appWhitelist/appBlacklist
+    if (body.appWhitelist !== undefined) input.appWhitelist = body.appWhitelist;
+    else if (body.allowedApps !== undefined) input.appWhitelist = body.allowedApps;
+    if (body.appBlacklist !== undefined) input.appBlacklist = body.appBlacklist;
+    else if (body.blockedApps !== undefined) input.appBlacklist = body.blockedApps;
+
+    // Translate playStoreEnabled/unknownSourcesEnabled
+    if (body.allowPlayStore !== undefined) input.allowPlayStore = body.allowPlayStore;
+    else if (body.playStoreEnabled !== undefined) input.allowPlayStore = body.playStoreEnabled;
+    if (body.allowUnknownSources !== undefined) input.allowUnknownSources = body.allowUnknownSources;
+    else if (body.unknownSourcesEnabled !== undefined) input.allowUnknownSources = body.unknownSourcesEnabled;
+
+    // Security fields
+    if (body.passwordRequired !== undefined) input.passwordRequired = body.passwordRequired;
+    if (body.passwordMinLength !== undefined) input.passwordMinLength = body.passwordMinLength;
+    if (body.passwordRequireNumeric !== undefined) input.passwordRequireNumeric = body.passwordRequireNumeric;
+    if (body.passwordRequireSymbol !== undefined) input.passwordRequireSymbol = body.passwordRequireSymbol;
+    if (body.maxPasswordAge !== undefined) input.maxPasswordAge = body.maxPasswordAge;
+    if (body.maxFailedAttempts !== undefined) input.maxFailedAttempts = body.maxFailedAttempts;
+    if (body.lockAfterInactivity !== undefined) input.lockAfterInactivity = body.lockAfterInactivity;
+    if (body.encryptionRequired !== undefined) input.encryptionRequired = body.encryptionRequired;
+
+    // Hardware fields
+    if (body.cameraEnabled !== undefined) input.cameraEnabled = body.cameraEnabled;
+    if (body.microphoneEnabled !== undefined) input.microphoneEnabled = body.microphoneEnabled;
+    if (body.bluetoothEnabled !== undefined) input.bluetoothEnabled = body.bluetoothEnabled;
+    if (body.wifiEnabled !== undefined) input.wifiEnabled = body.wifiEnabled;
+    if (body.nfcEnabled !== undefined) input.nfcEnabled = body.nfcEnabled;
+    if (body.usbEnabled !== undefined) input.usbEnabled = body.usbEnabled;
+    if (body.sdCardEnabled !== undefined) input.sdCardEnabled = body.sdCardEnabled;
+
+    // Network fields
+    if (body.vpnRequired !== undefined) input.vpnRequired = body.vpnRequired;
+    if (body.vpnPackage !== undefined) input.vpnPackage = body.vpnPackage;
+    if (body.allowedWifiSsids !== undefined) input.allowedWifiSsids = body.allowedWifiSsids;
+
+    // Development fields
+    if (body.adbEnabled !== undefined) input.adbEnabled = body.adbEnabled;
+    if (body.developerOptionsEnabled !== undefined) input.developerOptionsEnabled = body.developerOptionsEnabled;
+
+    // System fields - translate factoryResetEnabled/otaUpdatesEnabled
+    if (body.allowFactoryReset !== undefined) input.allowFactoryReset = body.allowFactoryReset;
+    else if (body.factoryResetEnabled !== undefined) input.allowFactoryReset = body.factoryResetEnabled;
+    if (body.allowOtaUpdates !== undefined) input.allowOtaUpdates = body.allowOtaUpdates;
+    else if (body.otaUpdatesEnabled !== undefined) input.allowOtaUpdates = body.otaUpdatesEnabled;
+    if (body.allowDateTimeChange !== undefined) input.allowDateTimeChange = body.allowDateTimeChange;
+
+    // Required apps
+    if (body.requiredApps !== undefined) input.requiredApps = body.requiredApps;
+
+    // Sound/Notifications
+    if (body.silentMode !== undefined) input.silentMode = body.silentMode;
+
+    const policy = policyStore.updatePolicy(id, input);
+    if (!policy) {
+      res.status(404).json({ error: 'Policy not found' });
+      return;
+    }
+
+    // Sync required apps to all devices if requiredApps changed
+    let commandsQueued = 0;
+    if (input.requiredApps !== undefined) {
+      commandsQueued = syncPolicyRequiredApps(id);
+    }
+
+    // Sync policy settings to all devices with this policy
+    // Always send full policy when relevant settings change
+    if (input.silentMode !== undefined || input.requiredApps !== undefined || input.kioskMode !== undefined) {
+      const db = getDatabase();
+      const devices = db.prepare(`SELECT id FROM devices WHERE policy_id = ?`).all(id) as { id: string }[];
+      for (const device of devices) {
+        commandStore.queueCommand(device.id, 'SYNC_POLICY', {
+          silentMode: policy.silentMode,
+          kioskMode: policy.kioskMode,
+          requiredApps: policy.requiredApps || [],
+        });
+        commandsQueued++;
+      }
+    }
+
+    auditStore.log({
+      actorType: 'admin',
+      action: 'policy.updated',
+      resourceType: 'policy',
+      resourceId: id,
+      details: { ...input, commandsQueued },
+    });
+
+    res.json({ ...policy, commandsQueued });
+  } catch (err) {
+    console.error('Failed to update policy:', err);
+    res.status(500).json({ error: 'Failed to update policy', details: String(err) });
   }
-
-  auditStore.log({
-    actorType: 'admin',
-    action: 'policy.updated',
-    resourceType: 'policy',
-    resourceId: id,
-    details: input,
-  });
-
-  res.json(policy);
 });
 
 /**
@@ -1035,15 +1449,34 @@ app.put('/api/devices/:id/policy', (req: Request, res: Response) => {
 
   deviceStore.updateDevicePolicy(id, policyId || null);
 
+  // Sync required apps if policy has them
+  let commandsQueued = 0;
+  if (policyId) {
+    const policy = policyStore.getPolicy(policyId);
+    if (policy) {
+      // Queue app installations
+      commandsQueued = syncRequiredApps(id, policyId);
+
+      // Also send SYNC_POLICY with full settings so device can apply
+      // boot preferences for already-installed apps
+      commandStore.queueCommand(id, 'SYNC_POLICY', {
+        silentMode: policy.silentMode,
+        kioskMode: policy.kioskMode,
+        requiredApps: policy.requiredApps || [],
+      });
+      commandsQueued++;
+    }
+  }
+
   auditStore.log({
     actorType: 'admin',
     action: 'policy.assigned',
     resourceType: 'device',
     resourceId: id,
-    details: { policyId },
+    details: { policyId, commandsQueued },
   });
 
-  res.json({ success: true });
+  res.json({ success: true, commandsQueued });
 });
 
 // ============================================
@@ -1082,6 +1515,21 @@ app.get('/api/events/unread', (req: Request, res: Response) => {
   );
 
   res.json({ events, count });
+});
+
+/**
+ * GET /api/events/stats - Get event statistics
+ */
+app.get('/api/events/stats', (_req: Request, res: Response) => {
+  const unreadCount = eventStore.getUnacknowledgedCount('info');
+  const criticalCount = eventStore.getUnacknowledgedCount('critical');
+  const warningCount = eventStore.getUnacknowledgedCount('warning');
+
+  res.json({
+    unread: unreadCount,
+    critical: criticalCount,
+    warning: warningCount,
+  });
 });
 
 /**

@@ -33,6 +33,9 @@ export type AuditAction =
   | 'app.blocked'
   | 'app.installed'
   | 'app.uninstalled'
+  | 'app.uploaded'
+  | 'app.updated'
+  | 'app.deleted'
   // Files
   | 'file.upload_requested'
   | 'file.download_requested'

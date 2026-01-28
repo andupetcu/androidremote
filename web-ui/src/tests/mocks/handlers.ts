@@ -11,8 +11,8 @@ export const handlers = [
   }),
 
   http.post('/api/pair/complete', async ({ request }) => {
-    const body = await request.json() as { code: string };
-    if (body.code === '123456') {
+    const body = await request.json() as { pairingCode: string; controllerPublicKey: string };
+    if (body.pairingCode === '123456') {
       return HttpResponse.json({
         sessionToken: 'valid-session-token',
         deviceId: 'device-123',

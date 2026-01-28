@@ -167,10 +167,26 @@ export function setupSignaling(server: Server): WebSocketServer {
   // Setup event broadcasting
   setupEventBroadcasting();
 
-  const wss = new WebSocketServer({ server, path: '/ws' });
+  // Use noServer mode to handle multiple WebSocket paths
+  const wss = new WebSocketServer({ noServer: true });
+  const adminWss = new WebSocketServer({ noServer: true });
 
-  // Admin WebSocket server on /ws/admin
-  const adminWss = new WebSocketServer({ server, path: '/ws/admin' });
+  // Handle HTTP upgrade requests manually
+  server.on('upgrade', (request, socket, head) => {
+    const pathname = request.url || '';
+
+    if (pathname === '/ws') {
+      wss.handleUpgrade(request, socket, head, (ws) => {
+        wss.emit('connection', ws, request);
+      });
+    } else if (pathname === '/admin') {
+      adminWss.handleUpgrade(request, socket, head, (ws) => {
+        adminWss.emit('connection', ws, request);
+      });
+    } else {
+      socket.destroy();
+    }
+  });
 
   adminWss.on('connection', (ws: WebSocket) => {
     // eslint-disable-next-line no-console

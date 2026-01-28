@@ -37,6 +37,10 @@ class WebRtcPeerConnectionWrapper(
         get() = _nativeConnection
             ?: throw IllegalStateException("WebRtcPeerConnectionWrapper not initialized. Call initialize() first.")
 
+    // CRITICAL: Must keep strong references to native DataChannels to prevent GC
+    // WebRTC native objects can be garbage collected if only Kotlin wrapper holds reference
+    private val dataChannels = mutableListOf<DataChannel>()
+
     /**
      * Initializes this wrapper with the native peer connection.
      * Must be called before using any other methods.
@@ -183,6 +187,17 @@ class WebRtcPeerConnectionWrapper(
     }
 
     override fun close() {
+        // Close all data channels first
+        dataChannels.forEach { channel ->
+            try {
+                channel.close()
+            } catch (_: Exception) {
+                // Ignore errors during cleanup
+            }
+        }
+        dataChannels.clear()
+
+        // Then close the peer connection
         nativeConnection.close()
     }
 
@@ -221,6 +236,8 @@ class WebRtcPeerConnectionWrapper(
     }
 
     override fun onDataChannel(channel: DataChannel) {
+        // Keep strong reference to prevent native object GC
+        dataChannels.add(channel)
         observer.onDataChannel(WebRtcDataChannel(channel))
     }
 

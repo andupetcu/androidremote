@@ -83,6 +83,12 @@ export function initializeSchema(db: Database.Database): void {
       allow_ota_updates INTEGER DEFAULT 1,
       allow_date_time_change INTEGER DEFAULT 1,
 
+      -- Required apps (JSON array of objects with packageName, autoStart, foreground, autoStartOnBoot)
+      required_apps TEXT,
+
+      -- Sound / Notifications
+      silent_mode INTEGER DEFAULT 0,
+
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     )
@@ -134,6 +140,49 @@ export function initializeSchema(db: Database.Database): void {
       compliance_status TEXT DEFAULT 'pending' CHECK(compliance_status IN ('compliant', 'non_compliant', 'pending'))
     )
   `);
+
+  // ============================================
+  // Schema migrations: Add columns to existing tables
+  // ============================================
+  // SQLite doesn't support ADD COLUMN IF NOT EXISTS, so we check pragma first
+  const existingColumns = db.prepare(`PRAGMA table_info(devices)`).all() as Array<{ name: string }>;
+  const columnNames = new Set(existingColumns.map((c) => c.name));
+
+  // Add Phase 1 extended columns if missing
+  const extendedColumns = [
+    { name: 'manufacturer', type: 'TEXT' },
+    { name: 'serial_number', type: 'TEXT' },
+    { name: 'imei', type: 'TEXT' },
+    { name: 'phone_number', type: 'TEXT' },
+    { name: 'build_fingerprint', type: 'TEXT' },
+    { name: 'kernel_version', type: 'TEXT' },
+    { name: 'display_resolution', type: 'TEXT' },
+    { name: 'cpu_architecture', type: 'TEXT' },
+    { name: 'total_ram', type: 'INTEGER' },
+    { name: 'group_id', type: 'TEXT' },
+    { name: 'policy_id', type: 'TEXT' },
+    { name: 'compliance_status', type: 'TEXT DEFAULT \'pending\'' },
+  ];
+
+  for (const col of extendedColumns) {
+    if (!columnNames.has(col.name)) {
+      db.exec(`ALTER TABLE devices ADD COLUMN ${col.name} ${col.type}`);
+    }
+  }
+
+  // Migrate policies table - add new columns if missing
+  const existingPolicyColumns = db.prepare(`PRAGMA table_info(policies)`).all() as Array<{ name: string }>;
+  const policyColumnNames = new Set(existingPolicyColumns.map((c) => c.name));
+
+  const policyMigrations = [
+    { name: 'silent_mode', type: 'INTEGER DEFAULT 0' },
+  ];
+
+  for (const col of policyMigrations) {
+    if (!policyColumnNames.has(col.name)) {
+      db.exec(`ALTER TABLE policies ADD COLUMN ${col.name} ${col.type}`);
+    }
+  }
 
   // Pairing sessions table - ephemeral, 5 min TTL
   // Note: device_id is NOT a foreign key because the device doesn't exist yet
@@ -199,20 +248,66 @@ export function initializeSchema(db: Database.Database): void {
 
   // Device commands table - queued commands for devices (Phase 4: expanded types)
   const commandTypeCheck = COMMAND_TYPES.map(t => `'${t}'`).join(', ');
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS device_commands (
-      id TEXT PRIMARY KEY,
-      device_id TEXT NOT NULL,
-      type TEXT NOT NULL CHECK(type IN (${commandTypeCheck})),
-      payload TEXT NOT NULL,
-      status TEXT DEFAULT 'pending' CHECK(status IN ('pending', 'delivered', 'executing', 'completed', 'failed')),
-      created_at INTEGER NOT NULL,
-      delivered_at INTEGER,
-      completed_at INTEGER,
-      error TEXT,
-      FOREIGN KEY (device_id) REFERENCES devices(id) ON DELETE CASCADE
-    )
-  `);
+
+  // Check if device_commands table exists and needs migration
+  const tableExists = db.prepare(`
+    SELECT name FROM sqlite_master WHERE type='table' AND name='device_commands'
+  `).get();
+
+  if (tableExists) {
+    // Check if the CHECK constraint needs updating by trying to get the table schema
+    // SQLite doesn't let us modify CHECK constraints, so we need to recreate the table
+    // We detect this by checking if the constraint string length has changed
+    const tableInfo = db.prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='device_commands'`).get() as { sql: string } | undefined;
+    const currentSql = tableInfo?.sql || '';
+
+    // If the current schema doesn't include all command types, recreate the table
+    const hasAllTypes = COMMAND_TYPES.every(t => currentSql.includes(`'${t}'`));
+
+    if (!hasAllTypes) {
+      // Migrate: rename old table, create new, copy data, drop old
+      db.exec(`ALTER TABLE device_commands RENAME TO device_commands_old`);
+
+      db.exec(`
+        CREATE TABLE device_commands (
+          id TEXT PRIMARY KEY,
+          device_id TEXT NOT NULL,
+          type TEXT NOT NULL CHECK(type IN (${commandTypeCheck})),
+          payload TEXT NOT NULL,
+          status TEXT DEFAULT 'pending' CHECK(status IN ('pending', 'delivered', 'executing', 'completed', 'failed')),
+          created_at INTEGER NOT NULL,
+          delivered_at INTEGER,
+          completed_at INTEGER,
+          error TEXT,
+          FOREIGN KEY (device_id) REFERENCES devices(id) ON DELETE CASCADE
+        )
+      `);
+
+      // Copy existing data (only valid command types will be copied)
+      db.exec(`
+        INSERT INTO device_commands
+        SELECT * FROM device_commands_old
+        WHERE type IN (${commandTypeCheck})
+      `);
+
+      db.exec(`DROP TABLE device_commands_old`);
+    }
+  } else {
+    db.exec(`
+      CREATE TABLE device_commands (
+        id TEXT PRIMARY KEY,
+        device_id TEXT NOT NULL,
+        type TEXT NOT NULL CHECK(type IN (${commandTypeCheck})),
+        payload TEXT NOT NULL,
+        status TEXT DEFAULT 'pending' CHECK(status IN ('pending', 'delivered', 'executing', 'completed', 'failed')),
+        created_at INTEGER NOT NULL,
+        delivered_at INTEGER,
+        completed_at INTEGER,
+        error TEXT,
+        FOREIGN KEY (device_id) REFERENCES devices(id) ON DELETE CASCADE
+      )
+    `);
+  }
 
   // Create indexes for command lookups
   db.exec(`
@@ -321,6 +416,27 @@ export function initializeSchema(db: Database.Database): void {
       notes TEXT,
       updated_at INTEGER
     )
+  `);
+
+  // ============================================
+  // App Packages - uploaded APKs for installation
+  // ============================================
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS app_packages (
+      id TEXT PRIMARY KEY,
+      package_name TEXT NOT NULL UNIQUE,
+      app_name TEXT,
+      version_name TEXT,
+      version_code INTEGER,
+      file_size INTEGER,
+      file_path TEXT NOT NULL,
+      uploaded_at INTEGER NOT NULL,
+      uploaded_by TEXT
+    )
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_app_packages_package ON app_packages(package_name)
   `);
 
   // ============================================

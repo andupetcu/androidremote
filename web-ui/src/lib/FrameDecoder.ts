@@ -12,6 +12,9 @@ export class FrameDecoder {
   private ctx: CanvasRenderingContext2D;
   private configured = false;
   private pendingFrames: ArrayBuffer[] = [];
+  private frameCount = 0;
+  private lastFrameTime = 0;
+  private webCodecsAvailable = false;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -20,15 +23,59 @@ export class FrameDecoder {
   }
 
   private initDecoder(): void {
-    if (!('VideoDecoder' in window)) {
-      console.error('WebCodecs VideoDecoder not supported');
+    // Check secure context first
+    if (!window.isSecureContext) {
+      console.warn('WebCodecs requires secure context (HTTPS or localhost). Current origin:', window.location.origin);
+      console.warn('To fix: access via http://localhost:5173 instead of IP address');
+      this.showFallbackMessage('Secure context required for video.\nUse localhost instead of IP.');
       return;
     }
 
+    if (!('VideoDecoder' in window)) {
+      console.error('WebCodecs VideoDecoder not supported in this browser');
+      this.showFallbackMessage('VideoDecoder not supported.\nUpdate your browser.');
+      return;
+    }
+
+    this.webCodecsAvailable = true;
     this.decoder = new VideoDecoder({
       output: (frame) => this.renderFrame(frame),
       error: (e) => console.error('Decode error:', e),
     });
+  }
+
+  private showFallbackMessage(message: string): void {
+    this.canvas.width = 400;
+    this.canvas.height = 300;
+    this.ctx.fillStyle = '#1a1a2e';
+    this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+    this.ctx.fillStyle = '#ffffff';
+    this.ctx.font = '14px monospace';
+    this.ctx.textAlign = 'center';
+
+    const lines = message.split('\n');
+    lines.forEach((line, i) => {
+      this.ctx.fillText(line, this.canvas.width / 2, 140 + i * 20);
+    });
+  }
+
+  private showFrameStats(): void {
+    // Show frame reception stats when WebCodecs isn't available
+    const now = Date.now();
+    const fps = this.lastFrameTime > 0 ? Math.round(1000 / (now - this.lastFrameTime)) : 0;
+    this.lastFrameTime = now;
+
+    this.ctx.fillStyle = '#1a1a2e';
+    this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+    this.ctx.fillStyle = '#00ff00';
+    this.ctx.font = '16px monospace';
+    this.ctx.textAlign = 'center';
+    this.ctx.fillText(`Frames received: ${this.frameCount}`, this.canvas.width / 2, 130);
+    this.ctx.fillText(`~${fps} fps`, this.canvas.width / 2, 160);
+    this.ctx.fillStyle = '#ffaa00';
+    this.ctx.font = '12px monospace';
+    this.ctx.fillText('Video arriving but decoder unavailable', this.canvas.width / 2, 200);
+    this.ctx.fillText('Use http://localhost:5173 for video', this.canvas.width / 2, 220);
   }
 
   private configure(width: number, height: number): void {
@@ -56,7 +103,13 @@ export class FrameDecoder {
    * Decode a frame received from the data channel.
    */
   decode(data: ArrayBuffer): void {
-    if (!this.decoder) return;
+    this.frameCount++;
+
+    // If WebCodecs not available, just show frame stats
+    if (!this.webCodecsAvailable || !this.decoder) {
+      this.showFrameStats();
+      return;
+    }
 
     // Configure on first keyframe if not already configured
     if (!this.configured) {
@@ -121,6 +174,8 @@ export class FrameDecoder {
     }
     this.configured = false;
     this.pendingFrames = [];
+    this.frameCount = 0;
+    this.lastFrameTime = 0;
     this.initDecoder();
   }
 
