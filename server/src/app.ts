@@ -67,13 +67,16 @@ app.use(cors({
       /^https?:\/\/172\.(1[6-9]|2\d|3[01])\.\d+\.\d+(:\d+)?$/, // Docker/private
     ];
 
-    // Also allow the same origin as the server itself (CORS_ORIGIN env var)
+    // Also allow origins from CORS_ORIGIN env var (comma-separated)
     const extraOrigins = (process.env.CORS_ORIGIN || '').split(',').map(s => s.trim()).filter(Boolean);
 
     if (allowedPatterns.some(p => p.test(origin)) || extraOrigins.includes(origin)) {
       callback(null, true);
     } else {
-      callback(new Error('Not allowed by CORS'));
+      // Don't reject — just omit CORS headers. Using callback(new Error()) would
+      // trigger the Express error handler and return 500, breaking same-origin
+      // requests where the browser sends an Origin header (e.g. POST with JSON).
+      callback(null, false);
     }
   },
   credentials: true,
@@ -97,7 +100,19 @@ function getBaseUrl(req: Request): string {
   if (process.env.BASE_URL) {
     return process.env.BASE_URL.replace(/\/$/, '');
   }
-  const protocol = req.protocol; // Respects X-Forwarded-Proto when trust proxy is set
+  // req.protocol respects X-Forwarded-Proto when trust proxy is set.
+  // However, some reverse proxies (nginx) don't set X-Forwarded-Proto by default.
+  // If we're behind a proxy (X-Forwarded-For present) and protocol is still 'http',
+  // check if the port suggests HTTPS (443) or if host is a public domain (not localhost/IP).
+  let protocol = req.protocol;
+  if (protocol === 'http' && req.get('x-forwarded-for')) {
+    const host = req.get('host') || '';
+    const isLocalhost = /^(localhost|127\.|192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)/i.test(host);
+    if (!isLocalhost && !host.match(/:\d+$/)) {
+      // Public domain without explicit port → almost certainly behind TLS-terminating proxy
+      protocol = 'https';
+    }
+  }
   const host = req.get('host') || 'localhost:7899';
   return `${protocol}://${host}`;
 }
