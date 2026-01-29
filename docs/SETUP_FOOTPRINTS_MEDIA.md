@@ -234,6 +234,18 @@ location /ws {
     proxy_send_timeout 86400s;
 }
 
+# Proxy /admin WebSocket (real-time dashboard updates)
+location /admin {
+    proxy_pass http://127.0.0.1:7899;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_read_timeout 86400s;
+    proxy_send_timeout 86400s;
+}
+
 # Proxy /api/uploads (static APK files) to the MDM server
 location /api/uploads/ {
     proxy_pass http://127.0.0.1:7899;
