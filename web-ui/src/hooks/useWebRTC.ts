@@ -14,6 +14,7 @@ export type RemoteCommand =
   | { type: 'TYPE_TEXT'; text: string }
   | { type: 'PINCH'; centerX: number; centerY: number; scale: number; durationMs?: number }
   | { type: 'SCROLL'; x: number; y: number; deltaX: number; deltaY: number }
+  | { type: 'MULTI_TAP'; x: number; y: number; count: number; intervalMs?: number }
   // MDM commands
   | { type: 'GET_DEVICE_INFO' }
   | { type: 'LOCK_DEVICE' }
