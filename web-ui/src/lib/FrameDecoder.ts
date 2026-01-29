@@ -1,7 +1,6 @@
 /**
  * H.264 NAL unit types relevant for decoding.
  */
-const NAL_TYPE_SLICE = 1;
 const NAL_TYPE_IDR = 5;
 const NAL_TYPE_SPS = 7;
 const NAL_TYPE_PPS = 8;
