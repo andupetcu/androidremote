@@ -199,8 +199,7 @@ export function useWebRTC(deviceId: string | null, signalingUrl: string): UseWeb
 
     // Create data channel (as offerer/controller)
     const dc = pc.createDataChannel('commands', {
-      ordered: false,
-      maxRetransmits: 0,
+      ordered: true,
     });
     dataChannelRef.current = dc;
 

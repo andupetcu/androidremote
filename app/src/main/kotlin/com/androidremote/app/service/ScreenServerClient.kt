@@ -43,6 +43,13 @@ class ScreenServerClient(
     private var socket: LocalSocket? = null
     private var readJob: Job? = null
     private var reconnectAttempts = 0
+    private var firstFrameReceived = false
+
+    /**
+     * Callback invoked when the server connection dies before any frames arrive.
+     * This indicates the screen server crashed during capture setup (e.g. permission issue).
+     */
+    var onEarlyDeath: (() -> Unit)? = null
 
     private val _frames = MutableSharedFlow<FrameData>(
         replay = 0,
@@ -153,6 +160,11 @@ class ScreenServerClient(
                 val isKeyFrame = (flags and FLAG_KEY_FRAME) != 0
                 val isConfig = (flags and FLAG_CONFIG) != 0
 
+                if (!firstFrameReceived) {
+                    firstFrameReceived = true
+                    Log.i(TAG, "First frame received ($size bytes, config=$isConfig, keyFrame=$isKeyFrame)")
+                }
+
                 if (isConfig) {
                     Log.d(TAG, "Received codec config ($size bytes)")
                 } else {
@@ -173,9 +185,15 @@ class ScreenServerClient(
                 Log.e(TAG, "Error reading frames: ${e.message}")
                 _isConnected = false
 
-                // Try to reconnect
-                scope.launch {
-                    reconnect()
+                if (!firstFrameReceived) {
+                    // Server died before sending any frames — likely a permission/capture issue
+                    Log.e(TAG, "Screen server died before sending any frames (capture setup failed)")
+                    onEarlyDeath?.invoke()
+                } else {
+                    // Try to reconnect
+                    scope.launch {
+                        reconnect()
+                    }
                 }
             }
         }

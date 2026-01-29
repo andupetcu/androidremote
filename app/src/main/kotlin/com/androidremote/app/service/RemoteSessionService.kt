@@ -94,6 +94,7 @@ class RemoteSessionService : Service() {
 
     // Track whether this is an auto-started session (needs automatic screen capture)
     private var isAutoStartedSession = false
+    private var isScreenCaptureActive = false
     private var screenCaptureReceiver: BroadcastReceiver? = null
 
     // Capture mode preference
@@ -181,9 +182,10 @@ class RemoteSessionService : Service() {
                 serviceScope.launch {
                     sessionController.state.collect { state ->
                         Log.d(TAG, "Session state changed: $state")
-                        if (state is SessionState.Connected && isAutoStartedSession) {
+                        if (state is SessionState.Connected && isAutoStartedSession && !isScreenCaptureActive) {
                             Log.i(TAG, "Session connected, starting screen capture")
                             isAutoStartedSession = false // Only request once
+                            isScreenCaptureActive = true
 
                             if (useScreenServer) {
                                 // Try scrcpy-style screen server first
@@ -231,6 +233,31 @@ class RemoteSessionService : Service() {
 
     private fun createSessionController(): SessionController {
         val inputHandler = InputHandler()
+
+        // Initialize coordinate mapper with current screen dimensions
+        val displayManager = getSystemService(Context.DISPLAY_SERVICE) as android.hardware.display.DisplayManager
+        val defaultDisplay = displayManager.getDisplay(android.view.Display.DEFAULT_DISPLAY)
+        val rotation = defaultDisplay?.rotation ?: android.view.Surface.ROTATION_0
+        val rotationDegrees = when (rotation) {
+            android.view.Surface.ROTATION_90 -> 90
+            android.view.Surface.ROTATION_180 -> 180
+            android.view.Surface.ROTATION_270 -> 270
+            else -> 0
+        }
+
+        // Get real screen resolution from DisplayMetrics
+        val displayMetrics = android.util.DisplayMetrics()
+        @Suppress("DEPRECATION")
+        defaultDisplay?.getRealMetrics(displayMetrics)
+        val screenWidth = displayMetrics.widthPixels
+        val screenHeight = displayMetrics.heightPixels
+
+        Log.i(TAG, "Screen config: ${screenWidth}x${screenHeight}, rotation=${rotationDegrees}°")
+        inputHandler.updateScreenConfig(
+            width = screenWidth,
+            height = screenHeight,
+            rotation = rotationDegrees
+        )
 
         // Create real provider implementations
         val accessibilityServiceProvider = InputInjectionAccessibilityProvider()
@@ -378,6 +405,19 @@ class RemoteSessionService : Service() {
      */
     private fun startScreenServerCapture() {
         serviceScope.launch {
+            // IMPORTANT: Set up the VideoStreamBridge subscription FIRST, before
+            // connecting to the screen server. This ensures no early keyframes are
+            // lost due to SharedFlow's replay=0 dropping emissions with no subscribers.
+            try {
+                Log.i(TAG, "Setting up video stream bridge (waiting for data channel)...")
+                sessionController.startVideoStream(frameDataFlow)
+                Log.i(TAG, "Video stream bridge ready, now connecting to screen server")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to set up video stream bridge", e)
+                isScreenCaptureActive = false
+                return@launch
+            }
+
             // Initialize screen server manager if needed
             if (screenServerManager == null) {
                 screenServerManager = ScreenServerManager(this@RemoteSessionService)
@@ -402,29 +442,30 @@ class RemoteSessionService : Service() {
             val client = ScreenServerClient()
             screenServerClient = client
 
+            // Handle early death: server connects but crashes during capture setup
+            client.onEarlyDeath = {
+                Log.w(TAG, "Screen server died during capture setup, falling back to MediaProjection")
+                client.disconnect()
+                screenServerClient = null
+
+                // Fall back to MediaProjection on main thread
+                serviceScope.launch {
+                    requestScreenCapturePermission()
+                }
+            }
+
             if (client.connect()) {
                 Log.i(TAG, "Connected to screen server: ${client.videoWidth}x${client.videoHeight}")
 
-                // Forward frames to WebRTC
+                // Forward frames to WebRTC — VideoStreamBridge is already subscribed
+                // to _frameDataFlow, so frames will be sent immediately
                 launch {
                     client.frames.collect { frame ->
                         _frameDataFlow.emit(frame)
                     }
                 }
 
-                // Start video streaming to session
-                try {
-                    sessionController.startVideoStream(frameDataFlow)
-                    Log.i(TAG, "Video streaming started via screen server")
-                } catch (e: Exception) {
-                    Log.e(TAG, "Failed to start video streaming", e)
-                    client.disconnect()
-                    screenServerClient = null
-
-                    // Fall back to MediaProjection
-                    Log.i(TAG, "Falling back to MediaProjection")
-                    requestScreenCapturePermission()
-                }
+                Log.i(TAG, "Video streaming started via screen server")
             } else {
                 Log.w(TAG, "Screen server not available, falling back to MediaProjection")
                 screenServerClient = null
@@ -444,6 +485,8 @@ class RemoteSessionService : Service() {
 
         screenCaptureManager?.stop()
         screenCaptureManager = null
+
+        isScreenCaptureActive = false
     }
 
     private fun createNotificationChannel() {

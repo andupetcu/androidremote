@@ -58,6 +58,8 @@ class ScreenCapture(
         // Clean up any existing capture
         release()
 
+        System.err.println("Process UID: ${android.os.Process.myUid()}, PID: ${android.os.Process.myPid()}")
+
         // Try DisplayManager first (Android 15+)
         try {
             val dm = DisplayManager.create()
@@ -72,6 +74,7 @@ class ScreenCapture(
             return
         } catch (e: Exception) {
             System.err.println("DisplayManager failed: ${e.message}")
+            e.printStackTrace(System.err)
         }
 
         // Fall back to SurfaceControl
@@ -87,7 +90,8 @@ class ScreenCapture(
             System.err.println("Display: using SurfaceControl API")
         } catch (e: Exception) {
             System.err.println("SurfaceControl failed: ${e.message}")
-            throw RuntimeException("Could not create display capture", e)
+            e.printStackTrace(System.err)
+            throw RuntimeException("Could not create display capture (UID=${android.os.Process.myUid()})", e)
         }
     }
 
