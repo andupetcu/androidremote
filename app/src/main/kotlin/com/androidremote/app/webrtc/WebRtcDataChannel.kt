@@ -32,9 +32,13 @@ class WebRtcDataChannel(
         }
         return try {
             val buffer = DataChannel.Buffer(ByteBuffer.wrap(data), true)
-            nativeChannel.send(buffer)
+            val sent = nativeChannel.send(buffer)
+            if (!sent) {
+                android.util.Log.w("WebRtcDataChannel", "send() returned false, size=${data.size}, buffered=${nativeChannel.bufferedAmount()}")
+            }
+            sent
         } catch (e: Exception) {
-            // Channel may have closed between state check and send
+            android.util.Log.e("WebRtcDataChannel", "send() threw: ${e.message}, size=${data.size}")
             false
         }
     }

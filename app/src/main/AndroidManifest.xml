@@ -154,6 +154,15 @@
             </intent-filter>
         </receiver>
 
+        <!-- Self-update receiver: restarts services after app is updated -->
+        <receiver
+            android:name=".admin.PackageUpdateReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
         <!-- Package installer result receiver -->
         <receiver
             android:name=".mdm.InstallResultReceiver"

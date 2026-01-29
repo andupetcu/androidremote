@@ -18,7 +18,8 @@ import com.androidremote.screenserver.wrappers.SurfaceControl
 class ScreenCapture(
     private val displayId: Int,
     private var maxSize: Int,
-    private val captureSize: Int = 0  // Override capture rect size (0 = auto-detect)
+    private val captureSize: Int = 0,  // Override capture rect size (0 = auto-detect)
+    private var usePhysicalSize: Boolean = false
 ) {
     private var displayInfo: DisplayInfo? = null
     private var videoSize: Size? = null
@@ -58,11 +59,29 @@ class ScreenCapture(
         System.err.println("Rotation: ${info.rotation}")
     }
 
+    /**
+     * Compute the capture rect size.
+     *
+     * SurfaceControl.setDisplayProjection's layerStackRect must match the coordinate
+     * space used by SurfaceFlinger. On most devices this is the logical display size.
+     * However, if logical and physical sizes differ (e.g. due to wm size override),
+     * the physical size may be needed.
+     *
+     * When [usePhysicalSize] is set, physical dimensions are used instead.
+     */
     private fun computeCaptureSize(info: DisplayInfo): Size {
         // If user specified an explicit capture size, use it
         if (captureSize > 0) {
             val displaySize = Size(info.width, info.height)
             return displaySize.limit(captureSize)
+        }
+
+        // Use physical dimensions if they differ from logical —
+        // SurfaceFlinger may use physical coordinates for the layer stack
+        if (usePhysicalSize && info.physicalWidth > 0 && info.physicalHeight > 0 &&
+            (info.physicalWidth != info.width || info.physicalHeight != info.height)) {
+            System.err.println("Using physical dimensions for capture: ${info.physicalWidth}x${info.physicalHeight}")
+            return Size(info.physicalWidth, info.physicalHeight)
         }
 
         // Use logical dimensions (same as physical for most devices)
@@ -148,11 +167,32 @@ class ScreenCapture(
         return true
     }
 
+    /**
+     * Enable physical dimension mode for SurfaceControl projection.
+     * Called during retry when logical dimensions fail to produce frames.
+     */
+    fun enablePhysicalSize() {
+        usePhysicalSize = true
+    }
+
     private fun createDisplay(): IBinder {
-        // Since Android 12, secure displays cannot be created with shell permissions
+        // Since Android 12, secure displays cannot be created with shell permissions.
+        // On Android 11 (SDK 30), secure=true forces GPU composition over HWC overlays,
+        // which is needed for virtual display capture. However, some SoCs (e.g. Rockchip)
+        // may not support secure virtual displays correctly.
         val secure = Build.VERSION.SDK_INT < 30 ||
                 (Build.VERSION.SDK_INT == 30 && "S" != Build.VERSION.CODENAME)
-        return SurfaceControl.createDisplay("android-remote", secure)
+        System.err.println("Creating display: secure=$secure (SDK=${Build.VERSION.SDK_INT}, codename=${Build.VERSION.CODENAME})")
+        return try {
+            SurfaceControl.createDisplay("android-remote", secure)
+        } catch (e: Exception) {
+            if (secure) {
+                System.err.println("Secure display creation failed, retrying with secure=false: ${e.message}")
+                SurfaceControl.createDisplay("android-remote", false)
+            } else {
+                throw e
+            }
+        }
     }
 
     private fun setDisplaySurface(

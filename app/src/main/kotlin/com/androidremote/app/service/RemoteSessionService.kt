@@ -441,26 +441,22 @@ class RemoteSessionService : Service() {
             }
             val manager = screenServerManager!!
 
-            // Try to auto-start screen server if not running
-            // NOTE: The screen server requires shell UID (2000) for SurfaceControl access.
-            // Runtime.exec("sh") from an app gets the app's UID, NOT shell UID.
-            // Only root (su) can actually start it with correct privileges.
-            // For non-rooted devices, the screen server must be pre-started via ADB.
-            if (!manager.isScreenServerRunning()) {
-                if (manager.isRooted()) {
-                    Log.i(TAG, "Attempting to auto-start screen server via root...")
-                    val started = manager.startScreenServer()
-                    if (started) {
-                        Log.i(TAG, "Screen server auto-started successfully via root")
-                        kotlinx.coroutines.delay(500)
-                    } else {
-                        Log.w(TAG, "Failed to auto-start screen server via root")
-                    }
+            // Always restart the screen server for a fresh session.
+            // A stuck server (e.g. SurfaceControl not rendering) can't accept new
+            // client connections because its encode loop never exits.
+            if (manager.isRooted()) {
+                Log.i(TAG, "Restarting screen server for fresh session...")
+                val started = manager.restartScreenServer()
+                if (started) {
+                    Log.i(TAG, "Screen server restarted successfully via root")
+                    kotlinx.coroutines.delay(500)
                 } else {
-                    Log.w(TAG, "Screen server not running and device is not rooted. " +
-                            "Start it via ADB: adb shell CLASSPATH=/data/local/tmp/screen-server.apk " +
-                            "app_process / com.androidremote.screenserver.Server")
+                    Log.w(TAG, "Failed to restart screen server via root")
                 }
+            } else if (!manager.isScreenServerRunning()) {
+                Log.w(TAG, "Screen server not running and device is not rooted. " +
+                        "Start it via ADB: adb shell CLASSPATH=/data/local/tmp/screen-server.apk " +
+                        "app_process / com.androidremote.screenserver.Server")
             }
 
             // Retry connecting to screen server — it may take a moment to start

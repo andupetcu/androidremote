@@ -30,6 +30,14 @@ export class FrameDecoder {
   /** Buffered SPS/PPS config data in Annex B format (with start codes). */
   private configData: Uint8Array | null = null;
 
+  /** Chunk reassembly buffer: timestamp -> { chunks, total, flags } */
+  private chunkBuffer = new Map<bigint, {
+    chunks: Map<number, Uint8Array>;
+    total: number;
+    flags: number;
+    receivedAt: number;
+  }>();
+
   /** Callback invoked when video dimensions are known (from SPS or first frame). */
   onDimensionsChanged: ((width: number, height: number) => void) | null = null;
 
@@ -121,6 +129,7 @@ export class FrameDecoder {
 
   /**
    * Decode a frame received from the data channel.
+   * Handles both single-frame and chunked messages.
    */
   decode(data: ArrayBuffer): void {
     this.frameCount++;
@@ -131,6 +140,83 @@ export class FrameDecoder {
       return;
     }
 
+    const view = new DataView(data);
+    const byte0 = view.getUint8(0);
+
+    // Check if this is a chunked message (bit 7 set)
+    if ((byte0 & 0x80) !== 0) {
+      this.handleChunk(data, view, byte0);
+      return;
+    }
+
+    this.processCompleteFrame(data);
+  }
+
+  /**
+   * Handle a chunk of a larger frame. Reassembles chunks and processes
+   * the complete frame when all chunks have arrived.
+   */
+  private handleChunk(data: ArrayBuffer, view: DataView, byte0: number): void {
+    const timestamp = view.getBigUint64(1, false);
+    const chunkIndex = view.getUint16(9, false);
+    const totalChunks = view.getUint16(11, false);
+    const chunkPayload = new Uint8Array(data, 13);
+
+    let entry = this.chunkBuffer.get(timestamp);
+    if (!entry) {
+      entry = {
+        chunks: new Map(),
+        total: totalChunks,
+        flags: byte0 & 0x7f, // strip chunk marker bit
+        receivedAt: Date.now(),
+      };
+      this.chunkBuffer.set(timestamp, entry);
+    }
+
+    entry.chunks.set(chunkIndex, chunkPayload);
+
+    if (entry.chunks.size === entry.total) {
+      // All chunks received — reassemble
+      let totalLen = 0;
+      for (const chunk of entry.chunks.values()) totalLen += chunk.length;
+
+      // Build reassembled frame with the original 9-byte header
+      const reassembled = new ArrayBuffer(9 + totalLen);
+      const headerView = new DataView(reassembled);
+      headerView.setUint8(0, entry.flags);
+      headerView.setBigUint64(1, timestamp, false);
+
+      const payload = new Uint8Array(reassembled, 9);
+      let offset = 0;
+      for (let i = 0; i < entry.total; i++) {
+        const chunk = entry.chunks.get(i)!;
+        payload.set(chunk, offset);
+        offset += chunk.length;
+      }
+
+      this.chunkBuffer.delete(timestamp);
+
+      const isKey = (entry.flags & 0x01) !== 0;
+      if (this.frameCount <= 10 || this.frameCount % 100 === 0) {
+        console.log(`FrameDecoder: reassembled ${entry.total} chunks -> ${totalLen} bytes, key=${isKey}`);
+      }
+
+      this.processCompleteFrame(reassembled);
+    }
+
+    // Garbage-collect stale incomplete frames (older than 2 seconds)
+    if (this.chunkBuffer.size > 3) {
+      const cutoff = Date.now() - 2000;
+      for (const [ts, e] of this.chunkBuffer) {
+        if (e.receivedAt < cutoff) this.chunkBuffer.delete(ts);
+      }
+    }
+  }
+
+  /**
+   * Process a complete (non-chunked or reassembled) frame.
+   */
+  private processCompleteFrame(data: ArrayBuffer): void {
     const view = new DataView(data);
     const isKeyFrame = (view.getUint8(0) & 0x01) !== 0;
 
@@ -399,6 +485,7 @@ export class FrameDecoder {
     this.configured = false;
     this.configData = null;
     this.pendingFrames = [];
+    this.chunkBuffer.clear();
     this.frameCount = 0;
     this.lastFrameTime = 0;
     this.initDecoder();

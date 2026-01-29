@@ -35,6 +35,14 @@ class ScreenServerClient(
         private const val MAX_RECONNECT_ATTEMPTS = 5
         private const val RECONNECT_DELAY_MS = 1000L
 
+        /**
+         * Timeout for the initial header read after connecting.
+         * If the screen server doesn't send the header (dimensions) within this time,
+         * the connection is considered failed. This prevents hanging when the server
+         * process is stuck in an old capture session.
+         */
+        private const val CONNECT_TIMEOUT_MS = 5_000
+
         // Frame flags
         private const val FLAG_KEY_FRAME = 0x01
         private const val FLAG_CONFIG = 0x02
@@ -82,12 +90,19 @@ class ScreenServerClient(
                 val newSocket = LocalSocket()
                 newSocket.connect(LocalSocketAddress(socketName, LocalSocketAddress.Namespace.ABSTRACT))
 
+                // Set a timeout for the initial header read to prevent hanging
+                // when the server process is stuck in an old capture session
+                newSocket.soTimeout = CONNECT_TIMEOUT_MS
+
                 // Read header (video dimensions)
                 val input = DataInputStream(newSocket.inputStream)
                 _videoWidth = input.readInt()
                 _videoHeight = input.readInt()
 
                 Log.i(TAG, "Connected to screen server: ${_videoWidth}x${_videoHeight}")
+
+                // Reset timeout — frame reads can take longer (encoder may be idle)
+                newSocket.soTimeout = 0
 
                 socket = newSocket
                 _isConnected = true

@@ -350,7 +350,15 @@ class CommandPollingService : Service() {
             urlPath
         }
 
-        Log.d(TAG, "Installing APK from: $url (autoStart=$autoStartAfterInstall, foreground=$foregroundApp, bootStart=$autoStartOnBoot)")
+        // Self-update: when installing our own package, the process will be killed.
+        // Ensure auto-restart by saving boot preference BEFORE installing.
+        val isSelfUpdate = packageName == applicationContext.packageName
+        if (isSelfUpdate) {
+            Log.i(TAG, "Self-update detected — saving boot-start preference before install")
+            saveBootStartApp(packageName, false)
+        }
+
+        Log.d(TAG, "Installing APK from: $url (autoStart=$autoStartAfterInstall, foreground=$foregroundApp, bootStart=$autoStartOnBoot, selfUpdate=$isSelfUpdate)")
 
         val installResult = silentInstaller.installFromUrl(url, packageName)
 

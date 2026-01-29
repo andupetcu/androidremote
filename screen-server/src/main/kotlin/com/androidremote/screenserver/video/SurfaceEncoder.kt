@@ -28,6 +28,13 @@ class SurfaceEncoder(
         private const val REPEAT_FRAME_DELAY_US = 100_000L // 100ms
         private const val MAX_CONSECUTIVE_ERRORS = 3
 
+        /**
+         * Maximum time to wait for the first real (non-config) frame.
+         * If SurfaceControl fails to render content to the encoder surface,
+         * the encode loop will exit after this timeout instead of hanging forever.
+         */
+        private const val FIRST_FRAME_TIMEOUT_MS = 5_000L
+
         // Fallback sizes in descending order
         private val MAX_SIZE_FALLBACK = intArrayOf(2560, 1920, 1600, 1280, 1024, 800)
     }
@@ -35,6 +42,7 @@ class SurfaceEncoder(
     private val stopped = AtomicBoolean(false)
     private var firstFrameSent = false
     private var consecutiveErrors = 0
+    private var triedPhysicalSize = false
 
     /**
      * Start encoding. This blocks until stopped or error.
@@ -119,6 +127,7 @@ class SurfaceEncoder(
 
     private fun encodeLoop(codec: MediaCodec) {
         val bufferInfo = MediaCodec.BufferInfo()
+        val loopStartTime = System.currentTimeMillis()
 
         while (!stopped.get()) {
             val outputBufferId = codec.dequeueOutputBuffer(bufferInfo, 10_000) // 10ms timeout
@@ -146,6 +155,17 @@ class SurfaceEncoder(
                     codec.releaseOutputBuffer(outputBufferId, false)
                 }
             }
+
+            // Timeout: if no real frame produced within the deadline, abort.
+            // This prevents the server from getting stuck when SurfaceControl
+            // fails to render content (e.g. on some Rockchip devices).
+            if (!firstFrameSent) {
+                val elapsed = System.currentTimeMillis() - loopStartTime
+                if (elapsed > FIRST_FRAME_TIMEOUT_MS) {
+                    System.err.println("No video frames produced after ${elapsed}ms — SurfaceControl may not be rendering")
+                    throw IOException("Timed out waiting for first video frame from SurfaceControl")
+                }
+            }
         }
     }
 
@@ -159,7 +179,16 @@ class SurfaceEncoder(
             return true
         }
 
-        // Retry with smaller size
+        // First retry: try physical dimensions (SurfaceFlinger may use physical
+        // coordinate space on some devices like Rockchip)
+        if (!triedPhysicalSize) {
+            triedPhysicalSize = true
+            capture.enablePhysicalSize()
+            System.err.println("Retrying with physical display dimensions...")
+            return true
+        }
+
+        // Subsequent retries: try smaller sizes
         val newMaxSize = chooseMaxSizeFallback(currentSize)
         if (newMaxSize == 0) {
             return false
@@ -243,7 +272,14 @@ class SurfaceEncoder(
         packet.put(data)
 
         output.write(packet.array())
-        // Don't flush every packet - batching is more efficient
+
+        // Flush config and keyframes immediately to ensure the client receives
+        // them promptly. Regular frames batch for efficiency.
+        val isConfig = (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0
+        val isKeyFrame = (info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0
+        if (isConfig || isKeyFrame) {
+            output.flush()
+        }
     }
 
     private fun getFlags(info: MediaCodec.BufferInfo): Int {

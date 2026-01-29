@@ -65,6 +65,16 @@ android {
     }
 }
 
+// Copy screen-server APK into app assets so it can be auto-deployed on device
+val copyScreenServer = tasks.register<Copy>("copyScreenServerApk") {
+    from(project(":screen-server").layout.buildDirectory.file("outputs/apk/debug/screen-server-debug.apk"))
+    into(layout.projectDirectory.dir("src/main/assets"))
+    rename { "screen-server.apk" }
+}
+tasks.matching { it.name.startsWith("merge") && it.name.endsWith("Assets") }.configureEach {
+    dependsOn(copyScreenServer)
+}
+
 dependencies {
     // Core modules
     implementation(project(":core-crypto"))
