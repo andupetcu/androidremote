@@ -178,7 +178,7 @@ class RemoteSessionService : Service() {
 
             Log.i(TAG, "Auto-start: serverUrl=$serverUrl, deviceId=$deviceId, hasToken=${sessionToken != null}")
 
-            if (serverUrl != null && sessionToken != null && deviceId != null) {
+            if (serverUrl != null && deviceId != null) {
                 // Clean up any previous capture state from a prior session
                 if (isScreenCaptureActive) {
                     Log.i(TAG, "Cleaning up previous screen capture before new session")
@@ -218,7 +218,7 @@ class RemoteSessionService : Service() {
                 serviceScope.launch {
                     try {
                         Log.i(TAG, "Calling sessionController.connect($serverUrl, token, $deviceId)")
-                        sessionController.connect(serverUrl, sessionToken, deviceId)
+                        sessionController.connect(serverUrl, sessionToken ?: "", deviceId)
                         Log.i(TAG, "sessionController.connect returned")
                     } catch (e: Exception) {
                         Log.e(TAG, "Auto-connect failed", e)
