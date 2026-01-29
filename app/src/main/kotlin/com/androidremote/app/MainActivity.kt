@@ -198,8 +198,10 @@ class MainActivity : AppCompatActivity() {
                     return@setPositiveButton
                 }
 
-                // Build and save URL
-                val newUrl = "http://$address:$port"
+                // Build and save URL (HTTPS for port 443, HTTP otherwise)
+                val scheme = if (port == 443) "https" else "http"
+                val defaultPort = if (port == 443) 443 else 80
+                val newUrl = if (port == defaultPort) "$scheme://$address" else "$scheme://$address:$port"
                 sessionStorage.saveServerUrl(newUrl)
 
                 // Reinitialize API clients

@@ -26,7 +26,7 @@
     <string name="server_settings">Server Settings</string>
     <string name="server_address">Server Address</string>
     <string name="server_port">Port</string>
-    <string name="server_settings_hint">Enter the IP address or hostname of your MDM server</string>
+    <string name="server_settings_hint">Enter IP or hostname. Port 443 uses HTTPS automatically.</string>
     <string name="save">Save</string>
     <string name="cancel">Cancel</string>
     <string name="error_invalid_address">Please enter a valid server address</string>
