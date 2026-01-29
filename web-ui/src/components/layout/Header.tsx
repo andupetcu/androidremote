@@ -1,4 +1,4 @@
-import { useLocation, Link } from 'react-router-dom';
+import { useLocation, Link, useNavigate } from 'react-router-dom';
 import {
   makeStyles,
   tokens,
@@ -9,7 +9,8 @@ import {
   BreadcrumbButton,
   Button,
 } from '@fluentui/react-components';
-import { AlertRegular } from '@fluentui/react-icons';
+import { AlertRegular, SignOutRegular } from '@fluentui/react-icons';
+import { useAuth } from '../../hooks/useAuth';
 
 interface HeaderProps {
   unreadEvents?: number;
@@ -109,7 +110,14 @@ const useStyles = makeStyles({
 export function Header({ unreadEvents = 0, onNotificationClick }: HeaderProps) {
   const styles = useStyles();
   const location = useLocation();
+  const navigate = useNavigate();
+  const { username, logout } = useAuth();
   const breadcrumbs = getBreadcrumbs(location.pathname);
+
+  const handleLogout = () => {
+    logout();
+    navigate('/login');
+  };
 
   return (
     <header className={styles.header}>
@@ -150,6 +158,15 @@ export function Header({ unreadEvents = 0, onNotificationClick }: HeaderProps) {
             />
           )}
         </Button>
+        {username && (
+          <Button
+            appearance="subtle"
+            icon={<SignOutRegular />}
+            onClick={handleLogout}
+          >
+            {username}
+          </Button>
+        )}
       </div>
     </header>
   );

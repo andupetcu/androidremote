@@ -176,6 +176,7 @@ export function initializeSchema(db: Database.Database): void {
 
   const policyMigrations = [
     { name: 'silent_mode', type: 'INTEGER DEFAULT 0' },
+    { name: 'is_default', type: 'INTEGER DEFAULT 0' },
   ];
 
   for (const col of policyMigrations) {
@@ -511,6 +512,16 @@ export function initializeSchema(db: Database.Database): void {
 
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_file_transfers_status ON file_transfers(status) WHERE status IN ('pending', 'transferring')
+  `);
+
+  // ============================================
+  // Settings (key-value store)
+  // ============================================
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS settings (
+      key TEXT PRIMARY KEY,
+      value TEXT
+    )
   `);
 
   // ============================================

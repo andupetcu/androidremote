@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-
-const API_BASE_URL = import.meta.env.DEV ? 'http://localhost:7899' : '';
+import { API_BASE, apiFetch } from '../utils/api';
 
 export interface Device {
   id: string;
@@ -40,7 +39,7 @@ export function useDevices(): UseDevicesResult {
       }
       setError(null);
 
-      const response = await fetch(`${API_BASE_URL}/api/devices`);
+      const response = await apiFetch(`${API_BASE}/api/devices`);
       if (!response.ok) {
         throw new Error('Failed to fetch devices');
       }
@@ -56,7 +55,7 @@ export function useDevices(): UseDevicesResult {
 
   const unenrollDevice = useCallback(async (id: string): Promise<boolean> => {
     try {
-      const response = await fetch(`${API_BASE_URL}/api/devices/${id}`, {
+      const response = await apiFetch(`${API_BASE}/api/devices/${id}`, {
         method: 'DELETE',
       });
 
@@ -119,7 +118,7 @@ export function useDevice(deviceId: string | undefined): UseDeviceResult {
       }
       setError(null);
 
-      const response = await fetch(`${API_BASE_URL}/api/devices/${deviceId}`);
+      const response = await apiFetch(`${API_BASE}/api/devices/${deviceId}`);
       if (!response.ok) {
         if (response.status === 404) {
           throw new Error('Device not found');

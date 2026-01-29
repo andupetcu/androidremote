@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react';
 import { makeStyles, mergeClasses } from '@fluentui/react-components';
-
-const API_BASE = import.meta.env.DEV ? 'http://localhost:7899' : '';
+import { API_BASE, apiFetch } from '../utils/api';
 
 interface EnrollmentToken {
   id: string;
@@ -169,7 +168,7 @@ export function SettingsPage() {
 
   const fetchTokens = async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/enroll/tokens`);
+      const res = await apiFetch(`${API_BASE}/api/enroll/tokens`);
       const data = await res.json();
       setTokens(data.tokens || []);
     } catch (err) {
@@ -181,7 +180,7 @@ export function SettingsPage() {
 
   const handleCreateToken = async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/enroll/tokens`, {
+      const res = await apiFetch(`${API_BASE}/api/enroll/tokens`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({}),
@@ -196,7 +195,7 @@ export function SettingsPage() {
 
   const handleRevokeToken = async (tokenId: string) => {
     try {
-      await fetch(`${API_BASE}/api/enroll/tokens/${tokenId}`, {
+      await apiFetch(`${API_BASE}/api/enroll/tokens/${tokenId}`, {
         method: 'DELETE',
       });
       fetchTokens();

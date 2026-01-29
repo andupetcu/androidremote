@@ -19,6 +19,7 @@ import { LocalStorageProvider, setStorageProvider, getStorageProvider } from './
 import * as appPackageStore from './services/appPackageStore';
 import { syncRequiredApps, syncPolicyRequiredApps } from './services/appSyncService';
 import { getDatabase } from './db/connection';
+import { authMiddleware, loginHandler, changePasswordHandler } from './middleware/auth';
 
 // Initialize storage provider
 const uploadsDir = path.join(__dirname, '..', 'uploads');
@@ -89,6 +90,63 @@ app.use((req: Request, _res: Response, next: NextFunction) => {
     console.log(`[HTTP] ${req.method} ${req.path}`);
   }
   next();
+});
+
+// ============================================
+// Authentication endpoints (public)
+// ============================================
+app.post('/api/auth/login', loginHandler);
+app.get('/api/auth/verify', authMiddleware, (_req: Request, res: Response) => {
+  res.json({ valid: true });
+});
+app.put('/api/auth/password', authMiddleware, changePasswordHandler);
+
+// ============================================
+// Auth middleware for admin API routes
+// Exempt: device-facing endpoints, pairing, enrollment, health, static uploads
+// ============================================
+app.use('/api', (req: Request, res: Response, next: NextFunction) => {
+  // Public routes that don't require auth
+  const publicPrefixes = [
+    '/api/auth/',           // Auth endpoints handled above
+    '/api/pair/',           // Device pairing
+    '/api/enroll/',         // Device enrollment
+    '/api/uploads/',        // Static file serving
+  ];
+  const publicExact = [
+    '/api/health',
+  ];
+
+  // Device-facing endpoints (devices call these with their own session tokens)
+  const devicePrefixes = [
+    '/api/devices/',        // Heartbeat, command polling, telemetry reporting, app reporting
+  ];
+
+  const path = req.path;
+
+  // Skip auth for public routes
+  if (publicExact.includes(path)) return next();
+  if (publicPrefixes.some(p => path.startsWith(p))) return next();
+
+  // Skip auth for device-facing POST/PATCH endpoints (heartbeat, telemetry, apps, commands ack)
+  if (devicePrefixes.some(p => path.startsWith(p))) {
+    const deviceFacingMethods = ['POST', 'PATCH'];
+    const deviceFacingPaths = ['/heartbeat', '/telemetry', '/apps', '/commands/pending', '/events'];
+    if (deviceFacingMethods.includes(req.method) && deviceFacingPaths.some(dp => path.includes(dp))) {
+      return next();
+    }
+    // GET pending commands is device-facing
+    if (req.method === 'GET' && path.includes('/commands/pending')) {
+      return next();
+    }
+    // GET policy is device-facing
+    if (req.method === 'GET' && path.includes('/policy')) {
+      return next();
+    }
+  }
+
+  // All other /api routes require auth
+  authMiddleware(req, res, next);
 });
 
 /**
@@ -1264,6 +1322,7 @@ app.post('/api/policies', (req: Request, res: Response) => {
       allowOtaUpdates: body.allowOtaUpdates ?? body.otaUpdatesEnabled,
       allowDateTimeChange: body.allowDateTimeChange,
       requiredApps: body.requiredApps,
+      isDefault: body.isDefault,
     };
 
     const policy = policyStore.createPolicy(input);
@@ -1370,6 +1429,9 @@ app.put('/api/policies/:id', (req: Request, res: Response) => {
 
     // Required apps
     if (body.requiredApps !== undefined) input.requiredApps = body.requiredApps;
+
+    // Default policy
+    if (body.isDefault !== undefined) input.isDefault = body.isDefault;
 
     // Sound/Notifications
     if (body.silentMode !== undefined) input.silentMode = body.silentMode;

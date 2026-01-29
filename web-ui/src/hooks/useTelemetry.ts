@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import type { DeviceTelemetry, TelemetryHistory } from '../types/api';
-
-const API_BASE = import.meta.env.DEV ? 'http://localhost:7899' : '';
+import { API_BASE, apiFetch } from '../utils/api';
 
 interface UseTelemetryResult {
   telemetry: DeviceTelemetry | null;
@@ -18,7 +17,7 @@ export function useTelemetry(deviceId: string): UseTelemetryResult {
   const refresh = useCallback(async () => {
     try {
       setError(null);
-      const res = await fetch(`${API_BASE}/api/devices/${deviceId}/telemetry`);
+      const res = await apiFetch(`${API_BASE}/api/devices/${deviceId}/telemetry`);
       if (!res.ok) throw new Error('Failed to fetch telemetry');
       const data = await res.json();
 
@@ -90,7 +89,7 @@ export function useTelemetryHistory(
       if (from) params.set('from', from.toString());
       if (to) params.set('to', to.toString());
       const url = `${API_BASE}/api/devices/${deviceId}/telemetry/history?${params}`;
-      const res = await fetch(url);
+      const res = await apiFetch(url);
       if (!res.ok) throw new Error('Failed to fetch telemetry history');
       const data = await res.json();
       setHistory(data.history);
@@ -123,7 +122,7 @@ export function useAllTelemetry(): UseAllTelemetryResult {
   const refresh = useCallback(async () => {
     try {
       setError(null);
-      const res = await fetch(`${API_BASE}/api/telemetry`);
+      const res = await apiFetch(`${API_BASE}/api/telemetry`);
       if (!res.ok) throw new Error('Failed to fetch telemetry');
       const data = await res.json();
       setTelemetry(data.telemetry);

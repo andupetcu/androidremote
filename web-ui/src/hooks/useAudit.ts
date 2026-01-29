@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import type { AuditLog, AuditAction, ActorType, ResourceType } from '../types/api';
-
-const API_BASE = import.meta.env.DEV ? 'http://localhost:7899' : '';
+import { API_BASE, apiFetch } from '../utils/api';
 
 interface AuditFilters {
   actorType?: ActorType;
@@ -49,7 +48,7 @@ export function useAudit(filters?: AuditFilters): UseAuditResult {
       setError(null);
       const params = buildParams();
       const url = `${API_BASE}/api/audit?${params}`;
-      const res = await fetch(url);
+      const res = await apiFetch(url);
       if (!res.ok) throw new Error('Failed to fetch audit logs');
       const data = await res.json();
       setLogs(data.logs);
@@ -70,7 +69,7 @@ export function useAudit(filters?: AuditFilters): UseAuditResult {
     params.set('format', 'csv');
     const url = `${API_BASE}/api/audit/export?${params}`;
 
-    const res = await fetch(url);
+    const res = await apiFetch(url);
     if (!res.ok) throw new Error('Failed to export audit logs');
 
     const blob = await res.blob();
@@ -102,7 +101,7 @@ export function useDeviceAudit(deviceId: string): UseDeviceAuditResult {
   const refresh = useCallback(async () => {
     try {
       setError(null);
-      const res = await fetch(`${API_BASE}/api/audit?resourceType=device&resourceId=${deviceId}`);
+      const res = await apiFetch(`${API_BASE}/api/audit?resourceType=device&resourceId=${deviceId}`);
       if (!res.ok) throw new Error('Failed to fetch device audit logs');
       const data = await res.json();
       setLogs(data.logs);

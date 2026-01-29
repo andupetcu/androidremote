@@ -18,6 +18,7 @@ export interface Policy {
   name: string;
   description: string | null;
   priority: number;
+  isDefault: boolean;
 
   // Kiosk
   kioskMode: boolean;
@@ -77,6 +78,7 @@ export interface PolicyInput {
   name: string;
   description?: string;
   priority?: number;
+  isDefault?: boolean;
 
   kioskMode?: boolean;
   kioskPackage?: string;
@@ -125,6 +127,7 @@ interface PolicyRow {
   name: string;
   description: string | null;
   priority: number;
+  is_default: number;
 
   kiosk_mode: number;
   kiosk_package: string | null;
@@ -214,9 +217,14 @@ class PolicyStore {
     const now = Date.now();
     const id = this.generateId();
 
+    // If setting this policy as default, clear default on all others
+    if (input.isDefault) {
+      db.prepare('UPDATE policies SET is_default = 0 WHERE is_default = 1').run();
+    }
+
     db.prepare(`
       INSERT INTO policies (
-        id, name, description, priority,
+        id, name, description, priority, is_default,
         kiosk_mode, kiosk_package, kiosk_exit_password,
         app_whitelist, app_blacklist, allow_unknown_sources, allow_play_store,
         password_required, password_min_length, password_require_numeric, password_require_symbol,
@@ -227,12 +235,13 @@ class PolicyStore {
         allow_factory_reset, allow_ota_updates, allow_date_time_change,
         required_apps, silent_mode,
         created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       input.name,
       input.description ?? null,
       input.priority ?? 0,
+      input.isDefault ? 1 : 0,
       input.kioskMode ? 1 : 0,
       input.kioskPackage ?? null,
       input.kioskExitPassword ?? null,
@@ -305,11 +314,17 @@ class PolicyStore {
     const existing = this.getPolicy(id);
     if (!existing) return null;
 
+    // If setting this policy as default, clear default on all others
+    if (updates.isDefault) {
+      db.prepare('UPDATE policies SET is_default = 0 WHERE is_default = 1').run();
+    }
+
     db.prepare(`
       UPDATE policies SET
         name = ?,
         description = ?,
         priority = ?,
+        is_default = ?,
         kiosk_mode = ?,
         kiosk_package = ?,
         kiosk_exit_password = ?,
@@ -348,6 +363,7 @@ class PolicyStore {
       updates.name ?? existing.name,
       updates.description !== undefined ? updates.description : existing.description,
       updates.priority ?? existing.priority,
+      updates.isDefault !== undefined ? (updates.isDefault ? 1 : 0) : (existing.isDefault ? 1 : 0),
       updates.kioskMode !== undefined ? (updates.kioskMode ? 1 : 0) : (existing.kioskMode ? 1 : 0),
       updates.kioskPackage !== undefined ? updates.kioskPackage : existing.kioskPackage,
       updates.kioskExitPassword !== undefined ? updates.kioskExitPassword : existing.kioskExitPassword,
@@ -416,6 +432,11 @@ class PolicyStore {
     this.initialize();
     const db = this.getDb();
 
+    // First try to find explicitly marked default policy
+    const defaultRow = db.prepare('SELECT * FROM policies WHERE is_default = 1 LIMIT 1').get() as PolicyRow | undefined;
+    if (defaultRow) return this.rowToPolicy(defaultRow);
+
+    // Fall back to lowest priority
     const row = db.prepare('SELECT * FROM policies ORDER BY priority ASC, created_at ASC LIMIT 1').get() as PolicyRow | undefined;
     if (!row) return null;
     return this.rowToPolicy(row);
@@ -436,6 +457,7 @@ class PolicyStore {
       name: row.name,
       description: row.description,
       priority: row.priority,
+      isDefault: row.is_default === 1,
       kioskMode: row.kiosk_mode === 1,
       kioskPackage: row.kiosk_package,
       kioskExitPassword: row.kiosk_exit_password,

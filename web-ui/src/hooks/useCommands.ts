@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import type { DeviceCommand, CommandType, CommandStatus } from '../types/api';
-
-const API_BASE = import.meta.env.DEV ? 'http://localhost:7899' : '';
+import { API_BASE, apiFetch } from '../utils/api';
 
 interface CommandPayload {
   [key: string]: unknown;
@@ -29,7 +28,7 @@ export function useCommands(deviceId?: string, status?: CommandStatus): UseComma
       if (status) params.set('status', status);
 
       const url = `${API_BASE}/api/commands?${params}`;
-      const res = await fetch(url);
+      const res = await apiFetch(url);
       if (!res.ok) throw new Error('Failed to fetch commands');
       const data = await res.json();
       setCommands(data.commands);
@@ -49,7 +48,7 @@ export function useCommands(deviceId?: string, status?: CommandStatus): UseComma
     type: CommandType,
     payload: CommandPayload = {}
   ): Promise<DeviceCommand> => {
-    const res = await fetch(`${API_BASE}/api/commands`, {
+    const res = await apiFetch(`${API_BASE}/api/commands`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ deviceId: targetDeviceId, type, payload }),
@@ -61,7 +60,7 @@ export function useCommands(deviceId?: string, status?: CommandStatus): UseComma
   };
 
   const cancelCommand = async (commandId: string): Promise<void> => {
-    const res = await fetch(`${API_BASE}/api/commands/${commandId}/cancel`, {
+    const res = await apiFetch(`${API_BASE}/api/commands/${commandId}/cancel`, {
       method: 'POST',
     });
     if (!res.ok) throw new Error('Failed to cancel command');
@@ -87,7 +86,7 @@ export function useDeviceCommands(deviceId: string): UseDeviceCommandsResult {
   const refresh = useCallback(async () => {
     try {
       setError(null);
-      const res = await fetch(`${API_BASE}/api/devices/${deviceId}/commands`);
+      const res = await apiFetch(`${API_BASE}/api/devices/${deviceId}/commands`);
       if (!res.ok) throw new Error('Failed to fetch device commands');
       const data = await res.json();
       setCommands(data.commands);
@@ -106,7 +105,7 @@ export function useDeviceCommands(deviceId: string): UseDeviceCommandsResult {
     type: CommandType,
     payload: CommandPayload = {}
   ): Promise<DeviceCommand> => {
-    const res = await fetch(`${API_BASE}/api/commands`, {
+    const res = await apiFetch(`${API_BASE}/api/commands`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ deviceId, type, payload }),

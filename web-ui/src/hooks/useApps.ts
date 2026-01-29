@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import type { AppInfo, AppCatalogEntry } from '../types/api';
-
-const API_BASE = import.meta.env.DEV ? 'http://localhost:7899' : '';
+import { API_BASE, apiFetch } from '../utils/api';
 
 interface UseDeviceAppsResult {
   apps: AppInfo[];
@@ -18,7 +17,7 @@ export function useDeviceApps(deviceId: string): UseDeviceAppsResult {
   const refresh = useCallback(async () => {
     try {
       setError(null);
-      const res = await fetch(`${API_BASE}/api/devices/${deviceId}/apps`);
+      const res = await apiFetch(`${API_BASE}/api/devices/${deviceId}/apps`);
       if (!res.ok) throw new Error('Failed to fetch device apps');
       const data = await res.json();
       setApps(data.apps);
@@ -55,7 +54,7 @@ export function useAppCatalog(): UseAppCatalogResult {
   const refresh = useCallback(async () => {
     try {
       setError(null);
-      const res = await fetch(`${API_BASE}/api/apps`);
+      const res = await apiFetch(`${API_BASE}/api/apps`);
       if (!res.ok) throw new Error('Failed to fetch app catalog');
       const data = await res.json();
       setApps(data.apps);
@@ -71,7 +70,7 @@ export function useAppCatalog(): UseAppCatalogResult {
   }, [refresh]);
 
   const setAppStatus = async (packageName: string, status: 'approved' | 'blocked' | 'pending'): Promise<void> => {
-    const res = await fetch(`${API_BASE}/api/apps/${encodeURIComponent(packageName)}`, {
+    const res = await apiFetch(`${API_BASE}/api/apps/${encodeURIComponent(packageName)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ status }),
@@ -89,7 +88,7 @@ export function useAppCatalog(): UseAppCatalogResult {
   };
 
   const updateNotes = async (packageName: string, notes: string): Promise<void> => {
-    const res = await fetch(`${API_BASE}/api/apps/${encodeURIComponent(packageName)}`, {
+    const res = await apiFetch(`${API_BASE}/api/apps/${encodeURIComponent(packageName)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ adminNotes: notes }),
@@ -119,8 +118,8 @@ export function useAppDetails(packageName: string): UseAppDetailsResult {
     try {
       setError(null);
       const [appRes, devicesRes] = await Promise.all([
-        fetch(`${API_BASE}/api/apps/${encodeURIComponent(packageName)}`),
-        fetch(`${API_BASE}/api/apps/${encodeURIComponent(packageName)}/devices`),
+        apiFetch(`${API_BASE}/api/apps/${encodeURIComponent(packageName)}`),
+        apiFetch(`${API_BASE}/api/apps/${encodeURIComponent(packageName)}/devices`),
       ]);
 
       if (!appRes.ok) throw new Error('Failed to fetch app details');
@@ -185,7 +184,7 @@ export function useAppPackages(): UseAppPackagesResult {
   const refresh = useCallback(async () => {
     try {
       setError(null);
-      const res = await fetch(`${API_BASE}/api/apps/packages`);
+      const res = await apiFetch(`${API_BASE}/api/apps/packages`);
       if (!res.ok) throw new Error('Failed to fetch app packages');
       const data = await res.json();
       setPackages(data.packages);
@@ -211,7 +210,7 @@ export function useAppPackages(): UseAppPackagesResult {
     if (metadata.versionName) formData.append('versionName', metadata.versionName);
     if (metadata.versionCode) formData.append('versionCode', String(metadata.versionCode));
 
-    const res = await fetch(`${API_BASE}/api/apps/upload`, {
+    const res = await apiFetch(`${API_BASE}/api/apps/upload`, {
       method: 'POST',
       body: formData,
     });
@@ -225,7 +224,7 @@ export function useAppPackages(): UseAppPackagesResult {
   };
 
   const deletePackage = async (packageName: string): Promise<void> => {
-    const res = await fetch(`${API_BASE}/api/apps/packages/${encodeURIComponent(packageName)}`, {
+    const res = await apiFetch(`${API_BASE}/api/apps/packages/${encodeURIComponent(packageName)}`, {
       method: 'DELETE',
     });
     if (!res.ok) throw new Error('Failed to delete package');
@@ -236,7 +235,7 @@ export function useAppPackages(): UseAppPackagesResult {
     packageName: string,
     deviceIds: string[]
   ): Promise<{ commands: unknown[] }> => {
-    const res = await fetch(`${API_BASE}/api/apps/packages/${encodeURIComponent(packageName)}/install`, {
+    const res = await apiFetch(`${API_BASE}/api/apps/packages/${encodeURIComponent(packageName)}/install`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ deviceIds }),

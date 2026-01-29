@@ -1,6 +1,9 @@
+import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { makeStyles, mergeClasses } from '@fluentui/react-components';
 import { useDevices } from '../hooks/useDevices';
+import { Button } from '../components/ui/Button';
+import { API_BASE, apiFetch } from '../utils/api';
 
 const useStyles = makeStyles({
   root: {
@@ -135,6 +138,27 @@ const useStyles = makeStyles({
 export function DevicesPage() {
   const styles = useStyles();
   const { devices, loading, error, unenrollDevice } = useDevices();
+  const [syncing, setSyncing] = useState(false);
+
+  const handleReapplyAll = async () => {
+    if (!confirm('Reapply policies to all devices?')) return;
+    setSyncing(true);
+    try {
+      await Promise.all(
+        devices.map((d) =>
+          apiFetch(`${API_BASE}/api/commands`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ deviceId: d.id, type: 'SYNC_POLICY', payload: {} }),
+          })
+        )
+      );
+    } catch (err) {
+      console.error('Failed to reapply policies:', err);
+    } finally {
+      setSyncing(false);
+    }
+  };
 
   const handleUnenroll = async (id: string, name: string) => {
     if (confirm(`Are you sure you want to unenroll "${name}"? This action cannot be undone.`)) {
@@ -153,7 +177,14 @@ export function DevicesPage() {
   return (
     <div className={styles.root}>
       <div className={styles.header}>
-        <h1 className={styles.headerTitle}>Devices</h1>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+          <h1 className={styles.headerTitle}>Devices</h1>
+          {devices.length > 0 && (
+            <Button variant="secondary" size="sm" loading={syncing} onClick={handleReapplyAll}>
+              Reapply All Policies
+            </Button>
+          )}
+        </div>
         <div className={styles.stats}>
           <span className={styles.stat}>
             <span className={styles.statValue}>{devices.length}</span>

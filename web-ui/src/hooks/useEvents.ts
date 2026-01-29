@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import type { DeviceEvent, EventSeverity, DeviceEventType } from '../types/api';
-
-const API_BASE = import.meta.env.DEV ? 'http://localhost:7899' : '';
+import { API_BASE, apiFetch } from '../utils/api';
 
 interface EventFilters {
   deviceId?: string;
@@ -38,7 +37,7 @@ export function useEvents(filters?: EventFilters): UseEventsResult {
       if (filters?.to) params.set('to', filters.to.toString());
 
       const url = `${API_BASE}/api/events?${params}`;
-      const res = await fetch(url);
+      const res = await apiFetch(url);
       if (!res.ok) throw new Error('Failed to fetch events');
       const data = await res.json();
       setEvents(data.events);
@@ -54,7 +53,7 @@ export function useEvents(filters?: EventFilters): UseEventsResult {
   }, [refresh]);
 
   const acknowledge = async (eventId: string): Promise<void> => {
-    const res = await fetch(`${API_BASE}/api/events/${eventId}/acknowledge`, {
+    const res = await apiFetch(`${API_BASE}/api/events/${eventId}/acknowledge`, {
       method: 'POST',
     });
     if (!res.ok) throw new Error('Failed to acknowledge event');
@@ -64,7 +63,7 @@ export function useEvents(filters?: EventFilters): UseEventsResult {
   const acknowledgeMultiple = async (eventIds: string[]): Promise<void> => {
     await Promise.all(
       eventIds.map((id) =>
-        fetch(`${API_BASE}/api/events/${id}/acknowledge`, { method: 'POST' })
+        apiFetch(`${API_BASE}/api/events/${id}/acknowledge`, { method: 'POST' })
       )
     );
     await refresh();
@@ -88,7 +87,7 @@ export function useDeviceEvents(deviceId: string): UseDeviceEventsResult {
   const refresh = useCallback(async () => {
     try {
       setError(null);
-      const res = await fetch(`${API_BASE}/api/devices/${deviceId}/events`);
+      const res = await apiFetch(`${API_BASE}/api/devices/${deviceId}/events`);
       if (!res.ok) throw new Error('Failed to fetch device events');
       const data = await res.json();
       setEvents(data.events);
@@ -126,7 +125,7 @@ export function useEventStats(): UseEventStatsResult {
   const refresh = useCallback(async () => {
     try {
       setError(null);
-      const res = await fetch(`${API_BASE}/api/events/stats`);
+      const res = await apiFetch(`${API_BASE}/api/events/stats`);
       if (!res.ok) throw new Error('Failed to fetch event stats');
       const data = await res.json();
       setStats(data.stats);

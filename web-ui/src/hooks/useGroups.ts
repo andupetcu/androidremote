@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import type { Group, GroupInput, Device } from '../types/api';
-
-const API_BASE = import.meta.env.DEV ? 'http://localhost:7899' : '';
+import { API_BASE, apiFetch } from '../utils/api';
 
 interface UseGroupsResult {
   groups: Group[];
@@ -21,7 +20,7 @@ export function useGroups(): UseGroupsResult {
   const refresh = useCallback(async () => {
     try {
       setError(null);
-      const res = await fetch(`${API_BASE}/api/groups`);
+      const res = await apiFetch(`${API_BASE}/api/groups`);
       if (!res.ok) throw new Error('Failed to fetch groups');
       const data = await res.json();
       setGroups(data.groups);
@@ -37,7 +36,7 @@ export function useGroups(): UseGroupsResult {
   }, [refresh]);
 
   const createGroup = async (input: GroupInput): Promise<Group> => {
-    const res = await fetch(`${API_BASE}/api/groups`, {
+    const res = await apiFetch(`${API_BASE}/api/groups`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(input),
@@ -49,7 +48,7 @@ export function useGroups(): UseGroupsResult {
   };
 
   const updateGroup = async (id: string, input: Partial<GroupInput>): Promise<Group> => {
-    const res = await fetch(`${API_BASE}/api/groups/${id}`, {
+    const res = await apiFetch(`${API_BASE}/api/groups/${id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(input),
@@ -61,7 +60,7 @@ export function useGroups(): UseGroupsResult {
   };
 
   const deleteGroup = async (id: string): Promise<boolean> => {
-    const res = await fetch(`${API_BASE}/api/groups/${id}`, {
+    const res = await apiFetch(`${API_BASE}/api/groups/${id}`, {
       method: 'DELETE',
     });
     if (!res.ok) throw new Error('Failed to delete group');
@@ -92,8 +91,8 @@ export function useGroup(groupId: string): UseGroupResult {
     try {
       setError(null);
       const [groupRes, devicesRes] = await Promise.all([
-        fetch(`${API_BASE}/api/groups/${groupId}`),
-        fetch(`${API_BASE}/api/groups/${groupId}/devices`),
+        apiFetch(`${API_BASE}/api/groups/${groupId}`),
+        apiFetch(`${API_BASE}/api/groups/${groupId}/devices`),
       ]);
 
       if (!groupRes.ok) throw new Error('Failed to fetch group');
@@ -116,7 +115,7 @@ export function useGroup(groupId: string): UseGroupResult {
   }, [refresh]);
 
   const addDevice = async (deviceId: string) => {
-    const res = await fetch(`${API_BASE}/api/groups/${groupId}/devices`, {
+    const res = await apiFetch(`${API_BASE}/api/groups/${groupId}/devices`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ deviceId }),
@@ -126,7 +125,7 @@ export function useGroup(groupId: string): UseGroupResult {
   };
 
   const removeDevice = async (deviceId: string) => {
-    const res = await fetch(`${API_BASE}/api/groups/${groupId}/devices/${deviceId}`, {
+    const res = await apiFetch(`${API_BASE}/api/groups/${groupId}/devices/${deviceId}`, {
       method: 'DELETE',
     });
     if (!res.ok) throw new Error('Failed to remove device from group');

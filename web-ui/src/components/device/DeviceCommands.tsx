@@ -109,6 +109,14 @@ export function DeviceCommands({ deviceId }: DeviceCommandsProps) {
           >
             Play Sound
           </Button>
+          <Button
+            variant="secondary"
+            size="sm"
+            loading={sending === 'syncPolicy'}
+            onClick={() => handleCommand(() => CommandHelpers.syncPolicy(sendCommand), 'syncPolicy')}
+          >
+            Reapply Policy
+          </Button>
         </div>
       </div>
 

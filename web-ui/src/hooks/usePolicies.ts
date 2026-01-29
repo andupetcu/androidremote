@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import type { Policy, PolicyInput } from '../types/api';
-
-const API_BASE = import.meta.env.DEV ? 'http://localhost:7899' : '';
+import { API_BASE, apiFetch } from '../utils/api';
 
 interface UsePoliciesResult {
   policies: Policy[];
@@ -23,7 +22,7 @@ export function usePolicies(): UsePoliciesResult {
   const refresh = useCallback(async () => {
     try {
       setError(null);
-      const res = await fetch(`${API_BASE}/api/policies`);
+      const res = await apiFetch(`${API_BASE}/api/policies`);
       if (!res.ok) throw new Error('Failed to fetch policies');
       const data = await res.json();
       setPolicies(data.policies);
@@ -39,7 +38,7 @@ export function usePolicies(): UsePoliciesResult {
   }, [refresh]);
 
   const createPolicy = async (input: PolicyInput): Promise<Policy> => {
-    const res = await fetch(`${API_BASE}/api/policies`, {
+    const res = await apiFetch(`${API_BASE}/api/policies`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(input),
@@ -51,7 +50,7 @@ export function usePolicies(): UsePoliciesResult {
   };
 
   const updatePolicy = async (id: string, input: Partial<PolicyInput>): Promise<Policy> => {
-    const res = await fetch(`${API_BASE}/api/policies/${id}`, {
+    const res = await apiFetch(`${API_BASE}/api/policies/${id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(input),
@@ -63,7 +62,7 @@ export function usePolicies(): UsePoliciesResult {
   };
 
   const deletePolicy = async (id: string): Promise<boolean> => {
-    const res = await fetch(`${API_BASE}/api/policies/${id}`, {
+    const res = await apiFetch(`${API_BASE}/api/policies/${id}`, {
       method: 'DELETE',
     });
     if (!res.ok) throw new Error('Failed to delete policy');
@@ -72,7 +71,7 @@ export function usePolicies(): UsePoliciesResult {
   };
 
   const assignToDevice = async (policyId: string, deviceId: string): Promise<void> => {
-    const res = await fetch(`${API_BASE}/api/devices/${deviceId}/policy`, {
+    const res = await apiFetch(`${API_BASE}/api/devices/${deviceId}/policy`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ policyId: policyId || null }),
@@ -81,7 +80,7 @@ export function usePolicies(): UsePoliciesResult {
   };
 
   const assignToGroup = async (policyId: string, groupId: string): Promise<void> => {
-    const res = await fetch(`${API_BASE}/api/groups/${groupId}`, {
+    const res = await apiFetch(`${API_BASE}/api/groups/${groupId}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ policyId }),
@@ -117,7 +116,7 @@ export function usePolicy(policyId: string): UsePolicyResult {
   const refresh = useCallback(async () => {
     try {
       setError(null);
-      const res = await fetch(`${API_BASE}/api/policies/${policyId}`);
+      const res = await apiFetch(`${API_BASE}/api/policies/${policyId}`);
       if (!res.ok) throw new Error('Failed to fetch policy');
       const data = await res.json();
       setPolicy(data.policy);

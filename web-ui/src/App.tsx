@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AppLayout } from './layouts/AppLayout';
 import { Dashboard } from './pages/Dashboard';
 import { DevicesPage } from './pages/DevicesPage';
@@ -11,26 +11,43 @@ import { EventsPage } from './pages/EventsPage';
 import { AppsPage } from './pages/AppsPage';
 import { AuditPage } from './pages/AuditPage';
 import { SettingsPage } from './pages/SettingsPage';
+import { LoginPage } from './pages/LoginPage';
+import { AuthProvider, useAuth } from './hooks/useAuth';
 import './App.css';
+
+function ProtectedRoute({ children }: { children: React.ReactNode }) {
+  const { isAuthenticated } = useAuth();
+  if (!isAuthenticated) return <Navigate to="/login" replace />;
+  return <>{children}</>;
+}
+
+function AppRoutes() {
+  return (
+    <Routes>
+      <Route path="login" element={<LoginPage />} />
+      <Route element={<ProtectedRoute><AppLayout /></ProtectedRoute>}>
+        <Route index element={<Dashboard />} />
+        <Route path="devices" element={<DevicesPage />} />
+        <Route path="devices/:deviceId" element={<DeviceDetail />} />
+        <Route path="groups" element={<GroupsPage />} />
+        <Route path="groups/:groupId" element={<GroupDetailPage />} />
+        <Route path="policies" element={<PoliciesPage />} />
+        <Route path="policies/:policyId" element={<PolicyDetailPage />} />
+        <Route path="events" element={<EventsPage />} />
+        <Route path="apps" element={<AppsPage />} />
+        <Route path="audit" element={<AuditPage />} />
+        <Route path="settings" element={<SettingsPage />} />
+      </Route>
+    </Routes>
+  );
+}
 
 function App() {
   return (
     <BrowserRouter>
-      <Routes>
-        <Route element={<AppLayout />}>
-          <Route index element={<Dashboard />} />
-          <Route path="devices" element={<DevicesPage />} />
-          <Route path="devices/:deviceId" element={<DeviceDetail />} />
-          <Route path="groups" element={<GroupsPage />} />
-          <Route path="groups/:groupId" element={<GroupDetailPage />} />
-          <Route path="policies" element={<PoliciesPage />} />
-          <Route path="policies/:policyId" element={<PolicyDetailPage />} />
-          <Route path="events" element={<EventsPage />} />
-          <Route path="apps" element={<AppsPage />} />
-          <Route path="audit" element={<AuditPage />} />
-          <Route path="settings" element={<SettingsPage />} />
-        </Route>
-      </Routes>
+      <AuthProvider>
+        <AppRoutes />
+      </AuthProvider>
     </BrowserRouter>
   );
 }

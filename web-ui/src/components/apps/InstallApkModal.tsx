@@ -5,6 +5,7 @@ import { Badge } from '../ui/Badge';
 import { Spinner } from '../ui/Spinner';
 import type { AppPackage } from '../../hooks/useApps';
 import type { Device } from '../../types/api';
+import { API_BASE, apiFetch } from '../../utils/api';
 import './InstallApkModal.css';
 
 interface InstallApkModalProps {
@@ -13,8 +14,6 @@ interface InstallApkModalProps {
   pkg: AppPackage | null;
   onInstall: (packageName: string, deviceIds: string[]) => Promise<unknown>;
 }
-
-const API_BASE = import.meta.env.DEV ? 'http://localhost:7899' : '';
 
 export function InstallApkModal({ open, onClose, pkg, onInstall }: InstallApkModalProps) {
   const [devices, setDevices] = useState<Device[]>([]);
@@ -35,7 +34,7 @@ export function InstallApkModal({ open, onClose, pkg, onInstall }: InstallApkMod
   const loadDevices = async () => {
     setLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/api/devices`);
+      const res = await apiFetch(`${API_BASE}/api/devices`);
       if (!res.ok) throw new Error('Failed to load devices');
       const data = await res.json();
       setDevices(data.devices);
