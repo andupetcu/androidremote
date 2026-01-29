@@ -400,11 +400,11 @@ app.get('/api/devices/:id', (req: Request, res: Response) => {
 });
 
 /**
- * PUT /api/devices/:id - Update device details (name)
+ * PUT /api/devices/:id - Update device details (name, location)
  */
 app.put('/api/devices/:id', (req: Request, res: Response) => {
   const { id } = req.params;
-  const { name } = req.body;
+  const { name, latitude, longitude } = req.body;
 
   const device = deviceStore.getDevice(id);
   if (!device) {
@@ -418,6 +418,19 @@ app.put('/api/devices/:id', (req: Request, res: Response) => {
       return;
     }
     deviceStore.updateDeviceName(id, name.trim());
+  }
+
+  if (latitude !== undefined || longitude !== undefined) {
+    // Allow clearing location by passing null for both
+    if (latitude === null && longitude === null) {
+      deviceStore.updateDeviceLocation(id, null, null);
+    } else if (typeof latitude === 'number' && typeof longitude === 'number' &&
+               latitude >= -90 && latitude <= 90 && longitude >= -180 && longitude <= 180) {
+      deviceStore.updateDeviceLocation(id, latitude, longitude);
+    } else {
+      res.status(400).json({ error: 'Invalid coordinates. Latitude must be -90 to 90, longitude -180 to 180.' });
+      return;
+    }
   }
 
   const updated = deviceStore.getDevice(id);

@@ -9,7 +9,7 @@ import type { Device } from '../../hooks/useDevices';
 import './DeviceComponents.css';
 
 interface DeviceOverviewProps {
-  device: Device & { location?: { latitude: number; longitude: number; accuracy: number | null } | null };
+  device: Device & { location?: { latitude: number; longitude: number; accuracy: number | null; source?: 'manual' | 'telemetry' } | null };
   onDeviceUpdate?: () => void;
 }
 
@@ -20,6 +20,10 @@ export function DeviceOverview({ device, onDeviceUpdate }: DeviceOverviewProps) 
   const [editingName, setEditingName] = useState(false);
   const [nameValue, setNameValue] = useState(device.name);
   const [savingName, setSavingName] = useState(false);
+  const [editingLocation, setEditingLocation] = useState(false);
+  const [latValue, setLatValue] = useState(device.location?.latitude?.toString() ?? '');
+  const [lngValue, setLngValue] = useState(device.location?.longitude?.toString() ?? '');
+  const [savingLocation, setSavingLocation] = useState(false);
 
   const formatDate = (timestamp: number | null) => {
     if (!timestamp) return 'Never';
@@ -57,6 +61,53 @@ export function DeviceOverview({ device, onDeviceUpdate }: DeviceOverviewProps) 
       console.error('Failed to update device name:', error);
     } finally {
       setSavingName(false);
+    }
+  };
+
+  const handleSaveLocation = async () => {
+    setSavingLocation(true);
+    try {
+      const lat = latValue.trim() ? parseFloat(latValue) : null;
+      const lng = lngValue.trim() ? parseFloat(lngValue) : null;
+
+      if (lat !== null && lng !== null) {
+        if (isNaN(lat) || isNaN(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+          alert('Invalid coordinates. Latitude: -90 to 90, Longitude: -180 to 180.');
+          setSavingLocation(false);
+          return;
+        }
+      }
+
+      await apiFetch(`${API_BASE}/api/devices/${device.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ latitude: lat, longitude: lng }),
+      });
+      setEditingLocation(false);
+      onDeviceUpdate?.();
+    } catch (error) {
+      console.error('Failed to update device location:', error);
+    } finally {
+      setSavingLocation(false);
+    }
+  };
+
+  const handleClearLocation = async () => {
+    setSavingLocation(true);
+    try {
+      await apiFetch(`${API_BASE}/api/devices/${device.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ latitude: null, longitude: null }),
+      });
+      setLatValue('');
+      setLngValue('');
+      setEditingLocation(false);
+      onDeviceUpdate?.();
+    } catch (error) {
+      console.error('Failed to clear device location:', error);
+    } finally {
+      setSavingLocation(false);
     }
   };
 
@@ -125,20 +176,80 @@ export function DeviceOverview({ device, onDeviceUpdate }: DeviceOverviewProps) 
           </div>
           <div className="device-overview__item">
             <span className="device-overview__label">Location</span>
-            <span className="device-overview__value">
-              {device.location ? (
-                <a
-                  href={`https://maps.google.com/?q=${device.location.latitude},${device.location.longitude}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  style={{ color: '#e94560', textDecoration: 'none' }}
-                >
-                  {device.location.latitude.toFixed(6)}, {device.location.longitude.toFixed(6)}
-                </a>
-              ) : (
-                'No location data'
-              )}
-            </span>
+            {editingLocation ? (
+              <span className="device-overview__value" style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                <input
+                  type="text"
+                  value={latValue}
+                  onChange={(e) => setLatValue(e.target.value)}
+                  placeholder="Latitude"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') handleSaveLocation();
+                    if (e.key === 'Escape') { setEditingLocation(false); setLatValue(device.location?.latitude?.toString() ?? ''); setLngValue(device.location?.longitude?.toString() ?? ''); }
+                  }}
+                  autoFocus
+                  style={{
+                    background: 'rgba(255,255,255,0.1)',
+                    border: '1px solid #0f3460',
+                    borderRadius: '4px',
+                    padding: '2px 8px',
+                    color: 'inherit',
+                    fontSize: 'inherit',
+                    width: '120px',
+                  }}
+                  disabled={savingLocation}
+                />
+                <input
+                  type="text"
+                  value={lngValue}
+                  onChange={(e) => setLngValue(e.target.value)}
+                  placeholder="Longitude"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') handleSaveLocation();
+                    if (e.key === 'Escape') { setEditingLocation(false); setLatValue(device.location?.latitude?.toString() ?? ''); setLngValue(device.location?.longitude?.toString() ?? ''); }
+                  }}
+                  style={{
+                    background: 'rgba(255,255,255,0.1)',
+                    border: '1px solid #0f3460',
+                    borderRadius: '4px',
+                    padding: '2px 8px',
+                    color: 'inherit',
+                    fontSize: 'inherit',
+                    width: '120px',
+                  }}
+                  disabled={savingLocation}
+                />
+                <Button size="sm" variant="primary" onClick={handleSaveLocation} loading={savingLocation}>Save</Button>
+                <Button size="sm" variant="ghost" onClick={() => { setEditingLocation(false); setLatValue(device.location?.latitude?.toString() ?? ''); setLngValue(device.location?.longitude?.toString() ?? ''); }}>Cancel</Button>
+              </span>
+            ) : (
+              <span className="device-overview__value" style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                {device.location ? (
+                  <>
+                    <a
+                      href={`https://maps.google.com/?q=${device.location.latitude},${device.location.longitude}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      style={{ color: '#e94560', textDecoration: 'none' }}
+                    >
+                      {device.location.latitude.toFixed(6)}, {device.location.longitude.toFixed(6)}
+                    </a>
+                    {device.location.source === 'telemetry' && (
+                      <span style={{ fontSize: '0.75rem', color: '#888' }}>(GPS)</span>
+                    )}
+                    <Button size="sm" variant="ghost" onClick={() => { setEditingLocation(true); setLatValue(device.location!.latitude.toString()); setLngValue(device.location!.longitude.toString()); }}>Edit</Button>
+                    {device.location.source === 'manual' && (
+                      <Button size="sm" variant="ghost" onClick={handleClearLocation} loading={savingLocation}>Clear</Button>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    No location data
+                    <Button size="sm" variant="ghost" onClick={() => { setEditingLocation(true); setLatValue(''); setLngValue(''); }}>Set</Button>
+                  </>
+                )}
+              </span>
+            )}
           </div>
           <div className="device-overview__item device-overview__item--full">
             <span className="device-overview__label">Policy</span>

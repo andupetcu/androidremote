@@ -162,6 +162,8 @@ export function initializeSchema(db: Database.Database): void {
     { name: 'group_id', type: 'TEXT' },
     { name: 'policy_id', type: 'TEXT' },
     { name: 'compliance_status', type: 'TEXT DEFAULT \'pending\'' },
+    { name: 'latitude', type: 'REAL' },
+    { name: 'longitude', type: 'REAL' },
   ];
 
   for (const col of extendedColumns) {

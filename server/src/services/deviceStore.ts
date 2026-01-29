@@ -71,6 +71,8 @@ interface DeviceRow {
   group_id: string | null;
   policy_id: string | null;
   compliance_status: string | null;
+  latitude: number | null;
+  longitude: number | null;
 }
 
 /**
@@ -322,11 +324,35 @@ class DeviceStore {
   }
 
   /**
-   * Get latest device location from telemetry
+   * Update device manual location
    */
-  getDeviceLocation(deviceId: string): { latitude: number; longitude: number; accuracy: number | null } | null {
+  updateDeviceLocation(id: string, latitude: number | null, longitude: number | null): boolean {
     this.initialize();
 
+    const result = this.getDb().prepare(`
+      UPDATE devices SET latitude = ?, longitude = ? WHERE id = ?
+    `).run(latitude, longitude, id);
+
+    return result.changes > 0;
+  }
+
+  /**
+   * Get device location — prefers manual location on the device record,
+   * falls back to latest GPS telemetry
+   */
+  getDeviceLocation(deviceId: string): { latitude: number; longitude: number; accuracy: number | null; source: 'manual' | 'telemetry' } | null {
+    this.initialize();
+
+    // Check manual location first
+    const device = this.getDb().prepare(`
+      SELECT latitude, longitude FROM devices WHERE id = ? AND latitude IS NOT NULL
+    `).get(deviceId) as { latitude: number; longitude: number } | undefined;
+
+    if (device) {
+      return { latitude: device.latitude, longitude: device.longitude, accuracy: null, source: 'manual' };
+    }
+
+    // Fall back to telemetry
     const row = this.getDb().prepare(`
       SELECT latitude, longitude, location_accuracy
       FROM device_telemetry
@@ -341,6 +367,7 @@ class DeviceStore {
       latitude: row.latitude,
       longitude: row.longitude,
       accuracy: row.location_accuracy,
+      source: 'telemetry',
     };
   }
 
