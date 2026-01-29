@@ -3,11 +3,13 @@ import { useTelemetry } from '../../hooks/useTelemetry';
 import { usePolicies } from '../../hooks/usePolicies';
 import { Badge } from '../ui/Badge';
 import { Spinner } from '../ui/Spinner';
+import { Button } from '../ui/Button';
+import { API_BASE, apiFetch } from '../../utils/api';
 import type { Device } from '../../hooks/useDevices';
 import './DeviceComponents.css';
 
 interface DeviceOverviewProps {
-  device: Device;
+  device: Device & { location?: { latitude: number; longitude: number; accuracy: number | null } | null };
   onDeviceUpdate?: () => void;
 }
 
@@ -15,6 +17,9 @@ export function DeviceOverview({ device, onDeviceUpdate }: DeviceOverviewProps) 
   const { telemetry, loading } = useTelemetry(device.id);
   const { policies, assignToDevice } = usePolicies();
   const [assigningPolicy, setAssigningPolicy] = useState(false);
+  const [editingName, setEditingName] = useState(false);
+  const [nameValue, setNameValue] = useState(device.name);
+  const [savingName, setSavingName] = useState(false);
 
   const formatDate = (timestamp: number | null) => {
     if (!timestamp) return 'Never';
@@ -33,6 +38,28 @@ export function DeviceOverview({ device, onDeviceUpdate }: DeviceOverviewProps) 
     }
   };
 
+  const handleSaveName = async () => {
+    if (!nameValue.trim() || nameValue === device.name) {
+      setEditingName(false);
+      setNameValue(device.name);
+      return;
+    }
+    setSavingName(true);
+    try {
+      await apiFetch(`${API_BASE}/api/devices/${device.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: nameValue.trim() }),
+      });
+      setEditingName(false);
+      onDeviceUpdate?.();
+    } catch (error) {
+      console.error('Failed to update device name:', error);
+    } finally {
+      setSavingName(false);
+    }
+  };
+
   const currentPolicy = policies.find(p => p.id === device.policyId);
 
   return (
@@ -42,7 +69,37 @@ export function DeviceOverview({ device, onDeviceUpdate }: DeviceOverviewProps) 
         <div className="device-overview__grid">
           <div className="device-overview__item">
             <span className="device-overview__label">Name</span>
-            <span className="device-overview__value">{device.name}</span>
+            {editingName ? (
+              <span className="device-overview__value" style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                <input
+                  type="text"
+                  value={nameValue}
+                  onChange={(e) => setNameValue(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') handleSaveName();
+                    if (e.key === 'Escape') { setEditingName(false); setNameValue(device.name); }
+                  }}
+                  autoFocus
+                  style={{
+                    background: 'rgba(255,255,255,0.1)',
+                    border: '1px solid #0f3460',
+                    borderRadius: '4px',
+                    padding: '2px 8px',
+                    color: 'inherit',
+                    fontSize: 'inherit',
+                    width: '200px',
+                  }}
+                  disabled={savingName}
+                />
+                <Button size="sm" variant="primary" onClick={handleSaveName} loading={savingName}>Save</Button>
+                <Button size="sm" variant="ghost" onClick={() => { setEditingName(false); setNameValue(device.name); }}>Cancel</Button>
+              </span>
+            ) : (
+              <span className="device-overview__value" style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                {device.name}
+                <Button size="sm" variant="ghost" onClick={() => { setEditingName(true); setNameValue(device.name); }}>Edit</Button>
+              </span>
+            )}
           </div>
           <div className="device-overview__item">
             <span className="device-overview__label">Status</span>
@@ -65,6 +122,23 @@ export function DeviceOverview({ device, onDeviceUpdate }: DeviceOverviewProps) 
           <div className="device-overview__item">
             <span className="device-overview__label">Last Seen</span>
             <span className="device-overview__value">{formatDate(device.lastSeenAt)}</span>
+          </div>
+          <div className="device-overview__item">
+            <span className="device-overview__label">Location</span>
+            <span className="device-overview__value">
+              {device.location ? (
+                <a
+                  href={`https://maps.google.com/?q=${device.location.latitude},${device.location.longitude}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{ color: '#e94560', textDecoration: 'none' }}
+                >
+                  {device.location.latitude.toFixed(6)}, {device.location.longitude.toFixed(6)}
+                </a>
+              ) : (
+                'No location data'
+              )}
+            </span>
           </div>
           <div className="device-overview__item device-overview__item--full">
             <span className="device-overview__label">Policy</span>

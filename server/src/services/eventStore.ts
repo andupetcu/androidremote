@@ -7,6 +7,7 @@ export type DeviceEventType =
   // Connection
   | 'device-online'
   | 'device-offline'
+  | 'device-enrolled'
   // Telemetry
   | 'battery-low'
   | 'battery-critical'
@@ -19,6 +20,9 @@ export type DeviceEventType =
   // Commands
   | 'command-completed'
   | 'command-failed'
+  // Policy
+  | 'policy-synced'
+  | 'policy-assigned'
   // Security
   | 'policy-violation'
   | 'tampering-detected'

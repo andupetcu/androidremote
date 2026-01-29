@@ -309,6 +309,42 @@ class DeviceStore {
   }
 
   /**
+   * Update device name
+   */
+  updateDeviceName(id: string, name: string): boolean {
+    this.initialize();
+
+    const result = this.getDb().prepare(`
+      UPDATE devices SET name = ? WHERE id = ?
+    `).run(name, id);
+
+    return result.changes > 0;
+  }
+
+  /**
+   * Get latest device location from telemetry
+   */
+  getDeviceLocation(deviceId: string): { latitude: number; longitude: number; accuracy: number | null } | null {
+    this.initialize();
+
+    const row = this.getDb().prepare(`
+      SELECT latitude, longitude, location_accuracy
+      FROM device_telemetry
+      WHERE device_id = ? AND latitude IS NOT NULL
+      ORDER BY updated_at DESC
+      LIMIT 1
+    `).get(deviceId) as { latitude: number; longitude: number; location_accuracy: number | null } | undefined;
+
+    if (!row) return null;
+
+    return {
+      latitude: row.latitude,
+      longitude: row.longitude,
+      accuracy: row.location_accuracy,
+    };
+  }
+
+  /**
    * Get devices by policy
    */
   getDevicesByPolicy(policyId: string): Device[] {

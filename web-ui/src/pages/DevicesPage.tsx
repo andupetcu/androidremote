@@ -14,6 +14,11 @@ const useStyles = makeStyles({
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: '1.5rem',
+    '@media (max-width: 768px)': {
+      flexDirection: 'column',
+      alignItems: 'stretch',
+      gap: '1rem',
+    },
   },
   headerTitle: {
     margin: 0,
@@ -44,12 +49,18 @@ const useStyles = makeStyles({
     color: '#888',
     textTransform: 'uppercase',
   },
+  tableWrapper: {
+    overflowX: 'auto',
+    WebkitOverflowScrolling: 'touch',
+    borderRadius: '0.5rem',
+  },
   table: {
     width: '100%',
     borderCollapse: 'collapse',
     backgroundColor: '#16213e',
     borderRadius: '0.5rem',
     overflow: 'hidden',
+    minWidth: '600px',
   },
   tableCell: {
     padding: '1rem',
@@ -205,6 +216,7 @@ export function DevicesPage() {
         </div>
       </div>
 
+      <div className={styles.tableWrapper}>
       <table className={styles.table}>
         <thead>
           <tr>
@@ -252,6 +264,7 @@ export function DevicesPage() {
           ))}
         </tbody>
       </table>
+      </div>
 
       {devices.length === 0 && (
         <div className={styles.empty}>

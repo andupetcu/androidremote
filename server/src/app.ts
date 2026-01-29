@@ -395,7 +395,34 @@ app.get('/api/devices/:id', (req: Request, res: Response) => {
     return;
   }
 
-  res.json(device);
+  const location = deviceStore.getDeviceLocation(id);
+  res.json({ ...device, location });
+});
+
+/**
+ * PUT /api/devices/:id - Update device details (name)
+ */
+app.put('/api/devices/:id', (req: Request, res: Response) => {
+  const { id } = req.params;
+  const { name } = req.body;
+
+  const device = deviceStore.getDevice(id);
+  if (!device) {
+    res.status(404).json({ error: 'Device not found' });
+    return;
+  }
+
+  if (name !== undefined) {
+    if (typeof name !== 'string' || !name.trim()) {
+      res.status(400).json({ error: 'Name must be a non-empty string' });
+      return;
+    }
+    deviceStore.updateDeviceName(id, name.trim());
+  }
+
+  const updated = deviceStore.getDevice(id);
+  const location = deviceStore.getDeviceLocation(id);
+  res.json({ ...updated, location });
 });
 
 /**
@@ -437,11 +464,33 @@ app.get('/api/devices/:id/status', (req: Request, res: Response) => {
  */
 app.post('/api/devices/:id/heartbeat', (req: Request, res: Response) => {
   const { id } = req.params;
+
+  // Check if device was previously offline to generate online event
+  const deviceBefore = deviceStore.getDevice(id);
+  if (deviceBefore && deviceBefore.status === 'offline') {
+    eventStore.recordEvent({
+      deviceId: id,
+      eventType: 'device-online',
+      severity: 'info',
+      data: { deviceName: deviceBefore.name, model: deviceBefore.model },
+    });
+  }
+
   const updated = deviceStore.updateLastSeen(id);
 
   if (!updated) {
     res.status(404).json({ error: 'Device not found' });
     return;
+  }
+
+  // Auto-sync apps if device has no apps yet and no pending SYNC_APPS command
+  const appCount = appInventoryStore.getDeviceAppCount(id, true);
+  if (appCount === 0) {
+    const pendingCmds = commandStore.getPendingCommands(id);
+    const hasPendingSync = pendingCmds.some(c => c.type === 'SYNC_APPS');
+    if (!hasPendingSync) {
+      commandStore.queueCommand(id, 'SYNC_APPS', {});
+    }
   }
 
   res.json({ success: true, timestamp: Date.now() });
@@ -519,6 +568,17 @@ app.post('/api/enroll/device', (req: Request, res: Response) => {
     res.status(401).json({ error: 'Invalid, expired, or exhausted enrollment token' });
     return;
   }
+
+  // Queue SYNC_APPS so the device reports its installed apps on first connect
+  commandStore.queueCommand(result.deviceId, 'SYNC_APPS', {});
+
+  // Record enrollment event
+  eventStore.recordEvent({
+    deviceId: result.deviceId,
+    eventType: 'device-enrolled',
+    severity: 'info',
+    data: { deviceName, deviceModel },
+  });
 
   res.status(201).json({
     deviceId: result.deviceId,
@@ -698,6 +758,9 @@ app.patch('/api/devices/:id/commands/:cmdId', (req: Request, res: Response) => {
     return;
   }
 
+  // Get command info before updating (for event data)
+  const command = commandStore.getCommand(cmdId);
+
   const updated = commandStore.acknowledgeCommand(
     cmdId,
     status as 'executing' | 'completed' | 'failed',
@@ -707,6 +770,34 @@ app.patch('/api/devices/:id/commands/:cmdId', (req: Request, res: Response) => {
   if (!updated) {
     res.status(404).json({ error: 'Command not found or already completed' });
     return;
+  }
+
+  // Generate command completion/failure events
+  const { id: deviceId } = req.params;
+  if (status === 'completed' && command) {
+    eventStore.recordEvent({
+      deviceId,
+      eventType: 'command-completed',
+      severity: 'info',
+      data: { commandType: command.type, commandId: cmdId },
+    });
+
+    // Policy-synced event for SYNC_POLICY commands
+    if (command.type === 'SYNC_POLICY') {
+      eventStore.recordEvent({
+        deviceId,
+        eventType: 'policy-synced',
+        severity: 'info',
+        data: { commandId: cmdId },
+      });
+    }
+  } else if (status === 'failed' && command) {
+    eventStore.recordEvent({
+      deviceId,
+      eventType: 'command-failed',
+      severity: 'warning',
+      data: { commandType: command.type, commandId: cmdId, error },
+    });
   }
 
   res.json({ success: true, commandId: cmdId, status });
@@ -1771,6 +1862,14 @@ app.put('/api/devices/:id/policy', (req: Request, res: Response) => {
   }
 
   deviceStore.updateDevicePolicy(id, policyId || null);
+
+  // Record policy-assigned event
+  eventStore.recordEvent({
+    deviceId: id,
+    eventType: 'policy-assigned',
+    severity: 'info',
+    data: { policyId: policyId || null, deviceName: device.name },
+  });
 
   // Sync required apps if policy has them
   let commandsQueued = 0;

@@ -41,6 +41,7 @@ const useStyles = makeStyles({
   wrapper: {
     width: '100%',
     overflowX: 'auto',
+    WebkitOverflowScrolling: 'touch',
   },
   table: {
     width: '100%',
@@ -58,6 +59,10 @@ const useStyles = makeStyles({
     letterSpacing: '0.05em',
     padding: '12px 16px',
     borderBottom: `1px solid ${tokens.colorNeutralStroke1}`,
+    '@media (max-width: 768px)': {
+      padding: '8px 10px',
+      fontSize: '11px',
+    },
   },
   sortableHeader: {
     cursor: 'pointer',
@@ -90,6 +95,10 @@ const useStyles = makeStyles({
     padding: '12px 16px',
     color: tokens.colorNeutralForeground1,
     fontSize: '14px',
+    '@media (max-width: 768px)': {
+      padding: '8px 10px',
+      fontSize: '13px',
+    },
   },
   checkboxCell: {
     width: '48px',

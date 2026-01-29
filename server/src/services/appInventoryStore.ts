@@ -1,6 +1,7 @@
 import type Database from 'better-sqlite3';
 import { getDatabase } from '../db/connection';
 import { initializeSchema } from '../db/schema';
+import { eventStore } from './eventStore';
 
 export interface InstalledApp {
   deviceId: string;
@@ -111,6 +112,11 @@ class AppInventoryStore {
     const db = this.getDb();
     const now = Date.now();
 
+    // Get existing apps before sync for diff detection
+    const existingApps = this.getDeviceApps(deviceId, { includeSystemApps: true });
+    const existingPackages = new Set(existingApps.map(a => a.packageName));
+    const incomingPackages = new Set(apps.map(a => a.packageName));
+
     const transaction = db.transaction(() => {
       // Delete existing apps
       db.prepare('DELETE FROM device_apps WHERE device_id = ?').run(deviceId);
@@ -146,6 +152,32 @@ class AppInventoryStore {
     });
 
     transaction();
+
+    // Generate events for newly installed apps (skip if first sync)
+    if (existingPackages.size > 0) {
+      for (const app of apps) {
+        if (!existingPackages.has(app.packageName)) {
+          eventStore.recordEvent({
+            deviceId,
+            eventType: 'app-installed',
+            severity: 'info',
+            data: { packageName: app.packageName, appName: app.appName },
+          });
+        }
+      }
+
+      // Generate events for uninstalled apps
+      for (const existing of existingApps) {
+        if (!incomingPackages.has(existing.packageName)) {
+          eventStore.recordEvent({
+            deviceId,
+            eventType: 'app-uninstalled',
+            severity: 'info',
+            data: { packageName: existing.packageName, appName: existing.appName },
+          });
+        }
+      }
+    }
   }
 
   /**

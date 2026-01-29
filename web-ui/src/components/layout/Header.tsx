@@ -1,6 +1,7 @@
 import { useLocation, Link, useNavigate } from 'react-router-dom';
 import {
   makeStyles,
+  mergeClasses,
   tokens,
   CounterBadge,
   Breadcrumb,
@@ -9,12 +10,13 @@ import {
   BreadcrumbButton,
   Button,
 } from '@fluentui/react-components';
-import { AlertRegular, SignOutRegular } from '@fluentui/react-icons';
+import { AlertRegular, SignOutRegular, NavigationRegular } from '@fluentui/react-icons';
 import { useAuth } from '../../hooks/useAuth';
 
 interface HeaderProps {
   unreadEvents?: number;
   onNotificationClick?: () => void;
+  onMenuClick?: () => void;
 }
 
 const routeTitles: Record<string, string> = {
@@ -105,9 +107,24 @@ const useStyles = makeStyles({
     top: '4px',
     right: '4px',
   },
+  menuButton: {
+    display: 'none',
+    minWidth: '40px',
+    height: '40px',
+    padding: '8px',
+    color: tokens.colorNeutralForeground2,
+    '@media (max-width: 768px)': {
+      display: 'inline-flex',
+    },
+  },
+  headerMobile: {
+    '@media (max-width: 768px)': {
+      padding: '12px 12px',
+    },
+  },
 });
 
-export function Header({ unreadEvents = 0, onNotificationClick }: HeaderProps) {
+export function Header({ unreadEvents = 0, onNotificationClick, onMenuClick }: HeaderProps) {
   const styles = useStyles();
   const location = useLocation();
   const navigate = useNavigate();
@@ -120,7 +137,16 @@ export function Header({ unreadEvents = 0, onNotificationClick }: HeaderProps) {
   };
 
   return (
-    <header className={styles.header}>
+    <header className={mergeClasses(styles.header, styles.headerMobile)}>
+      {onMenuClick && (
+        <Button
+          appearance="subtle"
+          className={styles.menuButton}
+          onClick={onMenuClick}
+          icon={<NavigationRegular />}
+          aria-label="Open menu"
+        />
+      )}
       <Breadcrumb className={styles.breadcrumbs}>
         {breadcrumbs.map((crumb, index) => (
           <span key={crumb.path}>

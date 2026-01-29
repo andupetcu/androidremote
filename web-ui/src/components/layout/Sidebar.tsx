@@ -50,6 +50,7 @@ interface SidebarProps {
   onToggle?: () => void;
   unreadEvents?: number;
   serverName?: string;
+  isMobile?: boolean;
 }
 
 const useStyles = makeStyles({
@@ -153,13 +154,20 @@ const useStyles = makeStyles({
     fontSize: '12px',
     color: tokens.colorNeutralForeground3,
   },
+  sidebarMobile: {
+    position: 'fixed',
+    top: 0,
+    left: 0,
+    zIndex: 1000,
+    boxShadow: '4px 0 24px rgba(0, 0, 0, 0.3)',
+  },
 });
 
-export function Sidebar({ collapsed = false, onToggle, unreadEvents = 0, serverName = 'Android Remote' }: SidebarProps) {
+export function Sidebar({ collapsed = false, onToggle, unreadEvents = 0, serverName = 'Android Remote', isMobile = false }: SidebarProps) {
   const styles = useStyles();
 
   return (
-    <aside className={mergeClasses(styles.sidebar, collapsed && styles.sidebarCollapsed)}>
+    <aside className={mergeClasses(styles.sidebar, collapsed && styles.sidebarCollapsed, isMobile && styles.sidebarMobile)}>
       <div className={styles.header}>
         <div className={mergeClasses(styles.logo, collapsed && styles.logoCollapsed)}>
           {collapsed ? serverName.slice(0, 2).toUpperCase() : serverName}
