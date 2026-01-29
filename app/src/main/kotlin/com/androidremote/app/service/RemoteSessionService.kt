@@ -100,6 +100,9 @@ class RemoteSessionService : Service() {
     // Capture mode preference
     private var useScreenServer = true
 
+    // Track the state observer job to cancel on re-entry
+    private var stateObserverJob: kotlinx.coroutines.Job? = null
+
     // Device Owner manager for checking MDM privileges
     private val deviceOwnerManager by lazy {
         com.androidremote.app.admin.DeviceOwnerManager(this)
@@ -184,8 +187,11 @@ class RemoteSessionService : Service() {
 
                 isAutoStartedSession = true
 
+                // Cancel any previous state observer to avoid leaked collectors
+                stateObserverJob?.cancel()
+
                 // Observe session state to manage screen capture lifecycle
-                serviceScope.launch {
+                stateObserverJob = serviceScope.launch {
                     sessionController.state.collect { state ->
                         Log.d(TAG, "Session state changed: $state")
                         if (state is SessionState.Connected && isAutoStartedSession && !isScreenCaptureActive) {

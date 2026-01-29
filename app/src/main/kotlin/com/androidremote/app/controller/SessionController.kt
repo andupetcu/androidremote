@@ -75,12 +75,19 @@ class SessionController(
     /**
      * Connect to a remote session.
      *
+     * If already connecting or connected, disconnects the existing session first.
+     * This supports server-initiated START_REMOTE commands that may arrive while
+     * a previous session is still active.
+     *
      * @param serverUrl The signaling server URL
      * @param token Authentication token
      * @param deviceId Device identifier for this session
      */
     fun connect(serverUrl: String, token: String, deviceId: String) {
-        if (!_state.value.canConnect) return
+        if (!_state.value.canConnect) {
+            Log.i(TAG, "connect() called while in state ${_state.value}, disconnecting first")
+            disconnect()
+        }
 
         currentServerUrl = serverUrl
         currentToken = token
