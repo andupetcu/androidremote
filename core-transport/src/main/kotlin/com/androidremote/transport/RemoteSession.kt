@@ -241,6 +241,18 @@ class RemoteSession(
      * Disconnect and clean up resources.
      */
     suspend fun disconnect() {
+        closeSync()
+        disconnectSignaling()
+    }
+
+    /**
+     * Synchronously close the peer connection and cancel all jobs.
+     *
+     * This MUST be called before PeerConnectionFactory.dispose() to prevent
+     * SIGSEGV in native WebRTC code. PeerConnection.close() is synchronous
+     * in the native layer, so this is safe to call from any thread.
+     */
+    fun closeSync() {
         messageCollectionJob?.cancel()
         iceCandidateJob?.cancel()
         remoteIceCandidateJob?.cancel()
@@ -256,10 +268,16 @@ class RemoteSession(
         peerConnection?.close()
         peerConnection = null
 
+        _state.value = SessionState.DISCONNECTED
+    }
+
+    /**
+     * Disconnect the signaling WebSocket.
+     * Safe to call after closeSync().
+     */
+    suspend fun disconnectSignaling() {
         signalingClient?.disconnect()
         signalingClient = null
-
-        _state.value = SessionState.DISCONNECTED
     }
 }
 

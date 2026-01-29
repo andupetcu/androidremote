@@ -81,8 +81,16 @@ class SignalingClient(
 
             // Start listening for incoming messages
             messageJob = scope.launch {
-                session?.incoming?.collect { message ->
-                    handleIncomingMessage(message)
+                try {
+                    session?.incoming?.collect { message ->
+                        handleIncomingMessage(message)
+                    }
+                    // Flow completed normally = connection closed
+                    _errors.emit("Signaling connection closed")
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    _errors.emit("Signaling connection lost: ${e.message}")
                 }
             }
 

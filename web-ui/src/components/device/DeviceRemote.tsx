@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { RemoteScreen } from '../RemoteScreen';
 import { Button } from '../ui/Button';
 import type { ConnectionState } from '../../hooks/useWebRTC';
@@ -19,6 +19,7 @@ interface DeviceRemoteProps {
 export function DeviceRemote({ deviceId }: DeviceRemoteProps) {
   const [connectionState, setConnectionState] = useState<ConnectionState>('disconnected');
   const [startRemoteSent, setStartRemoteSent] = useState(false);
+  const [sessionActive, setSessionActive] = useState(false);
   const commandSentRef = useRef(false);
 
   useEffect(() => {
@@ -40,24 +41,35 @@ export function DeviceRemote({ deviceId }: DeviceRemoteProps) {
           console.log('START_REMOTE command sent, waiting for device...');
           await new Promise(resolve => setTimeout(resolve, 6000));
           setStartRemoteSent(true);
+          setSessionActive(true);
         } else {
           console.error('Failed to send START_REMOTE:', response.statusText);
           setStartRemoteSent(true);
+          setSessionActive(true);
         }
       } catch (err) {
         console.error('Error sending START_REMOTE:', err);
         setStartRemoteSent(true);
+        setSessionActive(true);
       }
     };
 
     sendStartRemote();
   }, [deviceId]);
 
-  const handleReconnect = () => {
+  const handleReconnect = useCallback(() => {
     commandSentRef.current = false;
     setStartRemoteSent(false);
+    setSessionActive(false);
     setConnectionState('disconnected');
-  };
+  }, []);
+
+  const handleDisconnect = useCallback(() => {
+    setSessionActive(false);
+    setStartRemoteSent(false);
+    commandSentRef.current = false;
+    setConnectionState('disconnected');
+  }, []);
 
   return (
     <div className="device-remote">
@@ -65,24 +77,41 @@ export function DeviceRemote({ deviceId }: DeviceRemoteProps) {
         <span className={`device-remote__status device-remote__status--${connectionState}`}>
           {connectionState}
         </span>
-        {connectionState === 'failed' && (
-          <Button variant="secondary" size="sm" onClick={handleReconnect}>
-            Reconnect
-          </Button>
-        )}
+        <div className="device-remote__actions">
+          {(connectionState === 'failed' || connectionState === 'disconnected') && !sessionActive && (
+            <Button variant="primary" size="sm" onClick={handleReconnect}>
+              Connect
+            </Button>
+          )}
+          {sessionActive && connectionState === 'connected' && (
+            <Button variant="danger" size="sm" onClick={handleDisconnect}>
+              End Session
+            </Button>
+          )}
+        </div>
       </div>
       <div className="device-remote__screen">
         {!startRemoteSent ? (
-          <div className="device-remote__connecting">
-            <div className="spinner" />
-            <p>Sending connection request to device...</p>
-          </div>
-        ) : (
+          !sessionActive ? (
+            <div className="device-remote__disconnected">
+              <p>Remote session ended.</p>
+            </div>
+          ) : (
+            <div className="device-remote__connecting">
+              <div className="spinner" />
+              <p>Sending connection request to device...</p>
+            </div>
+          )
+        ) : sessionActive ? (
           <RemoteScreen
             deviceId={deviceId}
             signalingUrl={SIGNALING_URL}
             onConnectionStateChange={setConnectionState}
           />
+        ) : (
+          <div className="device-remote__disconnected">
+            <p>Remote session ended.</p>
+          </div>
         )}
       </div>
       <div className="device-remote__controls">

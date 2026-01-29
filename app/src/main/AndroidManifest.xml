@@ -136,9 +136,18 @@
             </intent-filter>
         </receiver>
 
-        <!-- Boot receiver for auto-start in MDM mode -->
+        <!-- Boot receiver for auto-start in MDM mode (command polling, policy apps) -->
         <receiver
             android:name=".mdm.BootReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Boot receiver for auto-starting remote session service (Device Owner mode) -->
+        <receiver
+            android:name=".admin.BootReceiver"
             android:exported="false">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />

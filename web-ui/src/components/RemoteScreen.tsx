@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback, type ReactElement } from 'react';
+import { useEffect, useRef, useCallback, useState, type ReactElement } from 'react';
 import { useWebRTC } from '../hooks/useWebRTC';
 import type { ConnectionState } from '../hooks/useWebRTC';
 import { FrameDecoder } from '../lib/FrameDecoder';
@@ -23,6 +23,7 @@ export function RemoteScreen({
 }: RemoteScreenProps): ReactElement {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const decoderRef = useRef<FrameDecoder | null>(null);
+  const [videoDimensions, setVideoDimensions] = useState<{ width: number; height: number } | null>(null);
 
   // Touch state
   const pointerStartRef = useRef<{ x: number; y: number; time: number } | null>(null);
@@ -42,7 +43,9 @@ export function RemoteScreen({
 
     // Initialize decoder
     if (!decoderRef.current) {
-      decoderRef.current = new FrameDecoder(canvasRef.current);
+      const decoder = new FrameDecoder(canvasRef.current);
+      decoder.onDimensionsChanged = (w, h) => setVideoDimensions({ width: w, height: h });
+      decoderRef.current = decoder;
     }
 
     // Listen for video frames on data channel
@@ -207,6 +210,12 @@ export function RemoteScreen({
     );
   }
 
+  // Determine aspect ratio and max size from video dimensions
+  const isLandscape = videoDimensions ? videoDimensions.width > videoDimensions.height : false;
+  const aspectRatio = videoDimensions
+    ? `${videoDimensions.width}/${videoDimensions.height}`
+    : '9/16'; // Default portrait until dimensions are known
+
   return (
     <div className="remote-screen remote-screen--connected">
       <canvas
@@ -219,11 +228,13 @@ export function RemoteScreen({
         onKeyDown={handleKeyDown}
         style={{
           width: '100%',
-          maxWidth: '400px',
-          aspectRatio: '9/16',
+          maxWidth: isLandscape ? '800px' : '400px',
+          maxHeight: '80vh',
+          aspectRatio,
           backgroundColor: '#000',
           outline: 'none',
           cursor: 'pointer',
+          objectFit: 'contain',
         }}
       />
       <p className="status">Connected</p>

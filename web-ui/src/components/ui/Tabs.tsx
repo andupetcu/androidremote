@@ -56,8 +56,6 @@ export function Tabs({ tabs, defaultTab, onChange }: TabsProps) {
     onChange?.(tabId);
   };
 
-  const activeContent = tabs.find((tab) => tab.id === activeTab)?.content;
-
   return (
     <div className={styles.container}>
       <TabList
@@ -75,9 +73,16 @@ export function Tabs({ tabs, defaultTab, onChange }: TabsProps) {
           </FluentTab>
         ))}
       </TabList>
-      <div className={styles.content} role="tabpanel">
-        {activeContent}
-      </div>
+      {tabs.map((tab) => (
+        <div
+          key={tab.id}
+          className={styles.content}
+          role="tabpanel"
+          style={{ display: tab.id === activeTab ? undefined : 'none' }}
+        >
+          {tab.content}
+        </div>
+      ))}
     </div>
   );
 }

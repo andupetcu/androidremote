@@ -1,5 +1,6 @@
 package com.androidremote.app.controller
 
+import android.util.Log
 import com.androidremote.transport.CommandAck
 import com.androidremote.transport.CommandEnvelope
 import com.androidremote.transport.CommandResponseData
@@ -20,6 +21,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+
+private const val TAG = "SessionController"
 
 /**
  * Central coordinator for remote control sessions.
@@ -89,20 +92,35 @@ class SessionController(
 
     /**
      * Disconnect from the current session.
+     *
+     * Closes the peer connection synchronously to ensure native WebRTC resources
+     * are released before PeerConnectionFactory.dispose() is called.
+     * The signaling WebSocket is closed asynchronously since it doesn't hold
+     * native resources that could cause SIGSEGV.
      */
     fun disconnect() {
         cancelJobs()
         stopVideoStream()
 
-        scope.launch {
-            try {
-                currentSession?.disconnect()
-            } catch (e: Exception) {
-                // Ignore disconnect errors
+        val session = currentSession
+        currentSession = null
+        wasConnected = false
+        _state.value = SessionState.Disconnected
+
+        if (session != null) {
+            // Close peer connection synchronously — this is critical to avoid
+            // SIGSEGV when PeerConnectionFactory.dispose() is called afterward.
+            // PeerConnection.close() is synchronous in the WebRTC native layer.
+            session.closeSync()
+
+            // Clean up signaling WebSocket asynchronously
+            scope.launch {
+                try {
+                    session.disconnectSignaling()
+                } catch (e: Exception) {
+                    Log.w(TAG, "Error disconnecting signaling", e)
+                }
             }
-            currentSession = null
-            wasConnected = false
-            _state.value = SessionState.Disconnected
         }
     }
 
@@ -202,6 +220,22 @@ class SessionController(
                 val serverUrl = currentServerUrl ?: throw IllegalStateException("Server URL not set")
                 val deviceId = currentDeviceId ?: throw IllegalStateException("Device ID not set")
 
+                // CRITICAL: Disconnect old session BEFORE creating a new one.
+                // The session factory disposes the PeerConnectionFactory, which will SIGSEGV
+                // if any PeerConnection from that factory is still alive.
+                val oldSession = currentSession
+                if (oldSession != null) {
+                    Log.i(TAG, "Disconnecting previous session before reconnect")
+                    try {
+                        oldSession.disconnect()
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Error disconnecting old session", e)
+                    }
+                    currentSession = null
+                }
+
+                Log.i(TAG, "Connecting to signaling server: $serverUrl (device: $deviceId)")
+
                 val session = sessionFactory(serverUrl, deviceId)
                 currentSession = session
 
@@ -214,11 +248,14 @@ class SessionController(
                 }
 
                 session.connect()
+                Log.i(TAG, "Signaling WebSocket connected, starting as answerer")
                 session.startAsAnswerer()
+                Log.i(TAG, "Answerer mode started, waiting for offer")
 
                 // Reset reconnect counter on successful connection
                 // State will be updated by the session state collector
             } catch (e: Exception) {
+                Log.e(TAG, "Connection failed: ${e.message}", e)
                 handleConnectionError(e)
             }
         }

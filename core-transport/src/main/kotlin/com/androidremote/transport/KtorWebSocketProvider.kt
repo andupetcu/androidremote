@@ -46,6 +46,7 @@ class KtorWebSocketProvider(
     override suspend fun connect(url: String, headers: Map<String, String>): WebSocketSession {
         try {
             val parsedUrl = WebSocketUrlParser.parse(url)
+            println("KtorWebSocket: Connecting to ${if (parsedUrl.secure) "wss" else "ws"}://${parsedUrl.host}:${parsedUrl.port}${parsedUrl.fullPath}")
 
             val ktorSession = httpClient.webSocketSession {
                 url {
@@ -69,10 +70,12 @@ class KtorWebSocketProvider(
                 }
             }
 
+            println("KtorWebSocket: Connected successfully to $url")
             return KtorWebSocketSession(ktorSession)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
+            println("KtorWebSocket: Connection FAILED to $url: ${e.javaClass.simpleName}: ${e.message}")
             throw SignalingConnectionException(
                 "Failed to connect to WebSocket: $url",
                 e
@@ -103,12 +106,20 @@ class KtorWebSocketSession(
         get() = session.isActive
 
     override val incoming: Flow<String> = flow {
-        for (frame in session.incoming) {
-            when (frame) {
-                is Frame.Text -> emit(frame.readText())
-                is Frame.Close -> break
-                else -> { /* Ignore binary, ping, pong frames */ }
+        try {
+            for (frame in session.incoming) {
+                when (frame) {
+                    is Frame.Text -> emit(frame.readText())
+                    is Frame.Close -> break
+                    else -> { /* Ignore binary, ping, pong frames */ }
+                }
             }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // Connection dropped (EOFException, IOException, etc.)
+            // Complete the flow normally so collectors don't crash
+            println("KtorWebSocket: Connection closed: ${e.javaClass.simpleName}: ${e.message}")
         }
     }
 

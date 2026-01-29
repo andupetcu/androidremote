@@ -30,6 +30,7 @@ import com.androidremote.transport.DeviceCommandChannel
 import com.androidremote.transport.FrameData
 import com.androidremote.transport.KtorWebSocketProvider
 import com.androidremote.transport.RemoteSession
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -72,7 +73,10 @@ class RemoteSessionService : Service() {
     }
 
     private val binder = LocalBinder()
-    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private val exceptionHandler = CoroutineExceptionHandler { _, throwable ->
+        Log.e(TAG, "Uncaught coroutine exception", throwable)
+    }
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main + exceptionHandler)
     private lateinit var sessionController: SessionController
 
     // Track resources that need to be disposed
@@ -149,6 +153,8 @@ class RemoteSessionService : Service() {
     override fun onBind(intent: Intent): IBinder = binder
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        Log.i(TAG, "onStartCommand: action=${intent?.action}, autoStart=${intent?.getBooleanExtra(EXTRA_AUTO_START, false)}")
+
         // Handle stop action from notification
         if (intent?.action == "STOP") {
             sessionController.disconnect()
@@ -166,12 +172,15 @@ class RemoteSessionService : Service() {
             val sessionToken = intent.getStringExtra(EXTRA_SESSION_TOKEN)
             val deviceId = intent.getStringExtra(EXTRA_DEVICE_ID)
 
+            Log.i(TAG, "Auto-start: serverUrl=$serverUrl, deviceId=$deviceId, hasToken=${sessionToken != null}")
+
             if (serverUrl != null && sessionToken != null && deviceId != null) {
                 isAutoStartedSession = true
 
                 // Observe session state to request screen capture when connected
                 serviceScope.launch {
                     sessionController.state.collect { state ->
+                        Log.d(TAG, "Session state changed: $state")
                         if (state is SessionState.Connected && isAutoStartedSession) {
                             Log.i(TAG, "Session connected, starting screen capture")
                             isAutoStartedSession = false // Only request once
@@ -189,11 +198,15 @@ class RemoteSessionService : Service() {
 
                 serviceScope.launch {
                     try {
+                        Log.i(TAG, "Calling sessionController.connect($serverUrl, token, $deviceId)")
                         sessionController.connect(serverUrl, sessionToken, deviceId)
+                        Log.i(TAG, "sessionController.connect returned")
                     } catch (e: Exception) {
                         Log.e(TAG, "Auto-connect failed", e)
                     }
                 }
+            } else {
+                Log.w(TAG, "Auto-start missing params: serverUrl=$serverUrl, deviceId=$deviceId, hasToken=${sessionToken != null}")
             }
         }
 
@@ -270,12 +283,25 @@ class RemoteSessionService : Service() {
     /**
      * Disposes the current WebRTC and WebSocket resources.
      * Call this when session is disconnected or service is destroyed.
+     *
+     * IMPORTANT: The caller MUST ensure that all PeerConnections created by
+     * the factory have been closed BEFORE calling this method. Disposing the
+     * factory while native PeerConnections are alive causes SIGSEGV in
+     * libjingle_peerconnection_so.so (use-after-free in native WebRTC code).
+     *
+     * SessionController.performConnect() disconnects the old RemoteSession
+     * (which closes the PeerConnection) before calling sessionFactory(),
+     * which in turn calls createRemoteSession() -> disposeCurrentResources().
      */
     private fun disposeCurrentResources() {
         currentWebSocketProvider?.close()
         currentWebSocketProvider = null
 
-        currentPeerConnectionFactory?.dispose()
+        try {
+            currentPeerConnectionFactory?.dispose()
+        } catch (e: Exception) {
+            Log.w(TAG, "Error disposing PeerConnectionFactory (may indicate use-after-free was prevented)", e)
+        }
         currentPeerConnectionFactory = null
     }
 

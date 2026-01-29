@@ -400,6 +400,10 @@
   border-bottom: 1px solid #0f3460;
 }
 
+.device-remote__actions {
+  margin-left: auto;
+}
+
 .device-remote__status {
   padding: 0.375rem 0.75rem;
   border-radius: 1rem;
@@ -462,6 +466,14 @@
 
 @keyframes spin {
   to { transform: rotate(360deg); }
+}
+
+.device-remote__disconnected {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+  color: #888;
 }
 
 .device-remote__controls {

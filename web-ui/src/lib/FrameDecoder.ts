@@ -30,6 +30,9 @@ export class FrameDecoder {
   /** Buffered SPS/PPS config data in Annex B format (with start codes). */
   private configData: Uint8Array | null = null;
 
+  /** Callback invoked when video dimensions are known (from SPS or first frame). */
+  onDimensionsChanged: ((width: number, height: number) => void) | null = null;
+
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d')!;
@@ -98,6 +101,9 @@ export class FrameDecoder {
     // Resize canvas to match video
     this.canvas.width = width;
     this.canvas.height = height;
+
+    // Notify listener of video dimensions (for dynamic aspect ratio)
+    this.onDimensionsChanged?.(width, height);
 
     this.decoder.configure({
       codec: 'avc1.42E01F', // H.264 Baseline Profile Level 3.1
@@ -203,6 +209,7 @@ export class FrameDecoder {
         this.canvas.height !== frame.displayHeight) {
       this.canvas.width = frame.displayWidth;
       this.canvas.height = frame.displayHeight;
+      this.onDimensionsChanged?.(frame.displayWidth, frame.displayHeight);
     }
 
     this.ctx.drawImage(frame, 0, 0);

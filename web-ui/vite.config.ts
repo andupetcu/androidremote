@@ -4,17 +4,24 @@ import react from '@vitejs/plugin-react'
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react()],
+  define: {
+    // Override DEV flag to force production API URLs (use relative paths through proxy)
+    ...(process.env.FORCE_PROD ? { 'import.meta.env.DEV': 'false' } : {}),
+  },
   server: {
     port: 5173,
     host: true, // Expose to network (0.0.0.0)
     proxy: {
       '/api': {
-        target: 'http://localhost:7899',
+        target: 'https://proxymdm.footprints.media',
         changeOrigin: true,
+        secure: false,
       },
       '/ws': {
-        target: 'ws://localhost:7899',
+        target: 'wss://proxymdm.footprints.media',
+        changeOrigin: true,
         ws: true,
+        secure: false,
       },
     },
   },
