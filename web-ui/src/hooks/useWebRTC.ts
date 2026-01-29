@@ -139,7 +139,11 @@ export function useWebRTC(deviceId: string | null, signalingUrl: string): UseWeb
         command,
         timestamp: Date.now(),
       };
-      dc.send(JSON.stringify(envelope));
+      const json = JSON.stringify(envelope);
+      console.log(`[WebRTC] sendCommand: ${command.type}, id=${envelope.id}, payload=${json.length}b`);
+      dc.send(json);
+    } else {
+      console.warn(`[WebRTC] sendCommand DROPPED: dc=${!!dc}, readyState=${dc?.readyState}`);
     }
   }, []);
 

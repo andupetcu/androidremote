@@ -1,8 +1,10 @@
 package com.androidremote.app.service
 
 import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.AccessibilityServiceInfo
 import android.accessibilityservice.GestureDescription
 import android.graphics.Path
+import android.util.Log
 import android.view.KeyEvent
 import android.view.accessibility.AccessibilityEvent
 import com.androidremote.feature.input.GestureSpec
@@ -20,6 +22,8 @@ import com.androidremote.feature.input.GestureSpec
 class InputInjectionService : AccessibilityService() {
 
     companion object {
+        private const val TAG = "InputInjectionService"
+
         @Volatile
         var instance: InputInjectionService? = null
             internal set
@@ -27,6 +31,13 @@ class InputInjectionService : AccessibilityService() {
 
     override fun onServiceConnected() {
         super.onServiceConnected()
+
+        // Clear touch exploration flag — it can interfere with gesture injection
+        val info = serviceInfo ?: AccessibilityServiceInfo()
+        info.flags = info.flags and AccessibilityServiceInfo.FLAG_REQUEST_TOUCH_EXPLORATION_MODE.inv()
+        serviceInfo = info
+
+        Log.i(TAG, "onServiceConnected: capabilities=${serviceInfo?.capabilities}, flags=${serviceInfo?.flags}")
         instance = this
     }
 
@@ -54,9 +65,13 @@ class InputInjectionService : AccessibilityService() {
         val gestureBuilder = GestureDescription.Builder()
 
         for (stroke in spec.strokes) {
+            val isSinglePoint = stroke.startX == stroke.endX && stroke.startY == stroke.endY
             val path = Path().apply {
                 moveTo(stroke.startX.toFloat(), stroke.startY.toFloat())
-                if (stroke.path.size > 2) {
+                if (isSinglePoint) {
+                    // Single-point gesture (tap/long-press): only moveTo, no lineTo.
+                    // A zero-length lineTo can cause dispatchGesture to silently drop the gesture.
+                } else if (stroke.path.size > 2) {
                     // Complex path with intermediate points
                     for (point in stroke.path.drop(1)) {
                         lineTo(point.x.toFloat(), point.y.toFloat())
@@ -75,8 +90,17 @@ class InputInjectionService : AccessibilityService() {
         }
 
         return try {
-            dispatchGesture(gestureBuilder.build(), null, null)
+            val callback = object : GestureResultCallback() {
+                override fun onCompleted(gestureDescription: GestureDescription?) {
+                    android.util.Log.d(TAG, "Gesture COMPLETED")
+                }
+                override fun onCancelled(gestureDescription: GestureDescription?) {
+                    android.util.Log.w(TAG, "Gesture CANCELLED")
+                }
+            }
+            dispatchGesture(gestureBuilder.build(), callback, null)
         } catch (e: Exception) {
+            android.util.Log.e(TAG, "dispatchGesture threw: ${e.message}")
             false
         }
     }
@@ -113,6 +137,7 @@ class InputInjectionService : AccessibilityService() {
      * Dispatches a tap gesture at the specified coordinates.
      */
     fun dispatchTap(x: Int, y: Int): Boolean {
+        android.util.Log.d(TAG, "dispatchTap($x, $y)")
         val path = Path().apply {
             moveTo(x.toFloat(), y.toFloat())
         }
@@ -126,8 +151,17 @@ class InputInjectionService : AccessibilityService() {
             .build()
 
         return try {
-            dispatchGesture(gesture, null, null)
+            val callback = object : GestureResultCallback() {
+                override fun onCompleted(gestureDescription: GestureDescription?) {
+                    android.util.Log.d(TAG, "dispatchTap COMPLETED at ($x, $y)")
+                }
+                override fun onCancelled(gestureDescription: GestureDescription?) {
+                    android.util.Log.w(TAG, "dispatchTap CANCELLED at ($x, $y)")
+                }
+            }
+            dispatchGesture(gesture, callback, null)
         } catch (e: Exception) {
+            android.util.Log.e(TAG, "dispatchTap threw: ${e.message}")
             false
         }
     }

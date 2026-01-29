@@ -50,6 +50,7 @@ class AdbShellInjector : InputInjector {
     // Cache availability check
     private var availabilityChecked = false
     private var available = false
+    private var useRoot = false
 
     override suspend fun tap(x: Int, y: Int): Result<Unit> {
         return runShellCommand("input tap $x $y")
@@ -85,9 +86,26 @@ class AdbShellInjector : InputInjector {
             return available
         }
 
-        // Try a simple command to check if we have shell access
+        // First check if root is available (needed to inject into other apps)
+        // Try both su syntaxes: "su 0 cmd" (Android/Toybox) and "su -c cmd" (Magisk/SuperSU)
+        useRoot = try {
+            val process = Runtime.getRuntime().exec(arrayOf("su", "0", "id"))
+            val exitCode = process.waitFor()
+            if (exitCode == 0) {
+                true
+            } else {
+                val process2 = Runtime.getRuntime().exec(arrayOf("su", "-c", "id"))
+                process2.waitFor() == 0
+            }
+        } catch (e: Exception) {
+            false
+        }
+        Log.d(TAG, "Root available: $useRoot")
+
+        // Check if shell input command exists
         available = try {
-            val process = Runtime.getRuntime().exec(arrayOf("sh", "-c", "input"))
+            val cmd = if (useRoot) arrayOf("su", "0", "sh", "-c", "input") else arrayOf("sh", "-c", "input")
+            val process = Runtime.getRuntime().exec(cmd)
             val exitCode = process.waitFor()
             // `input` with no args returns 1, but that means it's available
             exitCode == 0 || exitCode == 1
@@ -97,7 +115,7 @@ class AdbShellInjector : InputInjector {
         }
 
         availabilityChecked = true
-        Log.d(TAG, "Shell input available: $available")
+        Log.d(TAG, "Shell input available: $available (root: $useRoot)")
         return available
     }
 
@@ -111,7 +129,8 @@ class AdbShellInjector : InputInjector {
             Log.d(TAG, "Running: $command")
             val startTime = System.currentTimeMillis()
 
-            val process = Runtime.getRuntime().exec(arrayOf("sh", "-c", command))
+            val cmd = if (useRoot) arrayOf("su", "0", "sh", "-c", command) else arrayOf("sh", "-c", command)
+            val process = Runtime.getRuntime().exec(cmd)
             val exitCode = process.waitFor()
 
             val elapsed = System.currentTimeMillis() - startTime

@@ -5,10 +5,17 @@ import com.androidremote.app.service.InputInjectionService
 import com.androidremote.feature.input.CoordinateMapper
 import com.androidremote.feature.input.GestureBuilder
 import com.androidremote.feature.input.GestureSpec
+import com.androidremote.feature.input.InputInjector
+import com.androidremote.feature.input.InputInjectorFactory
 import com.androidremote.transport.RemoteCommand
+import kotlinx.coroutines.runBlocking
 
 /**
  * Handles input commands by converting coordinates and dispatching gestures.
+ *
+ * Uses a two-tier injection strategy:
+ * 1. Shell input injection (via AdbShellInjector) — most reliable, works on rooted devices
+ * 2. AccessibilityService dispatchGesture — fallback for non-rooted devices
  */
 class InputHandler {
 
@@ -17,6 +24,18 @@ class InputHandler {
     }
 
     private var coordinateMapper: CoordinateMapper? = null
+    private var shellInjector: InputInjector? = null
+
+    init {
+        // Try to initialize shell-based input injection (works on rooted devices)
+        val injector = InputInjectorFactory.create()
+        if (injector != null && injector.isAvailable()) {
+            shellInjector = injector
+            Log.i(TAG, "Using shell input injector: ${injector.getName()}")
+        } else {
+            Log.i(TAG, "Shell input not available, using AccessibilityService gestures")
+        }
+    }
 
     /**
      * Updates screen configuration for coordinate mapping.
@@ -46,45 +65,78 @@ class InputHandler {
             ?: return CommandResult.error("Screen not configured").also {
                 Log.w(TAG, "TAP failed: coordinateMapper is null")
             }
-        val service = InputInjectionService.instance
-            ?: return CommandResult.error("Accessibility service not running").also {
-                Log.w(TAG, "TAP failed: InputInjectionService.instance is null")
-            }
 
         val point = mapper.map(cmd.x, cmd.y)
-        Log.d(TAG, "TAP: normalized=(${cmd.x}, ${cmd.y}) -> screen=(${point.x}, ${point.y})")
-        val gesture = GestureBuilder.tap(point.x, point.y)
+        Log.d(TAG, "TAP: normalized=(${cmd.x}, ${cmd.y}) -> screen=(${point.x}, ${point.y}), mapper=${mapper.screenWidth}x${mapper.screenHeight}")
 
-        return dispatchGesture(service, gesture)
+        // Try shell injection first (most reliable on rooted devices)
+        shellInjector?.let { injector ->
+            return runBlocking {
+                injector.tap(point.x, point.y).fold(
+                    onSuccess = { CommandResult.success() },
+                    onFailure = { e ->
+                        Log.w(TAG, "Shell tap failed: ${e.message}, trying accessibility")
+                        dispatchGestureViaAccessibility(GestureBuilder.tap(point.x, point.y))
+                    }
+                )
+            }
+        }
+
+        // Fallback to AccessibilityService
+        return dispatchGestureViaAccessibility(GestureBuilder.tap(point.x, point.y))
     }
 
     fun handleSwipe(cmd: RemoteCommand.Swipe): CommandResult {
         val mapper = coordinateMapper
             ?: return CommandResult.error("Screen not configured")
-        val service = InputInjectionService.instance
-            ?: return CommandResult.error("Accessibility service not running")
 
         val start = mapper.map(cmd.startX, cmd.startY)
         val end = mapper.map(cmd.endX, cmd.endY)
-        val gesture = GestureBuilder.swipe(
-            start.x, start.y,
-            end.x, end.y,
-            cmd.durationMs.toLong()
-        )
+        val durationMs = cmd.durationMs.toLong()
 
-        return dispatchGesture(service, gesture)
+        shellInjector?.let { injector ->
+            return runBlocking {
+                injector.swipe(start.x, start.y, end.x, end.y, durationMs).fold(
+                    onSuccess = { CommandResult.success() },
+                    onFailure = { e ->
+                        Log.w(TAG, "Shell swipe failed: ${e.message}, trying accessibility")
+                        dispatchGestureViaAccessibility(
+                            GestureBuilder.swipe(start.x, start.y, end.x, end.y, durationMs)
+                        )
+                    }
+                )
+            }
+        }
+
+        return dispatchGestureViaAccessibility(
+            GestureBuilder.swipe(start.x, start.y, end.x, end.y, durationMs)
+        )
     }
 
     fun handleLongPress(cmd: RemoteCommand.LongPress): CommandResult {
         val mapper = coordinateMapper
             ?: return CommandResult.error("Screen not configured")
-        val service = InputInjectionService.instance
-            ?: return CommandResult.error("Accessibility service not running")
 
         val point = mapper.map(cmd.x, cmd.y)
-        val gesture = GestureBuilder.longPress(point.x, point.y, cmd.durationMs.toLong())
+        val durationMs = cmd.durationMs.toLong()
 
-        return dispatchGesture(service, gesture)
+        shellInjector?.let { injector ->
+            return runBlocking {
+                injector.longPress(point.x, point.y, durationMs).fold(
+                    onSuccess = { CommandResult.success() },
+                    onFailure = { e ->
+                        Log.w(TAG, "Shell longPress failed: ${e.message}, trying accessibility")
+                        dispatchGestureViaAccessibility(
+                            GestureBuilder.longPress(point.x, point.y, durationMs)
+                        )
+                    }
+                )
+            }
+        }
+
+        return dispatchGestureViaAccessibility(
+            GestureBuilder.longPress(point.x, point.y, durationMs)
+        )
     }
 
     fun handlePinch(cmd: RemoteCommand.Pinch): CommandResult {
@@ -104,14 +156,12 @@ class InputHandler {
             cmd.durationMs.toLong()
         )
 
-        return dispatchGesture(service, gesture)
+        return dispatchGestureViaAccessibility(gesture)
     }
 
     fun handleScroll(cmd: RemoteCommand.Scroll): CommandResult {
         val mapper = coordinateMapper
             ?: return CommandResult.error("Screen not configured")
-        val service = InputInjectionService.instance
-            ?: return CommandResult.error("Accessibility service not running")
 
         val start = mapper.map(cmd.x, cmd.y)
         val screenDeltaX = (cmd.deltaX * mapper.screenWidth).toInt()
@@ -123,10 +173,18 @@ class InputHandler {
             200L
         )
 
-        return dispatchGesture(service, gesture)
+        return dispatchGestureViaAccessibility(gesture)
     }
 
     fun handleKeyPress(cmd: RemoteCommand.KeyPress): CommandResult {
+        // Try shell injection first
+        shellInjector?.let { injector ->
+            val result = runBlocking { injector.keyEvent(cmd.keyCode) }
+            if (result.isSuccess) return CommandResult.success()
+            Log.w(TAG, "Shell keyEvent failed: ${result.exceptionOrNull()?.message}, trying accessibility")
+        }
+
+        // Fallback to AccessibilityService
         val service = InputInjectionService.instance
             ?: return CommandResult.error("Accessibility service not running")
 
@@ -137,7 +195,10 @@ class InputHandler {
         }
     }
 
-    private fun dispatchGesture(service: InputInjectionService, gesture: GestureSpec): CommandResult {
+    private fun dispatchGestureViaAccessibility(gesture: GestureSpec): CommandResult {
+        val service = InputInjectionService.instance
+            ?: return CommandResult.error("Accessibility service not running")
+
         return if (service.dispatchGesture(gesture)) {
             CommandResult.success()
         } else {

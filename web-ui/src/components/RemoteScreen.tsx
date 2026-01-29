@@ -15,6 +15,7 @@ const SWIPE_THRESHOLD = 10; // pixels
 // Android key codes
 const KEYCODE_HOME = 3;
 const KEYCODE_BACK = 4;
+const KEYCODE_APP_SWITCH = 187;
 
 export function RemoteScreen({
   deviceId,
@@ -64,10 +65,8 @@ export function RemoteScreen({
           }
           decoderRef.current?.decode(event.data);
         } else {
-          // Text message (command ACK) — log but don't process here
-          if (frameCount === 0) {
-            console.log('[RemoteScreen] Received text message (no video frames yet):', typeof event.data);
-          }
+          // Text message (command ACK)
+          console.log('[RemoteScreen] Text message (ACK?):', event.data);
         }
       };
     } else {
@@ -98,6 +97,7 @@ export function RemoteScreen({
   }, []);
 
   const handlePointerDown = useCallback((e: React.PointerEvent) => {
+    console.log(`[RemoteScreen] pointerDown: client=(${e.clientX.toFixed(0)}, ${e.clientY.toFixed(0)})`);
     const coords = getNormalizedCoordinates(e.clientX, e.clientY);
     pointerStartRef.current = {
       x: e.clientX,
@@ -155,6 +155,7 @@ export function RemoteScreen({
 
     if (distance > SWIPE_THRESHOLD) {
       // Swipe
+      console.log(`[RemoteScreen] SWIPE: (${startCoords.x.toFixed(3)},${startCoords.y.toFixed(3)}) -> (${endCoords.x.toFixed(3)},${endCoords.y.toFixed(3)}), dist=${distance.toFixed(1)}`);
       sendCommand({
         type: 'SWIPE',
         startX: startCoords.x,
@@ -164,6 +165,7 @@ export function RemoteScreen({
       });
     } else {
       // Tap
+      console.log(`[RemoteScreen] TAP: normalized=(${startCoords.x.toFixed(3)}, ${startCoords.y.toFixed(3)}), dist=${distance.toFixed(1)}`);
       sendCommand({
         type: 'TAP',
         x: startCoords.x,
@@ -190,6 +192,10 @@ export function RemoteScreen({
         keyCode,
       });
     }
+  }, [sendCommand]);
+
+  const handleNavButton = useCallback((keyCode: number) => {
+    sendCommand({ type: 'KEY_PRESS', keyCode });
   }, [sendCommand]);
 
   // Render based on connection state
@@ -254,7 +260,72 @@ export function RemoteScreen({
           objectFit: 'contain',
         }}
       />
-      <p className="status">Connected</p>
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'center',
+          gap: '24px',
+          padding: '12px 0',
+          maxWidth: isLandscape ? '800px' : '400px',
+          width: '100%',
+        }}
+      >
+        <button
+          onClick={() => handleNavButton(KEYCODE_BACK)}
+          title="Back"
+          style={{
+            background: 'none',
+            border: '1px solid #444',
+            borderRadius: '8px',
+            color: '#ccc',
+            padding: '8px 20px',
+            cursor: 'pointer',
+            fontSize: '18px',
+            lineHeight: 1,
+          }}
+          aria-label="Back"
+        >
+          &#9664;
+        </button>
+        <button
+          onClick={() => handleNavButton(KEYCODE_HOME)}
+          title="Home"
+          style={{
+            background: 'none',
+            border: '1px solid #444',
+            borderRadius: '50%',
+            color: '#ccc',
+            width: '42px',
+            height: '42px',
+            cursor: 'pointer',
+            fontSize: '14px',
+            lineHeight: 1,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+          aria-label="Home"
+        >
+          &#9679;
+        </button>
+        <button
+          onClick={() => handleNavButton(KEYCODE_APP_SWITCH)}
+          title="Overview"
+          style={{
+            background: 'none',
+            border: '1px solid #444',
+            borderRadius: '8px',
+            color: '#ccc',
+            padding: '8px 20px',
+            cursor: 'pointer',
+            fontSize: '18px',
+            lineHeight: 1,
+          }}
+          aria-label="Overview"
+        >
+          &#9632;
+        </button>
+      </div>
     </div>
   );
 }
