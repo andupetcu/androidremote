@@ -4,13 +4,10 @@ import { Button } from '../ui/Button';
 import type { ConnectionState } from '../../hooks/useWebRTC';
 import './DeviceComponents.css';
 
-const API_BASE_URL = import.meta.env.DEV
-  ? `http://${window.location.hostname}:7899`
-  : '';
-const WS_PROTOCOL = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-const SIGNALING_URL = import.meta.env.DEV
-  ? `ws://${window.location.hostname}:7899/ws`
-  : `${WS_PROTOCOL}//${window.location.host}/ws`;
+// Both browser and device connect directly to the signaling server.
+// The Vite dev proxy doesn't reliably forward WebSocket upgrades,
+// so we bypass it and connect to the production signaling server directly.
+const SIGNALING_URL = 'wss://mdmadmin.footprints.media/ws';
 
 interface DeviceRemoteProps {
   deviceId: string;
@@ -27,7 +24,7 @@ export function DeviceRemote({ deviceId }: DeviceRemoteProps) {
     setPhase('sending');
 
     try {
-      const response = await fetch(`${API_BASE_URL}/api/devices/${deviceId}/commands`, {
+      const response = await fetch(`/api/devices/${deviceId}/commands`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

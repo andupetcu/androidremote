@@ -17,7 +17,8 @@ import com.androidremote.screenserver.wrappers.SurfaceControl
  */
 class ScreenCapture(
     private val displayId: Int,
-    private var maxSize: Int
+    private var maxSize: Int,
+    private val captureSize: Int = 0  // Override capture rect size (0 = auto-detect)
 ) {
     private var displayInfo: DisplayInfo? = null
     private var videoSize: Size? = null
@@ -40,12 +41,32 @@ class ScreenCapture(
             System.err.println("WARN: Display doesn't have FLAG_SUPPORTS_PROTECTED_BUFFERS")
         }
 
+        // Determine the capture rect dimensions.
+        // The SurfaceControl layer stack rect must match the coordinate space
+        // used by SurfaceFlinger. On devices with a density override (wm density),
+        // this may differ from logicalWidth/logicalHeight.
+        val captureRect = computeCaptureSize(info)
+
         // Calculate video size respecting maxSize constraint
-        val displaySize = Size(info.width, info.height)
-        videoSize = displaySize.limit(maxSize).round8()
+        videoSize = captureRect.limit(maxSize).round8()
 
         System.err.println("Display size: ${info.width}x${info.height}")
+        System.err.println("Physical size: ${info.physicalWidth}x${info.physicalHeight}")
+        System.err.println("Density DPI: ${info.logicalDensityDpi}")
+        System.err.println("Capture rect: ${captureRect.width}x${captureRect.height}")
         System.err.println("Video size: ${videoSize!!.width}x${videoSize!!.height}")
+        System.err.println("Rotation: ${info.rotation}")
+    }
+
+    private fun computeCaptureSize(info: DisplayInfo): Size {
+        // If user specified an explicit capture size, use it
+        if (captureSize > 0) {
+            val displaySize = Size(info.width, info.height)
+            return displaySize.limit(captureSize)
+        }
+
+        // Use logical dimensions (same as physical for most devices)
+        return Size(info.width, info.height)
     }
 
     /**
@@ -80,11 +101,16 @@ class ScreenCapture(
         // Fall back to SurfaceControl
         try {
             display = createDisplay()
+            val captureRect = computeCaptureSize(info)
+            val deviceRect = Rect(0, 0, captureRect.width, captureRect.height)
+            val displayRect = Rect(0, 0, size.width, size.height)
+            System.err.println("SurfaceControl projection: rotation=${info.rotation}, deviceRect=$deviceRect -> displayRect=$displayRect, layerStack=${info.layerStack}")
             setDisplaySurface(
                 display!!,
                 surface,
-                Rect(0, 0, info.width, info.height),
-                Rect(0, 0, size.width, size.height),
+                info.rotation,
+                deviceRect,
+                displayRect,
                 info.layerStack
             )
             System.err.println("Display: using SurfaceControl API")
@@ -132,6 +158,7 @@ class ScreenCapture(
     private fun setDisplaySurface(
         display: IBinder,
         surface: Surface,
+        orientation: Int,
         deviceRect: Rect,
         displayRect: Rect,
         layerStack: Int
@@ -139,7 +166,7 @@ class ScreenCapture(
         SurfaceControl.openTransaction()
         try {
             SurfaceControl.setDisplaySurface(display, surface)
-            SurfaceControl.setDisplayProjection(display, 0, deviceRect, displayRect)
+            SurfaceControl.setDisplayProjection(display, orientation, deviceRect, displayRect)
             SurfaceControl.setDisplayLayerStack(display, layerStack)
         } finally {
             SurfaceControl.closeTransaction()

@@ -64,17 +64,55 @@ class ScreenServerManager(private val context: Context) {
 
     /**
      * Check if screen-server process is running.
+     *
+     * Tries multiple methods since Android restricts /proc visibility
+     * for app processes (can't see root-owned processes via pgrep).
      */
     suspend fun isScreenServerRunning(): Boolean = withContext(Dispatchers.IO) {
+        // Method 1: Check abstract socket existence via /proc/net/unix
+        // The screen server binds to @android-remote-video
+        try {
+            val process = Runtime.getRuntime().exec(arrayOf("sh", "-c", "grep -q $SOCKET_NAME /proc/net/unix"))
+            process.waitFor()
+            if (process.exitValue() == 0) {
+                Log.d(TAG, "Screen server detected via /proc/net/unix socket")
+                return@withContext true
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Socket check failed: ${e.message}")
+        }
+
+        // Method 2: pgrep (works for same-UID processes)
         try {
             val process = Runtime.getRuntime().exec(arrayOf("pgrep", "-f", SCREEN_SERVER_CLASS))
             val result = process.inputStream.bufferedReader().readText()
             process.waitFor()
-            result.isNotBlank()
+            if (result.isNotBlank()) {
+                Log.d(TAG, "Screen server detected via pgrep")
+                return@withContext true
+            }
         } catch (e: Exception) {
-            Log.w(TAG, "Failed to check if screen-server is running: ${e.message}")
-            false
+            Log.w(TAG, "pgrep failed: ${e.message}")
         }
+
+        // Method 3: pgrep via su (can see root-owned processes)
+        if (isRooted()) {
+            try {
+                val process = Runtime.getRuntime().exec(
+                    arrayOf("su", "0", "sh", "-c", "pgrep -f $SCREEN_SERVER_CLASS")
+                )
+                val result = process.inputStream.bufferedReader().readText()
+                process.waitFor()
+                if (result.isNotBlank()) {
+                    Log.d(TAG, "Screen server detected via su pgrep")
+                    return@withContext true
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "su pgrep failed: ${e.message}")
+            }
+        }
+
+        false
     }
 
     /**
@@ -109,21 +147,54 @@ class ScreenServerManager(private val context: Context) {
 
     /**
      * Start screen server via root access.
+     *
+     * Tries two su syntaxes since Android su implementations vary:
+     * - "su 0 sh -c <cmd>" (Rockchip, some stock ROMs)
+     * - "su -c <cmd>" (Magisk, SuperSU)
      */
     private suspend fun startViaRoot(): Boolean = withContext(Dispatchers.IO) {
+        val serverCmd = "CLASSPATH=$SCREEN_SERVER_PATH " +
+                "app_process / $SCREEN_SERVER_CLASS " +
+                "2>/data/local/tmp/screen-server.log &"
+
+        // Try "su 0 sh -c" first (works on Rockchip and stock ROMs)
         try {
-            val command = "CLASSPATH=$SCREEN_SERVER_PATH app_process / $SCREEN_SERVER_CLASS &"
-            val process = Runtime.getRuntime().exec(arrayOf("su", "-c", command))
-
-            // Wait a bit for the process to start
-            delay(1000)
-
-            // Check if it's running
-            isScreenServerRunning()
+            Log.d(TAG, "Trying su 0 sh -c syntax")
+            val process = Runtime.getRuntime().exec(arrayOf("su", "0", "sh", "-c", serverCmd))
+            val stderr = process.errorStream.bufferedReader().readText()
+            process.waitFor()
+            if (stderr.isNotBlank()) {
+                Log.w(TAG, "su 0 stderr: $stderr")
+            }
+            delay(1500)
+            if (isScreenServerRunning()) {
+                Log.i(TAG, "Screen server started via su 0")
+                return@withContext true
+            }
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to start screen server via root", e)
-            false
+            Log.w(TAG, "su 0 syntax failed: ${e.message}")
         }
+
+        // Fallback to "su -c" (Magisk, SuperSU)
+        try {
+            Log.d(TAG, "Trying su -c syntax")
+            val process = Runtime.getRuntime().exec(arrayOf("su", "-c", serverCmd))
+            val stderr = process.errorStream.bufferedReader().readText()
+            process.waitFor()
+            if (stderr.isNotBlank()) {
+                Log.w(TAG, "su -c stderr: $stderr")
+            }
+            delay(1500)
+            if (isScreenServerRunning()) {
+                Log.i(TAG, "Screen server started via su -c")
+                return@withContext true
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "su -c syntax failed: ${e.message}")
+        }
+
+        Log.e(TAG, "Failed to start screen server via root (both su syntaxes failed)")
+        false
     }
 
     /**
@@ -152,7 +223,7 @@ class ScreenServerManager(private val context: Context) {
         try {
             val command = "pkill -f $SCREEN_SERVER_CLASS"
             val process = if (isRooted()) {
-                Runtime.getRuntime().exec(arrayOf("su", "-c", command))
+                Runtime.getRuntime().exec(arrayOf("su", "0", "sh", "-c", command))
             } else {
                 Runtime.getRuntime().exec(arrayOf("sh", "-c", command))
             }

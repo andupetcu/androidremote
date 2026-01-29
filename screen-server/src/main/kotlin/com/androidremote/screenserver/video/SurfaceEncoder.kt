@@ -84,6 +84,7 @@ class SurfaceEncoder(
                         throw e
                     }
                     System.err.println("Capture/encoding error: ${e.javaClass.simpleName}: ${e.message}")
+                    e.printStackTrace(System.err)
                     if (!prepareRetry(size)) {
                         throw e
                     }

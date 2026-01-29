@@ -38,6 +38,7 @@ object Server {
         System.err.println("PID: ${android.os.Process.myPid()}")
         System.err.println("Display: ${params.displayId}")
         System.err.println("Max size: ${params.maxSize}")
+        System.err.println("Capture size: ${params.captureSize}")
         System.err.println("Bitrate: ${params.bitRate}")
         System.err.println("Max FPS: ${params.maxFps}")
         System.err.println("Socket: ${params.socketName}")
@@ -74,7 +75,7 @@ object Server {
     }
 
     private fun runCapture(socket: LocalSocket, params: Params) {
-        val capture = ScreenCapture(params.displayId, params.maxSize)
+        val capture = ScreenCapture(params.displayId, params.maxSize, params.captureSize)
         val encoder = SurfaceEncoder(
             capture = capture,
             output = socket.outputStream,
@@ -96,6 +97,7 @@ object Server {
         var socketName = "android-remote-video"
         var displayId = 0
         var maxSize = 1920
+        var captureSize = 0
         var bitRate = 8_000_000
         var maxFps = 60f
         var showHelp = false
@@ -112,6 +114,9 @@ object Server {
                 "-m" -> {
                     maxSize = args.getOrNull(++i)?.toIntOrNull() ?: maxSize
                 }
+                "-c" -> {
+                    captureSize = args.getOrNull(++i)?.toIntOrNull() ?: captureSize
+                }
                 "-b" -> {
                     bitRate = args.getOrNull(++i)?.toIntOrNull() ?: bitRate
                 }
@@ -125,7 +130,7 @@ object Server {
             i++
         }
 
-        return Params(socketName, displayId, maxSize, bitRate, maxFps, showHelp)
+        return Params(socketName, displayId, maxSize, captureSize, bitRate, maxFps, showHelp)
     }
 
     private fun printHelp() {
@@ -138,6 +143,7 @@ object Server {
               -n <name>     Socket name (default: android-remote-video)
               -d <id>       Display ID (default: 0)
               -m <size>     Max video dimension (default: 1920)
+              -c <size>     Capture rect size override (default: auto-detect)
               -b <rate>     Bitrate in bps (default: 8000000)
               -f <fps>      Max FPS (default: 60)
               -h            Show this help
@@ -152,6 +158,7 @@ object Server {
         val socketName: String,
         val displayId: Int,
         val maxSize: Int,
+        val captureSize: Int,
         val bitRate: Int,
         val maxFps: Float,
         val showHelp: Boolean
