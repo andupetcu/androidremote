@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import type { DeviceEvent, Device } from '../types/api';
 
-const WS_BASE = import.meta.env.DEV ? 'ws://localhost:7899' : `ws://${window.location.host}`;
+const WS_PROTOCOL = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+const WS_BASE = import.meta.env.DEV ? 'ws://localhost:7899' : `${WS_PROTOCOL}//${window.location.host}`;
 
 type AdminEventType =
   | 'device-online'

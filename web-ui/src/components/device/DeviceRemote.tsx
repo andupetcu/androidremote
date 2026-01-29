@@ -7,9 +7,10 @@ import './DeviceComponents.css';
 const API_BASE_URL = import.meta.env.DEV
   ? `http://${window.location.hostname}:7899`
   : '';
+const WS_PROTOCOL = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
 const SIGNALING_URL = import.meta.env.DEV
   ? `ws://${window.location.hostname}:7899/ws`
-  : `ws://${window.location.host}/ws`;
+  : `${WS_PROTOCOL}//${window.location.host}/ws`;
 
 interface DeviceRemoteProps {
   deviceId: string;
