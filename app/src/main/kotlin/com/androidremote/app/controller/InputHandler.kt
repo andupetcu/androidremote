@@ -1,10 +1,6 @@
 package com.androidremote.app.controller
 
-import android.hardware.input.InputManager
-import android.os.SystemClock
 import android.util.Log
-import android.view.InputDevice
-import android.view.MotionEvent
 import com.androidremote.app.service.InputInjectionService
 import com.androidremote.feature.input.CoordinateMapper
 import com.androidremote.feature.input.GestureBuilder
@@ -187,96 +183,32 @@ class InputHandler {
         val point = mapper.map(cmd.x, cmd.y)
         Log.d(TAG, "MULTI_TAP: count=${cmd.count}, interval=${cmd.intervalMs}ms at screen=(${point.x}, ${point.y})")
 
-        // Use InputManager.injectInputEvent() via reflection for rapid in-process injection.
-        // Shell `input tap` spawns a new Dalvik VM per call (~1.1s each), far too slow for multi-tap.
+        // Each `input tap` spawns a new Dalvik VM (~1.1s). To get rapid taps, we background
+        // each one with `&` so JVM startups overlap, and use `sleep` to space the actual
+        // touch events apart. Must run as root (su 0) for INJECT_EVENTS permission.
+        val sleepSec = cmd.intervalMs / 1000.0
+        val shellCmd = (1..cmd.count).joinToString(" ") { i ->
+            if (i < cmd.count) {
+                "input tap ${point.x} ${point.y} & sleep $sleepSec &&"
+            } else {
+                "input tap ${point.x} ${point.y}; wait"
+            }
+        }
+
         return try {
-            injectMultiTapViaInputManager(point.x.toFloat(), point.y.toFloat(), cmd.count, cmd.intervalMs.toLong())
+            Log.d(TAG, "MULTI_TAP shell: $shellCmd")
+            val process = Runtime.getRuntime().exec(arrayOf("su", "0", "sh", "-c", shellCmd))
+            val exitCode = process.waitFor()
+            Log.d(TAG, "MULTI_TAP completed with exit code $exitCode")
+            if (exitCode == 0) {
+                CommandResult.success()
+            } else {
+                CommandResult.error("Multi-tap failed with exit code $exitCode")
+            }
         } catch (e: Exception) {
-            Log.w(TAG, "InputManager inject failed: ${e.message}, falling back to shell")
-            // Fallback: sequential shell taps (slow but functional)
-            shellInjector?.let { injector ->
-                runBlocking {
-                    for (i in 1..cmd.count) {
-                        injector.tap(point.x, point.y)
-                        if (i < cmd.count) kotlinx.coroutines.delay(cmd.intervalMs.toLong())
-                    }
-                }
-            }
-            CommandResult.success()
+            Log.e(TAG, "MULTI_TAP shell failed", e)
+            CommandResult.error("Multi-tap failed: ${e.message}")
         }
-    }
-
-    /**
-     * Inject rapid multi-tap using InputManager.injectInputEvent() via reflection.
-     * This is in-process and takes <1ms per event, enabling precise timing.
-     */
-    private fun injectMultiTapViaInputManager(
-        x: Float, y: Float, count: Int, intervalMs: Long
-    ): CommandResult {
-        val inputManager = InputManager::class.java.getDeclaredMethod("getInstance")
-            .invoke(null) as InputManager
-
-        val injectMethod = InputManager::class.java.getDeclaredMethod(
-            "injectInputEvent",
-            android.view.InputEvent::class.java,
-            Int::class.javaPrimitiveType
-        )
-
-        // INJECT_INPUT_EVENT_MODE_ASYNC = 0
-        val INJECT_MODE_ASYNC = 0
-
-        val props = MotionEvent.PointerProperties().apply {
-            id = 0
-            toolType = MotionEvent.TOOL_TYPE_FINGER
-        }
-        val propsArray = arrayOf(props)
-
-        for (i in 1..count) {
-            val downTime = SystemClock.uptimeMillis()
-
-            val coordsDown = MotionEvent.PointerCoords().apply {
-                this.x = x; this.y = y
-                pressure = 1.0f; size = 1.0f
-            }
-
-            val down = MotionEvent.obtain(
-                downTime, downTime,
-                MotionEvent.ACTION_DOWN, 1,
-                propsArray, arrayOf(coordsDown),
-                0, 0, 1.0f, 1.0f,
-                0, 0,
-                InputDevice.SOURCE_TOUCHSCREEN, 0
-            )
-
-            val upTime = downTime + 10 // short tap
-            val up = MotionEvent.obtain(
-                downTime, upTime,
-                MotionEvent.ACTION_UP, 1,
-                propsArray, arrayOf(coordsDown),
-                0, 0, 1.0f, 1.0f,
-                0, 0,
-                InputDevice.SOURCE_TOUCHSCREEN, 0
-            )
-
-            val downOk = injectMethod.invoke(inputManager, down, INJECT_MODE_ASYNC) as Boolean
-            val upOk = injectMethod.invoke(inputManager, up, INJECT_MODE_ASYNC) as Boolean
-
-            down.recycle()
-            up.recycle()
-
-            Log.d(TAG, "MULTI_TAP[$i/$count]: down=$downOk, up=$upOk")
-
-            if (!downOk || !upOk) {
-                return CommandResult.error("Tap $i injection failed (down=$downOk, up=$upOk)")
-            }
-
-            if (i < count) {
-                Thread.sleep(intervalMs)
-            }
-        }
-
-        Log.d(TAG, "MULTI_TAP: all $count taps injected successfully")
-        return CommandResult.success()
     }
 
     fun handleKeyPress(cmd: RemoteCommand.KeyPress): CommandResult {
