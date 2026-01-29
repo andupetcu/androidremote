@@ -8,6 +8,7 @@ import android.os.Looper
 import android.util.Log
 import com.androidremote.app.MainActivity
 import com.androidremote.app.admin.DeviceOwnerManager
+import kotlin.concurrent.thread
 
 /**
  * Boot receiver to auto-start apps configured in policy.
@@ -24,13 +25,17 @@ import com.androidremote.app.admin.DeviceOwnerManager
  *
  * Preferences are stored via CommandPollingService.saveBootStartApp()
  * Format: SharedPreferences "boot_apps" with packageName -> Boolean (true = foreground)
+ *
+ * IMPORTANT: Uses goAsync() to keep the receiver alive during the delay.
+ * Handler.postDelayed doesn't work in BroadcastReceivers because the process
+ * can be killed after onReceive returns.
  */
 class BootReceiver : BroadcastReceiver() {
 
     companion object {
         private const val TAG = "BootReceiver"
         private const val PREFS_NAME = "boot_apps"
-        private const val BOOT_DELAY_MS = 5000L  // 5 seconds delay before launching policy apps
+        private const val BOOT_DELAY_MS = 8000L  // 8 seconds delay before launching policy apps
     }
 
     override fun onReceive(context: Context, intent: Intent) {
@@ -46,11 +51,25 @@ class BootReceiver : BroadcastReceiver() {
         // Step 1: Start Android Remote app first (establishes MDM control)
         startAndroidRemote(context)
 
-        // Step 2: After delay, start policy-configured apps
-        val handler = Handler(Looper.getMainLooper())
-        handler.postDelayed({
-            launchPolicyApps(context)
-        }, BOOT_DELAY_MS)
+        // Step 2: Use goAsync() to keep receiver alive during the delay
+        // Handler.postDelayed doesn't work because the receiver can be killed after onReceive returns
+        val pendingResult = goAsync()
+
+        thread {
+            try {
+                Log.i(TAG, "Waiting ${BOOT_DELAY_MS}ms before launching policy apps...")
+                Thread.sleep(BOOT_DELAY_MS)
+
+                // Launch apps on main thread
+                Handler(Looper.getMainLooper()).post {
+                    launchPolicyApps(context)
+                    pendingResult.finish()
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error in boot delay thread", e)
+                pendingResult.finish()
+            }
+        }
     }
 
     /**
@@ -130,21 +149,54 @@ class BootReceiver : BroadcastReceiver() {
     }
 
     private fun launchApp(context: Context, packageName: String, bringToFront: Boolean) {
-        try {
-            val launchIntent = context.packageManager.getLaunchIntentForPackage(packageName)
-            if (launchIntent != null) {
-                launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                if (bringToFront) {
-                    launchIntent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
-                    launchIntent.addFlags(Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
+        // Retry logic - package manager may not be ready immediately after boot
+        for (attempt in 1..3) {
+            try {
+                var launchIntent = context.packageManager.getLaunchIntentForPackage(packageName)
+
+                // Fallback: query MAIN/LAUNCHER activity directly
+                if (launchIntent == null) {
+                    Log.d(TAG, "getLaunchIntentForPackage returned null, trying queryIntentActivities")
+                    val queryIntent = Intent(Intent.ACTION_MAIN).apply {
+                        addCategory(Intent.CATEGORY_LAUNCHER)
+                        setPackage(packageName)
+                    }
+                    val activities = context.packageManager.queryIntentActivities(queryIntent, 0)
+                    if (activities.isNotEmpty()) {
+                        val activityInfo = activities[0].activityInfo
+                        launchIntent = Intent(Intent.ACTION_MAIN).apply {
+                            addCategory(Intent.CATEGORY_LAUNCHER)
+                            setClassName(activityInfo.packageName, activityInfo.name)
+                        }
+                        Log.d(TAG, "Found activity via query: ${activityInfo.name}")
+                    }
                 }
-                context.startActivity(launchIntent)
-                Log.i(TAG, "Launched app: $packageName (foreground: $bringToFront)")
-            } else {
-                Log.w(TAG, "No launch intent for package: $packageName")
+
+                if (launchIntent != null) {
+                    launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    if (bringToFront) {
+                        // Use all flags to ensure app comes to foreground
+                        launchIntent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                        launchIntent.addFlags(Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
+                        launchIntent.addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+                        launchIntent.addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                    }
+                    context.startActivity(launchIntent)
+                    Log.i(TAG, "Launched app: $packageName (foreground: $bringToFront)")
+                    return
+                } else {
+                    Log.w(TAG, "No launch intent for package: $packageName (attempt $attempt/3)")
+                    if (attempt < 3) {
+                        Thread.sleep(1000)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to launch app: $packageName (attempt $attempt/3)", e)
+                if (attempt < 3) {
+                    Thread.sleep(1000)
+                }
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to launch app: $packageName", e)
         }
+        Log.e(TAG, "Failed to launch app after 3 attempts: $packageName")
     }
 }

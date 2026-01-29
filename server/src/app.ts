@@ -52,6 +52,8 @@ app.use(cors({
       /^http:\/\/127\.0\.0\.1:\d+$/,
       /^http:\/\/192\.168\.\d+\.\d+:\d+$/,  // Local network
       /^http:\/\/10\.\d+\.\d+\.\d+:\d+$/,   // Private network
+      /^https?:\/\/mdmadmin\.footprints\.media$/,   // Production admin UI
+      /^https?:\/\/proxymdm\.footprints\.media$/,   // Production API domain
     ];
     if (!origin || allowedPatterns.some(p => p.test(origin))) {
       callback(null, true);
