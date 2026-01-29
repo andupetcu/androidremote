@@ -28,6 +28,32 @@ adb shell am start -n com.androidremote.app/.MainActivity \\
 # Note: User must manually enable AccessibilityService
 # (Android security prevents auto-enable)
 
+# ── Rooted Device Install ────────────────────────
+#
+# On rooted devices the app uses 'su' for:
+#   - Input injection (tap, swipe, key events) via shell
+#   - Screen server deployment to /data/local/tmp/
+#   - Multi-tap commands with parallel shell execution
+#
+# Root is auto-detected at runtime (checks /system/bin/su,
+# /system/xbin/su, /sbin/su, etc.). No extra setup needed
+# beyond having a working su binary (Magisk, SuperSU, etc.).
+
+# 1. Install as root (grants install permission automatically)
+adb root
+adb install -r android-remote.apk
+
+# 2. (Optional) Set as device owner for MDM features
+#    Device Owner adds: silent app install, device lock/wipe/reboot,
+#    auto-grant permissions, kiosk mode. Not required if only using
+#    root for remote control.
+adb shell dpm set-device-owner com.androidremote.app/.admin.DeviceOwnerReceiver
+
+# 3. Auto-enroll via ADB
+adb shell am start -n com.androidremote.app/.MainActivity \\
+  -e enrollment_token "YOUR_TOKEN" \\
+  -e server_url "https://your-server.com"
+
 # ── Factory Reset Enrollment ─────────────────────
 
 # 1. Factory reset the device
@@ -45,9 +71,13 @@ adb shell am start -n com.androidremote.app/.MainActivity \\
   -e enrollment_token "YOUR_TOKEN" \\
   -e server_url "https://your-server.com"
 
-# Device Owner auto-grants permissions (camera, storage, notifications).
-# The root daemon is a separate binary and persists across app updates.
-# App self-updates via INSTALL_APK command preserve Device Owner status.`;
+# ── Notes ────────────────────────────────────────
+# - Device Owner auto-grants permissions (camera, storage, notifications)
+# - Root and Device Owner can be used together for full capability
+# - The screen server binary persists across app updates
+# - App self-updates via INSTALL_APK preserve Device Owner status
+# - Root is NOT required if Device Owner is set (but enables
+#   faster input injection via shell vs AccessibilityService)`;
 
 const useStyles = makeStyles({
   root: {
