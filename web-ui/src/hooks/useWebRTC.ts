@@ -207,6 +207,7 @@ export function useWebRTC(deviceId: string | null, signalingUrl: string): UseWeb
     dc.binaryType = 'arraybuffer';
 
     dc.onopen = () => {
+      console.log('[WebRTC] Data channel opened, label:', dc.label, 'id:', dc.id);
       setConnectionState('connected');
       setDataChannel(dc);
     };

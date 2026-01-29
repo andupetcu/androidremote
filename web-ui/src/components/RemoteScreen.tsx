@@ -39,22 +39,39 @@ export function RemoteScreen({
 
   // Set up frame decoder and data channel listener
   useEffect(() => {
-    if (!canvasRef.current) return;
+    if (!canvasRef.current) {
+      console.warn('[RemoteScreen] useEffect: canvas not available, skipping setup');
+      return;
+    }
 
     // Initialize decoder
     if (!decoderRef.current) {
       const decoder = new FrameDecoder(canvasRef.current);
       decoder.onDimensionsChanged = (w, h) => setVideoDimensions({ width: w, height: h });
       decoderRef.current = decoder;
+      console.log('[RemoteScreen] FrameDecoder created');
     }
 
     // Listen for video frames on data channel
     if (dataChannel) {
+      console.log('[RemoteScreen] Setting up data channel message handler, readyState:', dataChannel.readyState);
+      let frameCount = 0;
       dataChannel.onmessage = (event) => {
         if (event.data instanceof ArrayBuffer) {
+          frameCount++;
+          if (frameCount === 1 || frameCount % 100 === 0) {
+            console.log(`[RemoteScreen] Video frame #${frameCount}, size: ${event.data.byteLength} bytes`);
+          }
           decoderRef.current?.decode(event.data);
+        } else {
+          // Text message (command ACK) — log but don't process here
+          if (frameCount === 0) {
+            console.log('[RemoteScreen] Received text message (no video frames yet):', typeof event.data);
+          }
         }
       };
+    } else {
+      console.warn('[RemoteScreen] useEffect: dataChannel is null');
     }
 
     return () => {
