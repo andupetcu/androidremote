@@ -23,6 +23,13 @@ import com.androidremote.app.api.CommandApiClient
 import com.androidremote.app.api.CommandApiException
 import com.androidremote.app.api.DeviceCommand
 import com.androidremote.app.ui.SessionStorage
+import io.ktor.client.HttpClient
+import io.ktor.client.call.body
+import io.ktor.client.engine.okhttp.OkHttp
+import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.client.request.get
+import io.ktor.http.HttpStatusCode
+import io.ktor.serialization.kotlinx.json.json
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -30,6 +37,8 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -222,11 +231,12 @@ class CommandPollingService : Service() {
                 try {
                     fetchAndExecuteCommands()
 
-                    // Send telemetry periodically
+                    // Send telemetry and check for app updates periodically
                     pollCount++
                     if (pollCount >= TELEMETRY_POLL_INTERVAL) {
                         pollCount = 0
                         sendPeriodicTelemetry()
+                        checkAndInstallAppUpdates()
                     }
                 } catch (e: CommandApiException) {
                     Log.e(TAG, "Command API error: ${e.message}")
@@ -262,6 +272,60 @@ class CommandPollingService : Service() {
             }
         } catch (e: Exception) {
             Log.w(TAG, "Failed to send periodic telemetry: ${e.message}")
+        }
+    }
+
+    /**
+     * Check the server for app updates and silently install any newer versions.
+     *
+     * Calls GET /api/devices/:id/app-updates which returns packages where the
+     * server has a newer versionCode than what is installed on the device.
+     */
+    private suspend fun checkAndInstallAppUpdates() {
+        val baseUrl = httpBaseUrl ?: return
+        val deviceId = sessionStorage.getDeviceId() ?: return
+
+        try {
+            val client = HttpClient(OkHttp) {
+                install(ContentNegotiation) {
+                    json(Json { ignoreUnknownKeys = true; isLenient = true })
+                }
+            }
+
+            val response = client.get("$baseUrl/api/devices/$deviceId/app-updates")
+            client.close()
+
+            if (response.status != HttpStatusCode.OK) {
+                Log.w(TAG, "App updates check failed: ${response.status}")
+                return
+            }
+
+            val body: AppUpdatesResponse = response.body()
+            if (body.updates.isEmpty()) {
+                Log.d(TAG, "No app updates available")
+                return
+            }
+
+            Log.i(TAG, "Found ${body.updates.size} app update(s) available")
+
+            for (update in body.updates) {
+                val apkUrl = if (update.apkUrl.startsWith("/")) {
+                    "$baseUrl${update.apkUrl}"
+                } else {
+                    update.apkUrl
+                }
+
+                Log.i(TAG, "Auto-updating ${update.packageName}: installed=${update.installedVersionCode} -> latest=${update.latestVersionCode}")
+
+                val result = silentInstaller.installFromUrl(apkUrl, update.packageName)
+                when (result) {
+                    is InstallResult.Success -> Log.i(TAG, "Auto-update installed: ${update.packageName}")
+                    is InstallResult.UserPromptShown -> Log.i(TAG, "Auto-update prompted user: ${update.packageName}")
+                    is InstallResult.Failure -> Log.w(TAG, "Auto-update failed for ${update.packageName}: ${result.message}")
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to check for app updates: ${e.message}")
         }
     }
 
@@ -750,3 +814,23 @@ data class CommandResult(
         fun failure(error: String) = CommandResult(false, error)
     }
 }
+
+/**
+ * Response from GET /api/devices/:id/app-updates.
+ */
+@Serializable
+data class AppUpdatesResponse(
+    val updates: List<AppUpdateEntry> = emptyList()
+)
+
+/**
+ * A single app update entry returned by the server.
+ */
+@Serializable
+data class AppUpdateEntry(
+    val packageName: String,
+    val apkUrl: String,
+    val latestVersionCode: Int,
+    val latestVersionName: String? = null,
+    val installedVersionCode: Int? = null
+)

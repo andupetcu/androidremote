@@ -49,6 +49,7 @@ interface SidebarProps {
   collapsed?: boolean;
   onToggle?: () => void;
   unreadEvents?: number;
+  serverName?: string;
 }
 
 const useStyles = makeStyles({
@@ -154,14 +155,14 @@ const useStyles = makeStyles({
   },
 });
 
-export function Sidebar({ collapsed = false, onToggle, unreadEvents = 0 }: SidebarProps) {
+export function Sidebar({ collapsed = false, onToggle, unreadEvents = 0, serverName = 'Android Remote' }: SidebarProps) {
   const styles = useStyles();
 
   return (
     <aside className={mergeClasses(styles.sidebar, collapsed && styles.sidebarCollapsed)}>
       <div className={styles.header}>
         <div className={mergeClasses(styles.logo, collapsed && styles.logoCollapsed)}>
-          {collapsed ? 'AR' : 'Android Remote'}
+          {collapsed ? serverName.slice(0, 2).toUpperCase() : serverName}
         </div>
         <button
           className={styles.toggleButton}

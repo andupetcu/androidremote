@@ -305,6 +305,7 @@ export function SettingsPage() {
       });
       if (res.ok) {
         setServerNameMsg({ type: 'success', text: 'Server name saved.' });
+        document.title = serverName || 'Android Remote';
       } else {
         setServerNameMsg({ type: 'error', text: 'Failed to save server name.' });
       }

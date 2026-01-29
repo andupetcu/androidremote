@@ -146,6 +146,43 @@ class MainActivity : AppCompatActivity() {
             // Attempt battery optimization exemption
             deviceOwnerManager.exemptFromBatteryOptimization()
         }
+
+        // Handle ADB auto-enrollment via intent extras:
+        //   adb shell am start -n com.androidremote.app/.MainActivity \
+        //     -e enrollment_token "ABC23XYZ" -e server_url "http://192.168.1.10:7899"
+        handleAdbEnrollmentExtras(intent)
+    }
+
+    /**
+     * Check for enrollment_token and server_url intent extras (from ADB launch).
+     * If both are present and the device is not already enrolled, auto-enroll silently.
+     */
+    private fun handleAdbEnrollmentExtras(intent: Intent?) {
+        val token = intent?.getStringExtra("enrollment_token") ?: return
+        val serverUrl = intent.getStringExtra("server_url")
+
+        if (sessionStorage.isEnrolled()) {
+            Log.i(TAG, "ADB enrollment extras ignored — device already enrolled")
+            return
+        }
+
+        Log.i(TAG, "ADB auto-enrollment: token=$token, serverUrl=$serverUrl")
+
+        // If a server URL was provided, save it and reinitialize API clients
+        if (!serverUrl.isNullOrBlank()) {
+            sessionStorage.saveServerUrl(serverUrl)
+            pairingApiClient.close()
+            enrollmentApiClient.close()
+            pairingApiClient = PairingApiClient(serverUrl)
+            enrollmentApiClient = EnrollmentApiClient(serverUrl)
+            Log.i(TAG, "Server URL set from ADB extra: $serverUrl")
+        }
+
+        // Mark initial setup as complete (ADB provisioning skips the permission wizard)
+        sessionStorage.setInitialSetupComplete(true)
+
+        // Start enrollment with the provided token
+        startEnrollment(token.uppercase())
     }
 
     /**

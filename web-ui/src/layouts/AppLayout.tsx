@@ -4,6 +4,7 @@ import { makeStyles, tokens } from '@fluentui/react-components';
 import { Sidebar } from '../components/layout/Sidebar';
 import { Header } from '../components/layout/Header';
 import { useEventStats } from '../hooks/useEvents';
+import { useSettings } from '../hooks/useSettings';
 
 const useStyles = makeStyles({
   layout: {
@@ -33,6 +34,12 @@ export function AppLayout() {
   const unreadEvents = stats?.unacknowledged ?? 0;
   const navigate = useNavigate();
   const mountIdRef = useRef(Math.random().toString(36).slice(2, 8));
+  const { settings } = useSettings();
+
+  // Update browser tab title when server name changes
+  useEffect(() => {
+    document.title = settings.serverName;
+  }, [settings.serverName]);
 
   // Track AppLayout mounts
   useEffect(() => {
@@ -52,6 +59,7 @@ export function AppLayout() {
         collapsed={sidebarCollapsed}
         onToggle={() => setSidebarCollapsed(!sidebarCollapsed)}
         unreadEvents={unreadEvents}
+        serverName={settings.serverName}
       />
       <div className={styles.main}>
         <Header
