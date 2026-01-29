@@ -40,22 +40,37 @@ const upload = multer({
 
 export const app = express();
 
+// Trust reverse proxies (nginx, load balancers, etc.)
+// This makes req.protocol correctly return 'https' when behind TLS-terminating proxy.
+// Set TRUST_PROXY to a specific value (e.g. "loopback", "1", "172.17.0.0/16") for
+// fine-grained control. Defaults to "loopback" (trusts localhost proxies).
+app.set('trust proxy', process.env.TRUST_PROXY || 'loopback');
+
 // Serve uploaded files statically
 app.use('/api/uploads', express.static(uploadsDir));
 
 // Middleware
 app.use(cors({
   origin: (origin, callback) => {
-    // Allow localhost and local network IPs for development
+    // Allow requests with no origin (mobile apps, curl, etc.)
+    if (!origin) {
+      callback(null, true);
+      return;
+    }
+
+    // Check against allowed patterns
     const allowedPatterns = [
-      /^http:\/\/localhost:\d+$/,
-      /^http:\/\/127\.0\.0\.1:\d+$/,
-      /^http:\/\/192\.168\.\d+\.\d+:\d+$/,  // Local network
-      /^http:\/\/10\.\d+\.\d+\.\d+:\d+$/,   // Private network
-      /^https?:\/\/mdmadmin\.footprints\.media$/,   // Production admin UI
-      /^https?:\/\/proxymdm\.footprints\.media$/,   // Production API domain
+      /^https?:\/\/localhost(:\d+)?$/,
+      /^https?:\/\/127\.0\.0\.1(:\d+)?$/,
+      /^https?:\/\/192\.168\.\d+\.\d+(:\d+)?$/,  // Local network
+      /^https?:\/\/10\.\d+\.\d+\.\d+(:\d+)?$/,   // Private network
+      /^https?:\/\/172\.(1[6-9]|2\d|3[01])\.\d+\.\d+(:\d+)?$/, // Docker/private
     ];
-    if (!origin || allowedPatterns.some(p => p.test(origin))) {
+
+    // Also allow the same origin as the server itself (CORS_ORIGIN env var)
+    const extraOrigins = (process.env.CORS_ORIGIN || '').split(',').map(s => s.trim()).filter(Boolean);
+
+    if (allowedPatterns.some(p => p.test(origin)) || extraOrigins.includes(origin)) {
       callback(null, true);
     } else {
       callback(new Error('Not allowed by CORS'));
@@ -72,6 +87,29 @@ app.use((req: Request, _res: Response, next: NextFunction) => {
   }
   next();
 });
+
+/**
+ * Derive the external base URL from the incoming request.
+ * Works correctly behind reverse proxies when 'trust proxy' is enabled.
+ * Override with BASE_URL env var for non-standard setups (e.g. path prefixes).
+ */
+function getBaseUrl(req: Request): string {
+  if (process.env.BASE_URL) {
+    return process.env.BASE_URL.replace(/\/$/, '');
+  }
+  const protocol = req.protocol; // Respects X-Forwarded-Proto when trust proxy is set
+  const host = req.get('host') || 'localhost:7899';
+  return `${protocol}://${host}`;
+}
+
+/**
+ * Derive the WebSocket signaling URL from the incoming request.
+ */
+function getSignalingUrl(req: Request): string {
+  const base = getBaseUrl(req);
+  const wsUrl = base.replace(/^http/, 'ws');
+  return `${wsUrl}/ws`;
+}
 
 // Rate limiter stores (exported for testing)
 const initiateStore = new MemoryStore();
@@ -217,10 +255,7 @@ app.get('/api/pair/status/:deviceId', (req: Request, res: Response) => {
   // Include sessionToken and serverUrl when pairing is complete
   if (session.status === 'paired' && session.sessionToken) {
     response.sessionToken = session.sessionToken;
-    // Use the same server for WebSocket signaling
-    const protocol = req.protocol === 'https' ? 'wss' : 'ws';
-    const host = req.get('host') || 'localhost:7899';
-    response.serverUrl = `${protocol}://${host}/ws`;
+    response.serverUrl = getSignalingUrl(req);
   }
 
   // eslint-disable-next-line no-console
@@ -375,14 +410,10 @@ app.post('/api/enroll/device', (req: Request, res: Response) => {
     return;
   }
 
-  // Build server URL from request (HTTP base URL for API calls)
-  const protocol = req.protocol || 'http';
-  const host = req.get('host') || 'localhost:7899';
-
   res.status(201).json({
     deviceId: result.deviceId,
     sessionToken: result.sessionToken,
-    serverUrl: `${protocol}://${host}`,
+    serverUrl: getBaseUrl(req),
   });
 });
 
@@ -500,7 +531,14 @@ app.post('/api/devices/:id/commands', (req: Request, res: Response) => {
     }
   }
 
-  const command = commandStore.queueCommand(id, type as CommandType, payload || {});
+  // For START_REMOTE, inject the signaling URL server-side so the web UI
+  // doesn't need to know the external server address.
+  const finalPayload = { ...(payload || {}) };
+  if (type === 'START_REMOTE') {
+    finalPayload.signalingUrl = getSignalingUrl(req);
+  }
+
+  const command = commandStore.queueCommand(id, type as CommandType, finalPayload);
 
   res.status(201).json(command);
 });

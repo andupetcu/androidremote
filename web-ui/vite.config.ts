@@ -1,6 +1,11 @@
 import { defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 
+// Dev proxy target — set via environment variable or default to localhost.
+// Example: PROXY_TARGET=https://myserver.example.com npm run dev
+const proxyTarget = process.env.PROXY_TARGET || 'http://localhost:7899';
+const wsTarget = proxyTarget.replace(/^http/, 'ws');
+
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react()],
@@ -13,12 +18,12 @@ export default defineConfig({
     host: true, // Expose to network (0.0.0.0)
     proxy: {
       '/api': {
-        target: 'https://proxymdm.footprints.media',
+        target: proxyTarget,
         changeOrigin: true,
         secure: false,
       },
       '/ws': {
-        target: 'wss://proxymdm.footprints.media',
+        target: wsTarget,
         changeOrigin: true,
         ws: true,
         secure: false,
