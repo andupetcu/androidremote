@@ -208,7 +208,7 @@ This serves the React app and proxies API/WebSocket calls to the server.
 ```nginx
 # Proxy /api/* requests to the MDM server
 location /api/ {
-    proxy_pass http://127.0.0.1:7899;
+    proxy_pass http://10.0.1.219:7899;
     proxy_http_version 1.1;
     proxy_set_header Host $host;
     proxy_set_header X-Real-IP $remote_addr;
@@ -224,7 +224,7 @@ location /api/ {
 
 # Proxy /ws WebSocket to the MDM server
 location /ws {
-    proxy_pass http://127.0.0.1:7899;
+    proxy_pass http://10.0.1.219:7899;
     proxy_http_version 1.1;
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection "upgrade";
@@ -236,7 +236,7 @@ location /ws {
 
 # Proxy /admin WebSocket (real-time dashboard updates)
 location /admin {
-    proxy_pass http://127.0.0.1:7899;
+    proxy_pass http://10.0.1.219:7899;
     proxy_http_version 1.1;
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection "upgrade";
@@ -248,13 +248,15 @@ location /admin {
 
 # Proxy /api/uploads (static APK files) to the MDM server
 location /api/uploads/ {
-    proxy_pass http://127.0.0.1:7899;
+    proxy_pass http://10.0.1.219:7899;
     proxy_http_version 1.1;
     proxy_set_header Host $host;
 }
 ```
 
-**Why this is needed:** The admin dashboard makes API calls to `/api/...` using relative paths. Without the location blocks, those requests would go to the static file server (port 7099) instead of the MDM server (port 7899).
+**Why `10.0.1.219` instead of `127.0.0.1`:** Nginx Proxy Manager runs inside a Docker container. `127.0.0.1` inside the container refers to the container itself, not the host. Use the host's LAN IP (`10.0.1.219`) so Nginx can reach the PM2 services running on the host.
+
+**Why location blocks are needed:** The admin dashboard makes API calls to `/api/...` using relative paths. Without the location blocks, those requests would go to the static file server (port 7099) instead of the MDM server (port 7899).
 
 ## 8. Verify Deployment
 
