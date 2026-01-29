@@ -15,7 +15,15 @@ const SWIPE_THRESHOLD = 10; // pixels
 // Android key codes
 const KEYCODE_HOME = 3;
 const KEYCODE_BACK = 4;
+const KEYCODE_ENTER = 66;
+const KEYCODE_DEL = 67; // Backspace
+const KEYCODE_TAB = 61;
+const KEYCODE_FORWARD_DEL = 112; // Delete
 const KEYCODE_APP_SWITCH = 187;
+const KEYCODE_DPAD_UP = 19;
+const KEYCODE_DPAD_DOWN = 20;
+const KEYCODE_DPAD_LEFT = 21;
+const KEYCODE_DPAD_RIGHT = 22;
 
 export function RemoteScreen({
   deviceId,
@@ -177,25 +185,47 @@ export function RemoteScreen({
   }, [getNormalizedCoordinates, sendCommand]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
-    let keyCode: number | null = null;
+    // Map special keys to Android key codes
+    const keyMap: Record<string, number> = {
+      Escape: KEYCODE_BACK,
+      Backspace: KEYCODE_DEL,
+      Enter: KEYCODE_ENTER,
+      Tab: KEYCODE_TAB,
+      Delete: KEYCODE_FORWARD_DEL,
+      ArrowUp: KEYCODE_DPAD_UP,
+      ArrowDown: KEYCODE_DPAD_DOWN,
+      ArrowLeft: KEYCODE_DPAD_LEFT,
+      ArrowRight: KEYCODE_DPAD_RIGHT,
+    };
 
-    if (e.key === 'Escape') {
-      keyCode = KEYCODE_BACK;
-    } else if (e.key === 'h' && e.ctrlKey) {
-      keyCode = KEYCODE_HOME;
+    // Ctrl+H → Home
+    if (e.key === 'h' && e.ctrlKey) {
       e.preventDefault();
+      sendCommand({ type: 'KEY_PRESS', keyCode: KEYCODE_HOME });
+      return;
     }
 
-    if (keyCode !== null) {
-      sendCommand({
-        type: 'KEY_PRESS',
-        keyCode,
-      });
+    // Special keys → KEY_PRESS
+    const mappedKeyCode = keyMap[e.key];
+    if (mappedKeyCode !== undefined) {
+      e.preventDefault();
+      sendCommand({ type: 'KEY_PRESS', keyCode: mappedKeyCode });
+      return;
+    }
+
+    // Printable characters → TYPE_TEXT (ignore modifier-only keys and ctrl/meta combos)
+    if (e.key.length === 1 && !e.ctrlKey && !e.metaKey) {
+      e.preventDefault();
+      sendCommand({ type: 'TYPE_TEXT', text: e.key });
     }
   }, [sendCommand]);
 
   const handleNavButton = useCallback((keyCode: number) => {
     sendCommand({ type: 'KEY_PRESS', keyCode });
+  }, [sendCommand]);
+
+  const handleTripleTap = useCallback(() => {
+    sendCommand({ type: 'MULTI_TAP', x: 0.5, y: 0.5, count: 3, intervalMs: 100 });
   }, [sendCommand]);
 
   // Render based on connection state
@@ -324,6 +354,23 @@ export function RemoteScreen({
           aria-label="Overview"
         >
           &#9632;
+        </button>
+        <button
+          onClick={handleTripleTap}
+          title="Triple Tap (center)"
+          style={{
+            background: 'none',
+            border: '1px solid #444',
+            borderRadius: '8px',
+            color: '#ccc',
+            padding: '8px 12px',
+            cursor: 'pointer',
+            fontSize: '12px',
+            lineHeight: 1,
+          }}
+          aria-label="Triple Tap"
+        >
+          3x Tap
         </button>
       </div>
     </div>

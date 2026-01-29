@@ -78,6 +78,19 @@ sealed class RemoteCommand {
     ) : RemoteCommand()
 
     /**
+     * Multiple taps at the same location with precise timing.
+     * Used for double-tap, triple-tap, etc.
+     */
+    @Serializable
+    @SerialName("MULTI_TAP")
+    data class MultiTap(
+        val x: Float,
+        val y: Float,
+        val count: Int = 3,
+        val intervalMs: Int = 100
+    ) : RemoteCommand()
+
+    /**
      * Scroll in a direction.
      */
     @Serializable

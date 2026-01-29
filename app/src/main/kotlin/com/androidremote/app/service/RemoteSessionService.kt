@@ -23,6 +23,7 @@ import com.androidremote.app.controller.SessionController
 import com.androidremote.app.controller.SessionState
 import com.androidremote.app.controller.TextInputHandler
 import com.androidremote.app.webrtc.WebRtcPeerConnectionFactory
+import com.androidremote.feature.input.InputInjectorFactory
 import com.androidremote.feature.input.TextInputService
 import com.androidremote.feature.screen.EncoderConfig
 import com.androidremote.feature.screen.ScreenCaptureManager
@@ -281,7 +282,9 @@ class RemoteSessionService : Service() {
         val clipboardProvider = AndroidClipboardProvider(this)
 
         val textInputService = TextInputService(accessibilityServiceProvider, clipboardProvider)
-        val textInputHandler = TextInputHandler(textInputService)
+        // Reuse shell injector for text input (same root detection as InputHandler)
+        val shellInjector = InputInjectorFactory.create()?.takeIf { it.isAvailable() }
+        val textInputHandler = TextInputHandler(textInputService, shellInjector)
 
         // Create MDM handler for Device Owner features
         val mdmHandler = MdmHandler(this)

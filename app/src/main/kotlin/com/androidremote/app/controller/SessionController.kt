@@ -389,6 +389,7 @@ class SessionController(
             is RemoteCommand.LongPress -> inputHandler.handleLongPress(command).toRouteResult()
             is RemoteCommand.Pinch -> inputHandler.handlePinch(command).toRouteResult()
             is RemoteCommand.Scroll -> inputHandler.handleScroll(command).toRouteResult()
+            is RemoteCommand.MultiTap -> inputHandler.handleMultiTap(command).toRouteResult()
             is RemoteCommand.KeyPress -> inputHandler.handleKeyPress(command).toRouteResult()
             is RemoteCommand.TypeText -> textInputHandler.handleTypeText(command).toRouteResult()
 

@@ -176,6 +176,68 @@ class InputHandler {
         return dispatchGestureViaAccessibility(gesture)
     }
 
+    fun handleMultiTap(cmd: RemoteCommand.MultiTap): CommandResult {
+        val mapper = coordinateMapper
+            ?: return CommandResult.error("Screen not configured")
+
+        val point = mapper.map(cmd.x, cmd.y)
+        Log.d(TAG, "MULTI_TAP: count=${cmd.count}, interval=${cmd.intervalMs}ms at screen=(${point.x}, ${point.y})")
+
+        // Shell injection: execute all taps in a single shell command for precise timing
+        shellInjector?.let { injector ->
+            return runBlocking {
+                // Build a single shell command that does all taps with sleep between them
+                val sleepSec = cmd.intervalMs / 1000.0
+                val tapCommands = (1..cmd.count).joinToString(" && ") { i ->
+                    if (i < cmd.count) {
+                        "input tap ${point.x} ${point.y} && sleep $sleepSec"
+                    } else {
+                        "input tap ${point.x} ${point.y}"
+                    }
+                }
+
+                // Run as a single shell invocation for minimal overhead
+                val cmdArray = if (injector.getName() == "ADB Shell") {
+                    // Use the shell injector's root detection
+                    arrayOf("su", "0", "sh", "-c", tapCommands)
+                } else {
+                    arrayOf("sh", "-c", tapCommands)
+                }
+
+                try {
+                    val process = Runtime.getRuntime().exec(cmdArray)
+                    val exitCode = process.waitFor()
+                    if (exitCode == 0) {
+                        CommandResult.success()
+                    } else {
+                        CommandResult.error("Multi-tap shell command failed with exit code $exitCode")
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Shell multi-tap failed: ${e.message}, trying sequential")
+                    // Fallback: do taps sequentially through the injector
+                    for (i in 1..cmd.count) {
+                        val result = injector.tap(point.x, point.y)
+                        if (result.isFailure) return@runBlocking CommandResult.error("Tap $i failed: ${result.exceptionOrNull()?.message}")
+                        if (i < cmd.count) {
+                            kotlinx.coroutines.delay(cmd.intervalMs.toLong())
+                        }
+                    }
+                    CommandResult.success()
+                }
+            }
+        }
+
+        // Fallback: sequential accessibility taps
+        for (i in 1..cmd.count) {
+            val result = dispatchGestureViaAccessibility(GestureBuilder.tap(point.x, point.y))
+            if (!result.success) return result
+            if (i < cmd.count) {
+                Thread.sleep(cmd.intervalMs.toLong())
+            }
+        }
+        return CommandResult.success()
+    }
+
     fun handleKeyPress(cmd: RemoteCommand.KeyPress): CommandResult {
         // Try shell injection first
         shellInjector?.let { injector ->
