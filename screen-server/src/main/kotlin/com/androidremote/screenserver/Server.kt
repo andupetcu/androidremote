@@ -55,15 +55,21 @@ object Server {
         val serverSocket = LocalServerSocket(params.socketName)
         System.err.println("Listening on socket: ${params.socketName}")
 
-        // Accept one connection
-        val clientSocket = serverSocket.accept()
-        System.err.println("Client connected")
+        // Accept connections in a loop — each client gets exclusive capture.
+        // When one client disconnects, the server waits for the next.
+        while (true) {
+            val clientSocket = serverSocket.accept()
+            System.err.println("Client connected")
 
-        try {
-            runCapture(clientSocket, params)
-        } finally {
-            clientSocket.close()
-            serverSocket.close()
+            try {
+                runCapture(clientSocket, params)
+            } catch (e: Exception) {
+                System.err.println("Capture session ended: ${e.message}")
+            } finally {
+                try { clientSocket.close() } catch (_: Exception) {}
+            }
+
+            System.err.println("Client disconnected, waiting for next connection...")
         }
     }
 

@@ -348,7 +348,12 @@ class SessionController(
     }
 
     private fun processCommand(envelope: CommandEnvelope, commandChannel: DeviceCommandChannel) {
+        Log.d(TAG, "Processing command: ${envelope.command::class.simpleName} (id=${envelope.id})")
         val (success, errorMessage, data) = routeCommand(envelope.command)
+
+        if (!success) {
+            Log.w(TAG, "Command ${envelope.command::class.simpleName} failed: $errorMessage")
+        }
 
         val ack = CommandAck(
             commandId = envelope.id,

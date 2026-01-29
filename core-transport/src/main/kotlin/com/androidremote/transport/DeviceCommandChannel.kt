@@ -72,7 +72,7 @@ class DeviceCommandChannel(
             val envelope = json.decodeFromString<CommandEnvelope>(text)
             _commands.tryEmit(envelope)
         } catch (e: Exception) {
-            // Ignore malformed messages
+            System.err.println("DeviceCommandChannel: Failed to deserialize command: ${e.message}, text=$text")
         }
     }
 }

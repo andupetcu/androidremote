@@ -176,9 +176,15 @@ class RemoteSessionService : Service() {
             Log.i(TAG, "Auto-start: serverUrl=$serverUrl, deviceId=$deviceId, hasToken=${sessionToken != null}")
 
             if (serverUrl != null && sessionToken != null && deviceId != null) {
+                // Clean up any previous capture state from a prior session
+                if (isScreenCaptureActive) {
+                    Log.i(TAG, "Cleaning up previous screen capture before new session")
+                    stopScreenCapture()
+                }
+
                 isAutoStartedSession = true
 
-                // Observe session state to request screen capture when connected
+                // Observe session state to manage screen capture lifecycle
                 serviceScope.launch {
                     sessionController.state.collect { state ->
                         Log.d(TAG, "Session state changed: $state")
@@ -193,6 +199,11 @@ class RemoteSessionService : Service() {
                             } else {
                                 // Fall back to MediaProjection
                                 requestScreenCapturePermission()
+                            }
+                        } else if (state is SessionState.Disconnected || state is SessionState.Error) {
+                            if (isScreenCaptureActive) {
+                                Log.i(TAG, "Session disconnected/error, stopping screen capture")
+                                stopScreenCapture()
                             }
                         }
                     }
@@ -424,52 +435,74 @@ class RemoteSessionService : Service() {
             }
             val manager = screenServerManager!!
 
-            // Try to auto-start screen server if not running (Device Owner + root)
+            // Try to auto-start screen server if not running
+            // NOTE: The screen server requires shell UID (2000) for SurfaceControl access.
+            // Runtime.exec("sh") from an app gets the app's UID, NOT shell UID.
+            // Only root (su) can actually start it with correct privileges.
+            // For non-rooted devices, the screen server must be pre-started via ADB.
             if (!manager.isScreenServerRunning()) {
-                if (deviceOwnerManager.isDeviceOwner() || manager.isRooted()) {
-                    Log.i(TAG, "Attempting to auto-start screen server...")
+                if (manager.isRooted()) {
+                    Log.i(TAG, "Attempting to auto-start screen server via root...")
                     val started = manager.startScreenServer()
                     if (started) {
-                        Log.i(TAG, "Screen server auto-started successfully")
-                        // Wait a bit for it to initialize
+                        Log.i(TAG, "Screen server auto-started successfully via root")
                         kotlinx.coroutines.delay(500)
                     } else {
-                        Log.w(TAG, "Failed to auto-start screen server")
+                        Log.w(TAG, "Failed to auto-start screen server via root")
+                    }
+                } else {
+                    Log.w(TAG, "Screen server not running and device is not rooted. " +
+                            "Start it via ADB: adb shell CLASSPATH=/data/local/tmp/screen-server.apk " +
+                            "app_process / com.androidremote.screenserver.Server")
+                }
+            }
+
+            // Retry connecting to screen server — it may take a moment to start
+            val maxRetries = 5
+            val retryDelayMs = 1000L
+            var connected = false
+
+            for (attempt in 1..maxRetries) {
+                val client = ScreenServerClient()
+                screenServerClient = client
+
+                if (client.connect()) {
+                    Log.i(TAG, "Connected to screen server: ${client.videoWidth}x${client.videoHeight}")
+
+                    // Handle early death: server crashes during capture setup
+                    client.onEarlyDeath = {
+                        Log.w(TAG, "Screen server died during capture setup")
+                        client.disconnect()
+                        screenServerClient = null
+                        isScreenCaptureActive = false
+                    }
+
+                    // Forward frames to WebRTC — VideoStreamBridge is already subscribed
+                    // to _frameDataFlow, so frames will be sent immediately
+                    launch {
+                        client.frames.collect { frame ->
+                            _frameDataFlow.emit(frame)
+                        }
+                    }
+
+                    Log.i(TAG, "Video streaming started via screen server")
+                    connected = true
+                    break
+                } else {
+                    client.disconnect()
+                    screenServerClient = null
+                    if (attempt < maxRetries) {
+                        Log.w(TAG, "Screen server not available (attempt $attempt/$maxRetries), retrying in ${retryDelayMs}ms...")
+                        kotlinx.coroutines.delay(retryDelayMs)
                     }
                 }
             }
 
-            val client = ScreenServerClient()
-            screenServerClient = client
-
-            // Handle early death: server connects but crashes during capture setup
-            client.onEarlyDeath = {
-                Log.w(TAG, "Screen server died during capture setup, falling back to MediaProjection")
-                client.disconnect()
-                screenServerClient = null
-
-                // Fall back to MediaProjection on main thread
-                serviceScope.launch {
-                    requestScreenCapturePermission()
-                }
-            }
-
-            if (client.connect()) {
-                Log.i(TAG, "Connected to screen server: ${client.videoWidth}x${client.videoHeight}")
-
-                // Forward frames to WebRTC — VideoStreamBridge is already subscribed
-                // to _frameDataFlow, so frames will be sent immediately
-                launch {
-                    client.frames.collect { frame ->
-                        _frameDataFlow.emit(frame)
-                    }
-                }
-
-                Log.i(TAG, "Video streaming started via screen server")
-            } else {
-                Log.w(TAG, "Screen server not available, falling back to MediaProjection")
-                screenServerClient = null
-                requestScreenCapturePermission()
+            if (!connected) {
+                Log.e(TAG, "Screen server not available after $maxRetries attempts. " +
+                        "Start it via ADB: adb shell CLASSPATH=/data/local/tmp/screen-server.apk " +
+                        "app_process / com.androidremote.screenserver.Server")
+                isScreenCaptureActive = false
             }
         }
     }

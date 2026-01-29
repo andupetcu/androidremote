@@ -1,5 +1,6 @@
 package com.androidremote.app.controller
 
+import android.util.Log
 import com.androidremote.app.service.InputInjectionService
 import com.androidremote.feature.input.CoordinateMapper
 import com.androidremote.feature.input.GestureBuilder
@@ -10,6 +11,10 @@ import com.androidremote.transport.RemoteCommand
  * Handles input commands by converting coordinates and dispatching gestures.
  */
 class InputHandler {
+
+    companion object {
+        private const val TAG = "InputHandler"
+    }
 
     private var coordinateMapper: CoordinateMapper? = null
 
@@ -38,11 +43,16 @@ class InputHandler {
 
     fun handleTap(cmd: RemoteCommand.Tap): CommandResult {
         val mapper = coordinateMapper
-            ?: return CommandResult.error("Screen not configured")
+            ?: return CommandResult.error("Screen not configured").also {
+                Log.w(TAG, "TAP failed: coordinateMapper is null")
+            }
         val service = InputInjectionService.instance
-            ?: return CommandResult.error("Accessibility service not running")
+            ?: return CommandResult.error("Accessibility service not running").also {
+                Log.w(TAG, "TAP failed: InputInjectionService.instance is null")
+            }
 
         val point = mapper.map(cmd.x, cmd.y)
+        Log.d(TAG, "TAP: normalized=(${cmd.x}, ${cmd.y}) -> screen=(${point.x}, ${point.y})")
         val gesture = GestureBuilder.tap(point.x, point.y)
 
         return dispatchGesture(service, gesture)
@@ -131,6 +141,7 @@ class InputHandler {
         return if (service.dispatchGesture(gesture)) {
             CommandResult.success()
         } else {
+            Log.w(TAG, "Gesture dispatch failed: strokes=${gesture.strokeCount}, duration=${gesture.duration}ms")
             CommandResult.error("Gesture dispatch failed")
         }
     }
