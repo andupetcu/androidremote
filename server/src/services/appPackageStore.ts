@@ -29,6 +29,17 @@ export interface AppPackageInput {
   uploadedBy?: string;
 }
 
+export interface AppVersion {
+  id: string;
+  packageId: string;
+  versionName: string | null;
+  versionCode: number | null;
+  filePath: string;
+  fileSize: number | null;
+  uploadedAt: number;
+  downloadUrl?: string;
+}
+
 /**
  * Create a new app package entry
  */
@@ -178,6 +189,100 @@ function mapRowToPackage(row: Record<string, unknown>): AppPackage {
     filePath,
     uploadedAt: row.uploaded_at as number,
     uploadedBy: row.uploaded_by as string | null,
+    downloadUrl: storage.getUrl(filePath),
+  };
+}
+
+// ============================================
+// Version Management
+// ============================================
+
+/**
+ * Create a version record for an app package
+ */
+export function createVersion(packageId: string, input: {
+  versionName?: string;
+  versionCode?: number;
+  filePath: string;
+  fileSize?: number;
+}): AppVersion {
+  const db = getDb();
+  const id = uuidv4();
+  const now = Date.now();
+
+  db.prepare(`
+    INSERT INTO app_versions (id, package_id, version_name, version_code, file_path, file_size, uploaded_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    id,
+    packageId,
+    input.versionName || null,
+    input.versionCode || null,
+    input.filePath,
+    input.fileSize || null,
+    now
+  );
+
+  return getVersionById(id)!;
+}
+
+/**
+ * Get a version by ID
+ */
+export function getVersionById(id: string): AppVersion | null {
+  const db = getDb();
+  const row = db.prepare(`
+    SELECT id, package_id, version_name, version_code, file_path, file_size, uploaded_at
+    FROM app_versions WHERE id = ?
+  `).get(id) as Record<string, unknown> | undefined;
+
+  if (!row) return null;
+  return mapRowToVersion(row);
+}
+
+/**
+ * List all versions for a package, newest first
+ */
+export function listVersions(packageId: string): AppVersion[] {
+  const db = getDb();
+  const rows = db.prepare(`
+    SELECT id, package_id, version_name, version_code, file_path, file_size, uploaded_at
+    FROM app_versions WHERE package_id = ? ORDER BY uploaded_at DESC
+  `).all(packageId) as Record<string, unknown>[];
+
+  return rows.map(mapRowToVersion);
+}
+
+/**
+ * Delete a specific version and its file
+ */
+export async function deleteVersion(versionId: string): Promise<boolean> {
+  const db = getDb();
+  const version = getVersionById(versionId);
+  if (!version) return false;
+
+  const storage = getStorageProvider();
+  await storage.delete(version.filePath);
+
+  db.prepare('DELETE FROM app_versions WHERE id = ?').run(versionId);
+  return true;
+}
+
+/**
+ * Map database row to AppVersion object
+ */
+function mapRowToVersion(row: Record<string, unknown>): AppVersion {
+  const storage = getStorageProvider();
+  const filePath = row.file_path as string;
+
+  return {
+    id: row.id as string,
+    packageId: row.package_id as string,
+    versionName: row.version_name as string | null,
+    versionCode: row.version_code as number | null,
+    filePath,
+    fileSize: row.file_size as number | null,
+    uploadedAt: row.uploaded_at as number,
     downloadUrl: storage.getUrl(filePath),
   };
 }

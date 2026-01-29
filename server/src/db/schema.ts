@@ -440,6 +440,23 @@ export function initializeSchema(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_app_packages_package ON app_packages(package_name)
   `);
 
+  // App Versions - version history per package
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS app_versions (
+      id TEXT PRIMARY KEY,
+      package_id TEXT NOT NULL REFERENCES app_packages(id) ON DELETE CASCADE,
+      version_name TEXT,
+      version_code INTEGER,
+      file_path TEXT NOT NULL,
+      file_size INTEGER,
+      uploaded_at INTEGER NOT NULL
+    )
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_app_versions_package ON app_versions(package_id, uploaded_at DESC)
+  `);
+
   // ============================================
   // Phase 3: Device Group Members
   // ============================================

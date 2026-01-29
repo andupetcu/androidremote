@@ -20,6 +20,7 @@ import * as appPackageStore from './services/appPackageStore';
 import { syncRequiredApps, syncPolicyRequiredApps } from './services/appSyncService';
 import { getDatabase } from './db/connection';
 import { authMiddleware, loginHandler, changePasswordHandler } from './middleware/auth';
+import { settingsStore } from './services/settingsStore';
 
 // Initialize storage provider
 const uploadsDir = path.join(__dirname, '..', 'uploads');
@@ -147,6 +148,42 @@ app.use('/api', (req: Request, res: Response, next: NextFunction) => {
 
   // All other /api routes require auth
   authMiddleware(req, res, next);
+});
+
+// ============================================
+// Settings endpoints
+// ============================================
+app.get('/api/settings', (req: Request, res: Response) => {
+  try {
+    const settings = settingsStore.getAll();
+    res.json(settings);
+  } catch (err) {
+    console.error('Failed to fetch settings:', err);
+    res.status(500).json({ error: 'Failed to fetch settings' });
+  }
+});
+
+app.put('/api/settings', (req: Request, res: Response) => {
+  try {
+    const settings = req.body;
+    if (!settings || typeof settings !== 'object') {
+      res.status(400).json({ error: 'Settings object is required' });
+      return;
+    }
+    // Only allow known setting keys
+    const allowedKeys = ['serverName', 'appsUpdateTime'];
+    const filtered: Record<string, string> = {};
+    for (const key of allowedKeys) {
+      if (settings[key] !== undefined) {
+        filtered[key] = String(settings[key]);
+      }
+    }
+    settingsStore.setMultiple(filtered);
+    res.json(settingsStore.getAll());
+  } catch (err) {
+    console.error('Failed to update settings:', err);
+    res.status(500).json({ error: 'Failed to update settings' });
+  }
 });
 
 /**
@@ -945,16 +982,22 @@ app.post('/api/apps/upload', upload.single('file'), async (req: Request, res: Re
 
     // Check if package already exists
     const existing = appPackageStore.getAppPackageByName(packageName);
+    const parsedVersionCode = versionCode ? parseInt(versionCode, 10) : undefined;
 
     let pkg;
     if (existing) {
-      // Delete old file
-      await storage.delete(existing.filePath);
-      // Update existing entry
+      // Save old version to version history before overwriting
+      appPackageStore.createVersion(existing.id, {
+        versionName: existing.versionName || undefined,
+        versionCode: existing.versionCode || undefined,
+        filePath: existing.filePath,
+        fileSize: existing.fileSize || undefined,
+      });
+      // Update the active entry (don't delete old file — it's now referenced by the version record)
       pkg = appPackageStore.updateAppPackage(packageName, {
         appName,
         versionName,
-        versionCode: versionCode ? parseInt(versionCode, 10) : undefined,
+        versionCode: parsedVersionCode,
         fileSize: req.file.size,
         filePath,
       });
@@ -964,7 +1007,7 @@ app.post('/api/apps/upload', upload.single('file'), async (req: Request, res: Re
         packageName,
         appName,
         versionName,
-        versionCode: versionCode ? parseInt(versionCode, 10) : undefined,
+        versionCode: parsedVersionCode,
         fileSize: req.file.size,
         filePath,
       });
@@ -1001,10 +1044,36 @@ app.get('/api/apps/packages/:packageName', (req: Request, res: Response) => {
 });
 
 /**
+ * GET /api/apps/packages/:packageName/versions - List version history for a package
+ */
+app.get('/api/apps/packages/:packageName/versions', (req: Request, res: Response) => {
+  const { packageName } = req.params;
+
+  const pkg = appPackageStore.getAppPackageByName(packageName);
+  if (!pkg) {
+    res.status(404).json({ error: 'Package not found' });
+    return;
+  }
+
+  const versions = appPackageStore.listVersions(pkg.id);
+  res.json({ versions });
+});
+
+/**
  * DELETE /api/apps/packages/:packageName - Delete an uploaded package
  */
 app.delete('/api/apps/packages/:packageName', async (req: Request, res: Response) => {
   const { packageName } = req.params;
+
+  // Delete version history files first
+  const pkg = appPackageStore.getAppPackageByName(packageName);
+  if (pkg) {
+    const versions = appPackageStore.listVersions(pkg.id);
+    const storage = getStorageProvider();
+    for (const v of versions) {
+      await storage.delete(v.filePath);
+    }
+  }
 
   const deleted = await appPackageStore.deleteAppPackage(packageName);
   if (!deleted) {
@@ -1063,6 +1132,143 @@ app.post('/api/apps/packages/:packageName/install', (req: Request, res: Response
   }
 
   res.json({ success: true, commands, queued: commands.length });
+});
+
+/**
+ * POST /api/apps/packages/:packageName/deploy - Deploy latest version to all devices (or filtered)
+ */
+app.post('/api/apps/packages/:packageName/deploy', (req: Request, res: Response) => {
+  const { packageName } = req.params;
+  const { deviceIds } = req.body; // optional: specific device IDs
+
+  const pkg = appPackageStore.getAppPackageByName(packageName);
+  if (!pkg) {
+    res.status(404).json({ error: 'Package not found' });
+    return;
+  }
+
+  // If no deviceIds specified, deploy to all devices
+  let targets: string[];
+  if (Array.isArray(deviceIds) && deviceIds.length > 0) {
+    targets = deviceIds;
+  } else {
+    targets = deviceStore.getAllDevices().map(d => d.id);
+  }
+
+  const commands = [];
+  for (const deviceId of targets) {
+    const device = deviceStore.getDevice(deviceId);
+    if (device) {
+      const cmd = commandStore.queueCommand(deviceId, 'INSTALL_APK', {
+        url: pkg.downloadUrl,
+        packageName: pkg.packageName,
+        appName: pkg.appName,
+        versionName: pkg.versionName,
+      });
+      commands.push(cmd);
+    }
+  }
+
+  auditStore.log({
+    actorType: 'admin',
+    action: 'app.deployed',
+    resourceType: 'app',
+    resourceId: packageName,
+    details: { deviceCount: commands.length, versionName: pkg.versionName },
+  });
+
+  res.json({ success: true, queued: commands.length });
+});
+
+/**
+ * GET /api/devices/:id/app-updates - Check which installed apps have newer uploaded versions
+ */
+app.get('/api/devices/:id/app-updates', (req: Request, res: Response) => {
+  const { id } = req.params;
+
+  const device = deviceStore.getDevice(id);
+  if (!device) {
+    res.status(404).json({ error: 'Device not found' });
+    return;
+  }
+
+  // Get all uploaded packages
+  const packages = appPackageStore.listAppPackages();
+
+  // Get device's installed apps
+  const updates: Array<{
+    packageName: string;
+    currentVersionCode: number | null;
+    currentVersionName: string | null;
+    latestVersionCode: number | null;
+    latestVersionName: string | null;
+    apkUrl: string | undefined;
+  }> = [];
+
+  for (const pkg of packages) {
+    const installed = appInventoryStore.getDeviceApp(id, pkg.packageName);
+    if (!installed) continue;
+
+    // Compare version codes if both available
+    const installedCode = installed.versionCode;
+    const latestCode = pkg.versionCode;
+
+    if (latestCode != null && installedCode != null && latestCode > installedCode) {
+      updates.push({
+        packageName: pkg.packageName,
+        currentVersionCode: installedCode,
+        currentVersionName: installed.versionName,
+        latestVersionCode: latestCode,
+        latestVersionName: pkg.versionName,
+        apkUrl: pkg.downloadUrl,
+      });
+    }
+  }
+
+  res.json({ updates });
+});
+
+/**
+ * POST /api/commands/batch - Queue the same command to multiple devices
+ */
+app.post('/api/commands/batch', (req: Request, res: Response) => {
+  const { deviceIds, type, payload } = req.body;
+
+  if (!Array.isArray(deviceIds) || deviceIds.length === 0) {
+    res.status(400).json({ error: 'deviceIds array is required' });
+    return;
+  }
+
+  if (!type) {
+    res.status(400).json({ error: 'type is required' });
+    return;
+  }
+
+  const commands = [];
+  const errors: string[] = [];
+
+  for (const deviceId of deviceIds) {
+    const device = deviceStore.getDevice(deviceId);
+    if (!device) {
+      errors.push(`Device ${deviceId} not found`);
+      continue;
+    }
+    try {
+      const cmd = commandStore.queueCommand(deviceId, type, payload || {});
+      commands.push(cmd);
+    } catch {
+      errors.push(`Failed to queue command for device ${deviceId}`);
+    }
+  }
+
+  auditStore.log({
+    actorType: 'admin',
+    action: 'command.batch_queued',
+    resourceType: 'command',
+    details: { type, deviceCount: commands.length, errorCount: errors.length },
+  });
+
+  res.json({ success: true, queued: commands.length, errors });
 });
 
 // ============================================

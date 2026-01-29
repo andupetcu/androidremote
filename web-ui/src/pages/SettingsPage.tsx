@@ -12,6 +12,20 @@ interface EnrollmentToken {
   isActive: boolean;
 }
 
+const ADB_INSTRUCTIONS = `# Install main APK
+adb install -r android-remote.apk
+
+# Set as device owner
+adb shell dpm set-device-owner com.androidremote.app/.admin.DeviceOwnerReceiver
+
+# Auto-enroll via ADB (replace TOKEN and SERVER_URL)
+adb shell am start -n com.androidremote.app/.MainActivity \\
+  -e enrollment_token "YOUR_TOKEN" \\
+  -e server_url "https://your-server.com"
+
+# Note: User must manually enable AccessibilityService
+# (Android security prevents auto-enable)`;
+
 const useStyles = makeStyles({
   root: {
     maxWidth: '800px',
@@ -37,6 +51,69 @@ const useStyles = makeStyles({
     margin: 0,
     fontSize: '1.125rem',
     fontWeight: '600',
+  },
+  formGroup: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '0.375rem',
+    marginBottom: '1rem',
+    '& label': {
+      fontSize: '0.875rem',
+      color: '#888',
+    },
+  },
+  input: {
+    backgroundColor: '#1a1a2e',
+    border: '1px solid #0f3460',
+    borderRadius: '0.375rem',
+    padding: '0.5rem 0.75rem',
+    fontSize: '0.875rem',
+    color: '#e0e0e0',
+    outline: 'none',
+    width: '100%',
+    boxSizing: 'border-box',
+  },
+  saveBtn: {
+    backgroundColor: '#e94560',
+    color: 'white',
+    border: 'none',
+    padding: '0.5rem 1rem',
+    borderRadius: '0.375rem',
+    fontSize: '0.875rem',
+    cursor: 'pointer',
+    transitionProperty: 'background',
+    transitionDuration: '0.2s',
+    ':hover': {
+      backgroundColor: '#ff6b6b',
+    },
+    ':disabled': {
+      opacity: 0.5,
+      cursor: 'not-allowed',
+    },
+  },
+  successMsg: {
+    color: '#22c55e',
+    fontSize: '0.8125rem',
+    marginTop: '0.5rem',
+  },
+  errorMsg: {
+    color: '#ef4444',
+    fontSize: '0.8125rem',
+    marginTop: '0.5rem',
+  },
+  codeBlock: {
+    backgroundColor: '#1a1a2e',
+    border: '1px solid #0f3460',
+    borderRadius: '0.375rem',
+    padding: '1rem',
+    fontFamily: 'monospace',
+    fontSize: '0.8125rem',
+    lineHeight: '1.6',
+    color: '#e0e0e0',
+    whiteSpace: 'pre-wrap',
+    wordBreak: 'break-word',
+    overflowX: 'auto',
+    margin: 0,
   },
   createBtn: {
     backgroundColor: '#e94560',
@@ -159,12 +236,115 @@ const useStyles = makeStyles({
 
 export function SettingsPage() {
   const styles = useStyles();
+
+  // Settings state
+  const [serverName, setServerName] = useState('');
+  const [serverNameMsg, setServerNameMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [passwordMsg, setPasswordMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  const [appsUpdateTime, setAppsUpdateTime] = useState<number>(3);
+  const [appsUpdateTimeMsg, setAppsUpdateTimeMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  const [copiedAdb, setCopiedAdb] = useState(false);
+
+  // Token state
   const [tokens, setTokens] = useState<EnrollmentToken[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    fetchSettings();
     fetchTokens();
   }, []);
+
+  const fetchSettings = async () => {
+    try {
+      const res = await apiFetch(`${API_BASE}/api/settings`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.serverName !== undefined) setServerName(data.serverName);
+        if (data.appsUpdateTime !== undefined) setAppsUpdateTime(data.appsUpdateTime);
+      }
+    } catch (err) {
+      console.error('Failed to fetch settings:', err);
+    }
+  };
+
+  const handleSaveServerName = async () => {
+    try {
+      const res = await apiFetch(`${API_BASE}/api/settings`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ serverName }),
+      });
+      if (res.ok) {
+        setServerNameMsg({ type: 'success', text: 'Server name saved.' });
+      } else {
+        setServerNameMsg({ type: 'error', text: 'Failed to save server name.' });
+      }
+    } catch {
+      setServerNameMsg({ type: 'error', text: 'Failed to save server name.' });
+    }
+  };
+
+  const handleChangePassword = async () => {
+    if (newPassword !== confirmPassword) {
+      setPasswordMsg({ type: 'error', text: 'New passwords do not match.' });
+      return;
+    }
+    if (!currentPassword || !newPassword) {
+      setPasswordMsg({ type: 'error', text: 'All fields are required.' });
+      return;
+    }
+    try {
+      const res = await apiFetch(`${API_BASE}/api/auth/password`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ currentPassword, newPassword }),
+      });
+      if (res.ok) {
+        setPasswordMsg({ type: 'success', text: 'Password changed successfully.' });
+        setCurrentPassword('');
+        setNewPassword('');
+        setConfirmPassword('');
+      } else {
+        const data = await res.json().catch(() => null);
+        setPasswordMsg({ type: 'error', text: data?.error || 'Failed to change password.' });
+      }
+    } catch {
+      setPasswordMsg({ type: 'error', text: 'Failed to change password.' });
+    }
+  };
+
+  const handleSaveAppsUpdateTime = async () => {
+    try {
+      const res = await apiFetch(`${API_BASE}/api/settings`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ appsUpdateTime }),
+      });
+      if (res.ok) {
+        setAppsUpdateTimeMsg({ type: 'success', text: 'Apps update time saved.' });
+      } else {
+        setAppsUpdateTimeMsg({ type: 'error', text: 'Failed to save apps update time.' });
+      }
+    } catch {
+      setAppsUpdateTimeMsg({ type: 'error', text: 'Failed to save apps update time.' });
+    }
+  };
+
+  const copyToClipboard = (text: string) => {
+    navigator.clipboard.writeText(text);
+  };
+
+  const handleCopyAdb = () => {
+    navigator.clipboard.writeText(ADB_INSTRUCTIONS);
+    setCopiedAdb(true);
+    setTimeout(() => setCopiedAdb(false), 2000);
+  };
 
   const fetchTokens = async () => {
     try {
@@ -204,14 +384,107 @@ export function SettingsPage() {
     }
   };
 
-  const copyToClipboard = (text: string) => {
-    navigator.clipboard.writeText(text);
-  };
-
   return (
     <div className={styles.root}>
       <h1 className={styles.title}>Settings</h1>
 
+      {/* Server Name */}
+      <section className={styles.section}>
+        <h2 className={styles.sectionTitle}>Server Name</h2>
+        <div className={styles.formGroup} style={{ marginTop: '1rem' }}>
+          <label>Name</label>
+          <input
+            className={styles.input}
+            type="text"
+            value={serverName}
+            onChange={(e) => { setServerName(e.target.value); setServerNameMsg(null); }}
+            placeholder="My Android Remote Server"
+          />
+        </div>
+        <button className={styles.saveBtn} onClick={handleSaveServerName}>Save</button>
+        {serverNameMsg && (
+          <div className={serverNameMsg.type === 'success' ? styles.successMsg : styles.errorMsg}>
+            {serverNameMsg.text}
+          </div>
+        )}
+      </section>
+
+      {/* Change Password */}
+      <section className={styles.section}>
+        <h2 className={styles.sectionTitle}>Change Password</h2>
+        <div className={styles.formGroup} style={{ marginTop: '1rem' }}>
+          <label>Current Password</label>
+          <input
+            className={styles.input}
+            type="password"
+            value={currentPassword}
+            onChange={(e) => { setCurrentPassword(e.target.value); setPasswordMsg(null); }}
+          />
+        </div>
+        <div className={styles.formGroup}>
+          <label>New Password</label>
+          <input
+            className={styles.input}
+            type="password"
+            value={newPassword}
+            onChange={(e) => { setNewPassword(e.target.value); setPasswordMsg(null); }}
+          />
+        </div>
+        <div className={styles.formGroup}>
+          <label>Confirm New Password</label>
+          <input
+            className={styles.input}
+            type="password"
+            value={confirmPassword}
+            onChange={(e) => { setConfirmPassword(e.target.value); setPasswordMsg(null); }}
+          />
+        </div>
+        <button className={styles.saveBtn} onClick={handleChangePassword}>Save</button>
+        {passwordMsg && (
+          <div className={passwordMsg.type === 'success' ? styles.successMsg : styles.errorMsg}>
+            {passwordMsg.text}
+          </div>
+        )}
+      </section>
+
+      {/* Apps Update Time */}
+      <section className={styles.section}>
+        <h2 className={styles.sectionTitle}>Apps Update Time</h2>
+        <div className={styles.formGroup} style={{ marginTop: '1rem' }}>
+          <label>Hour of day (0-23)</label>
+          <input
+            className={styles.input}
+            type="number"
+            min={0}
+            max={23}
+            value={appsUpdateTime}
+            onChange={(e) => {
+              const val = parseInt(e.target.value, 10);
+              if (!isNaN(val) && val >= 0 && val <= 23) setAppsUpdateTime(val);
+              setAppsUpdateTimeMsg(null);
+            }}
+          />
+        </div>
+        <button className={styles.saveBtn} onClick={handleSaveAppsUpdateTime}>Save</button>
+        {appsUpdateTimeMsg && (
+          <div className={appsUpdateTimeMsg.type === 'success' ? styles.successMsg : styles.errorMsg}>
+            {appsUpdateTimeMsg.text}
+          </div>
+        )}
+      </section>
+
+      {/* ADB Installation Instructions */}
+      <section className={styles.section}>
+        <div className={styles.sectionHeader}>
+          <h2 className={styles.sectionTitle}>ADB Installation Instructions</h2>
+          <button className={styles.createBtn} onClick={handleCopyAdb}>
+            {copiedAdb ? 'Copied!' : 'Copy'}
+          </button>
+        </div>
+        <pre className={styles.codeBlock}>{ADB_INSTRUCTIONS}</pre>
+      </section>
+
+      {/* Enrollment Tokens */}
       <section className={styles.section}>
         <div className={styles.sectionHeader}>
           <h2 className={styles.sectionTitle}>Enrollment Tokens</h2>
@@ -265,20 +538,6 @@ export function SettingsPage() {
             )}
           </div>
         )}
-      </section>
-
-      <section className={styles.section}>
-        <h2 className={styles.sectionTitle}>Server Information</h2>
-        <div className={styles.info}>
-          <div className={styles.infoRow}>
-            <span className={styles.infoLabel}>Version</span>
-            <span className={styles.infoValue}>0.1.0</span>
-          </div>
-          <div className={mergeClasses(styles.infoRow, styles.infoRowLast)}>
-            <span className={styles.infoLabel}>Server URL</span>
-            <span className={styles.infoValue}>{API_BASE || window.location.origin}</span>
-          </div>
-        </div>
       </section>
     </div>
   );

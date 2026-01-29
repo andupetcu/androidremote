@@ -17,6 +17,7 @@ export type AuditAction =
   | 'command.completed'
   | 'command.failed'
   | 'command.cancelled'
+  | 'command.batch_queued'
   // Policies
   | 'policy.created'
   | 'policy.updated'
@@ -36,6 +37,7 @@ export type AuditAction =
   | 'app.uploaded'
   | 'app.updated'
   | 'app.deleted'
+  | 'app.deployed'
   // Files
   | 'file.upload_requested'
   | 'file.download_requested'

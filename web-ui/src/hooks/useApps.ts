@@ -161,6 +161,17 @@ export interface AppPackage {
   downloadUrl?: string;
 }
 
+export interface AppVersion {
+  id: string;
+  packageId: string;
+  versionName: string | null;
+  versionCode: number | null;
+  filePath: string;
+  fileSize: number | null;
+  uploadedAt: number;
+  downloadUrl?: string;
+}
+
 interface UseAppPackagesResult {
   packages: AppPackage[];
   loading: boolean;
@@ -174,6 +185,7 @@ interface UseAppPackagesResult {
   }) => Promise<AppPackage>;
   deletePackage: (packageName: string) => Promise<void>;
   installOnDevices: (packageName: string, deviceIds: string[]) => Promise<{ commands: unknown[] }>;
+  deployToAll: (packageName: string) => Promise<{ queued: number }>;
 }
 
 export function useAppPackages(): UseAppPackagesResult {
@@ -247,5 +259,57 @@ export function useAppPackages(): UseAppPackagesResult {
     return res.json();
   };
 
-  return { packages, loading, error, refresh, uploadPackage, deletePackage, installOnDevices };
+  const deployToAll = async (packageName: string): Promise<{ queued: number }> => {
+    const res = await apiFetch(`${API_BASE}/api/apps/packages/${encodeURIComponent(packageName)}/deploy`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    if (!res.ok) {
+      const data = await res.json();
+      throw new Error(data.error || 'Failed to deploy');
+    }
+    return res.json();
+  };
+
+  return { packages, loading, error, refresh, uploadPackage, deletePackage, installOnDevices, deployToAll };
+}
+
+// ============================================
+// Version History
+// ============================================
+
+interface UseAppVersionsResult {
+  versions: AppVersion[];
+  loading: boolean;
+  error: string | null;
+  refresh: () => Promise<void>;
+}
+
+export function useAppVersions(packageName: string | null): UseAppVersionsResult {
+  const [versions, setVersions] = useState<AppVersion[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = useCallback(async () => {
+    if (!packageName) return;
+    try {
+      setLoading(true);
+      setError(null);
+      const res = await apiFetch(`${API_BASE}/api/apps/packages/${encodeURIComponent(packageName)}/versions`);
+      if (!res.ok) throw new Error('Failed to fetch versions');
+      const data = await res.json();
+      setVersions(data.versions);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unknown error');
+    } finally {
+      setLoading(false);
+    }
+  }, [packageName]);
+
+  useEffect(() => {
+    if (packageName) refresh();
+  }, [refresh, packageName]);
+
+  return { versions, loading, error, refresh };
 }

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { makeStyles } from '@fluentui/react-components';
-import { useAppCatalog, useAppPackages } from '../hooks/useApps';
-import type { AppPackage } from '../hooks/useApps';
+import { useAppCatalog, useAppPackages, useAppVersions } from '../hooks/useApps';
+import type { AppPackage, AppVersion } from '../hooks/useApps';
 import { Button } from '../components/ui/Button';
 import { Badge } from '../components/ui/Badge';
 import { Tabs } from '../components/ui/Tabs';
@@ -106,16 +106,109 @@ const useStyles = makeStyles({
     display: 'flex',
     gap: '0.5rem',
   },
+  versionPanel: {
+    backgroundColor: '#0d1b36',
+    borderRadius: '8px',
+    padding: '1rem 1.5rem',
+    marginBottom: '1rem',
+  },
+  versionPanelHeader: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: '0.75rem',
+  },
+  versionPanelTitle: {
+    color: '#eee',
+    fontSize: '1rem',
+    fontWeight: '600',
+    margin: 0,
+  },
+  versionList: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '0.5rem',
+  },
+  versionItem: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: '#16213e',
+    borderRadius: '6px',
+    padding: '0.5rem 0.75rem',
+  },
+  versionMeta: {
+    display: 'flex',
+    gap: '1rem',
+    alignItems: 'center',
+  },
+  versionLabel: {
+    color: '#eee',
+    fontSize: '0.875rem',
+    fontWeight: '500',
+  },
+  versionSize: {
+    color: '#666',
+    fontSize: '0.8125rem',
+  },
+  versionDate: {
+    color: '#888',
+    fontSize: '0.8125rem',
+  },
+  noVersions: {
+    color: '#666',
+    fontSize: '0.875rem',
+    fontStyle: 'italic',
+  },
 });
+
+function VersionHistoryPanel({ packageName, versions, loading, formatFileSize, formatDate, styles }: {
+  packageName: string;
+  versions: AppVersion[];
+  loading: boolean;
+  formatFileSize: (bytes: number | null) => string;
+  formatDate: (ts: number) => string;
+  styles: ReturnType<typeof useStyles>;
+}) {
+  return (
+    <div className={styles.versionPanel}>
+      <div className={styles.versionPanelHeader}>
+        <h3 className={styles.versionPanelTitle}>Version History — {packageName}</h3>
+      </div>
+      {loading ? (
+        <Spinner size="sm" />
+      ) : versions.length === 0 ? (
+        <p className={styles.noVersions}>No previous versions</p>
+      ) : (
+        <div className={styles.versionList}>
+          {versions.map((v) => (
+            <div key={v.id} className={styles.versionItem}>
+              <div className={styles.versionMeta}>
+                <span className={styles.versionLabel}>
+                  {v.versionName || 'unknown'}
+                  {v.versionCode != null && ` (${v.versionCode})`}
+                </span>
+                <span className={styles.versionSize}>{formatFileSize(v.fileSize)}</span>
+              </div>
+              <span className={styles.versionDate}>{formatDate(v.uploadedAt)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export function AppsPage() {
   const styles = useStyles();
   const { apps, loading: catalogLoading, error: catalogError, refresh: refreshCatalog, approveApp, blockApp, setAppStatus } = useAppCatalog();
-  const { packages, loading: packagesLoading, error: packagesError, refresh: refreshPackages, uploadPackage, deletePackage, installOnDevices } = useAppPackages();
+  const { packages, loading: packagesLoading, error: packagesError, refresh: refreshPackages, uploadPackage, deletePackage, installOnDevices, deployToAll } = useAppPackages();
 
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [showUploadModal, setShowUploadModal] = useState(false);
   const [installPkg, setInstallPkg] = useState<AppPackage | null>(null);
+  const [versionsPkg, setVersionsPkg] = useState<string | null>(null);
+  const { versions, loading: versionsLoading } = useAppVersions(versionsPkg);
 
   const filteredApps = statusFilter === 'all'
     ? apps
@@ -126,6 +219,16 @@ export function AppsPage() {
       await setAppStatus(packageName, status);
     } catch (err) {
       console.error('Failed to update app status:', err);
+    }
+  };
+
+  const handleDeploy = async (packageName: string) => {
+    if (!confirm(`Deploy ${packageName} to ALL devices?`)) return;
+    try {
+      const result = await deployToAll(packageName);
+      alert(`Queued install on ${result.queued} device(s)`);
+    } catch (err) {
+      console.error('Failed to deploy:', err);
     }
   };
 
@@ -266,6 +369,16 @@ export function AppsPage() {
       render: (pkg) => (
         <div className={styles.actions}>
           <Button
+            variant="ghost"
+            size="sm"
+            onClick={(e) => {
+              e.stopPropagation();
+              setVersionsPkg(versionsPkg === pkg.packageName ? null : pkg.packageName);
+            }}
+          >
+            {versionsPkg === pkg.packageName ? 'Hide Versions' : 'Versions'}
+          </Button>
+          <Button
             variant="primary"
             size="sm"
             onClick={(e) => {
@@ -274,6 +387,16 @@ export function AppsPage() {
             }}
           >
             Install
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={(e) => {
+              e.stopPropagation();
+              handleDeploy(pkg.packageName);
+            }}
+          >
+            Deploy All
           </Button>
           <Button
             variant="ghost"
@@ -385,11 +508,23 @@ export function AppsPage() {
                     action={<Button onClick={() => setShowUploadModal(true)}>Upload APK</Button>}
                   />
                 ) : (
-                  <DataTable
-                    columns={packageColumns}
-                    data={packages}
-                    keyExtractor={(pkg) => pkg.id}
-                  />
+                  <>
+                    <DataTable
+                      columns={packageColumns}
+                      data={packages}
+                      keyExtractor={(pkg) => pkg.id}
+                    />
+                    {versionsPkg && (
+                      <VersionHistoryPanel
+                        packageName={versionsPkg}
+                        versions={versions}
+                        loading={versionsLoading}
+                        formatFileSize={formatFileSize}
+                        formatDate={formatDate}
+                        styles={styles}
+                      />
+                    )}
+                  </>
                 )}
               </>
             ),
