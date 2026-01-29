@@ -12,19 +12,42 @@ interface EnrollmentToken {
   isActive: boolean;
 }
 
-const ADB_INSTRUCTIONS = `# Install main APK
+const ADB_INSTRUCTIONS = `# ── Standard ADB Install ──────────────────────────
+
+# 1. Install main APK
 adb install -r android-remote.apk
 
-# Set as device owner
+# 2. Set as device owner
 adb shell dpm set-device-owner com.androidremote.app/.admin.DeviceOwnerReceiver
 
-# Auto-enroll via ADB (replace TOKEN and SERVER_URL)
+# 3. Auto-enroll via ADB (replace TOKEN and SERVER_URL)
 adb shell am start -n com.androidremote.app/.MainActivity \\
   -e enrollment_token "YOUR_TOKEN" \\
   -e server_url "https://your-server.com"
 
 # Note: User must manually enable AccessibilityService
-# (Android security prevents auto-enable)`;
+# (Android security prevents auto-enable)
+
+# ── Factory Reset Enrollment ─────────────────────
+
+# 1. Factory reset the device
+# 2. During Android setup, skip Google account
+# 3. Connect to WiFi
+# 4. Enable USB debugging (Settings > Developer Options)
+# 5. Install APK via ADB:
+adb install -r android-remote.apk
+
+# 6. Set device owner (must be done before any account is added):
+adb shell dpm set-device-owner com.androidremote.app/.admin.DeviceOwnerReceiver
+
+# 7. Auto-enroll with token:
+adb shell am start -n com.androidremote.app/.MainActivity \\
+  -e enrollment_token "YOUR_TOKEN" \\
+  -e server_url "https://your-server.com"
+
+# Device Owner auto-grants permissions (camera, storage, notifications).
+# The root daemon is a separate binary and persists across app updates.
+# App self-updates via INSTALL_APK command preserve Device Owner status.`;
 
 const useStyles = makeStyles({
   root: {
