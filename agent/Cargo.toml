@@ -31,7 +31,7 @@ sha2 = "0.10"
 directories = "6"
 uuid = { version = "1", features = ["v4"] }
 image = "=0.25.5"
-turbojpeg = "1"
+turbojpeg = { version = "1", default-features = false, features = ["cmake", "pkg-config"] }
 
 # Platform-specific
 xcb = { version = "1", features = ["shm", "xtest", "xfixes", "randr"] }
@@ -42,9 +42,11 @@ windows = { version = "0.58", features = [
     "Win32_Graphics_Direct3D11",
     "Win32_Graphics_Dxgi",
     "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Gdi",
     "Win32_Security",
     "Win32_Storage_FileSystem",
     "Win32_System_Console",
+    "Win32_System_IO",
     "Win32_System_Pipes",
     "Win32_System_Registry",
     "Win32_System_SystemInformation",

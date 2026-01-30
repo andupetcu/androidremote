@@ -5,12 +5,13 @@
 use anyhow::{Context, Result, bail};
 use agent_platform::screen::{ScreenCapture, ScreenFrame};
 use async_trait::async_trait;
-use tracing::{info, warn};
+use tracing::info;
+use windows::core::Interface;
 
 use windows::Win32::Graphics::Direct3D11::{
     D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D,
-    D3D11_CPU_ACCESS_READ, D3D11_MAP_READ, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC,
-    D3D11_USAGE_STAGING,
+    D3D11_CPU_ACCESS_READ, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE, D3D11_SDK_VERSION,
+    D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING,
 };
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
 use windows::Win32::Graphics::Dxgi::{
@@ -63,9 +64,9 @@ impl DxgiScreenCapture {
                 Quality: 0,
             },
             Usage: D3D11_USAGE_STAGING,
-            BindFlags: windows::Win32::Graphics::Direct3D11::D3D11_BIND_FLAG(0),
-            CPUAccessFlags: D3D11_CPU_ACCESS_READ,
-            MiscFlags: windows::Win32::Graphics::Direct3D11::D3D11_RESOURCE_MISC_FLAG(0),
+            BindFlags: 0,
+            CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
+            MiscFlags: 0,
         };
 
         let mut texture: Option<ID3D11Texture2D> = None;
@@ -184,8 +185,9 @@ impl ScreenCapture for DxgiScreenCapture {
                 .context("ReleaseFrame")?;
 
             // Map the staging texture for CPU read
-            let mapped = context
-                .Map(staging, 0, D3D11_MAP_READ, 0)
+            let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+            context
+                .Map(staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))
                 .context("Map staging texture")?;
 
             // Copy pixel data

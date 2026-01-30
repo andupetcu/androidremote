@@ -57,7 +57,7 @@ pub async fn enroll(config: &AgentConfig) -> Result<(String, String)> {
     let arch = std::env::consts::ARCH.to_string();
 
     let body = serde_json::json!({
-        "enrollmentToken": token,
+        "token": token,
         "deviceName": &hostname,
         "deviceModel": format!("{} {}", os, arch),
         "androidVersion": "",

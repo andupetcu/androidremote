@@ -33,6 +33,7 @@ impl WindowsTerminal {
         }
     }
 
+
     fn detect_shell() -> String {
         // Prefer PowerShell, fall back to cmd.exe
         if let Ok(ps) = std::env::var("COMSPEC") {
@@ -55,6 +56,9 @@ impl WindowsTerminal {
         std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string())
     }
 }
+
+// SAFETY: WindowsTerminal is only accessed from a single async task
+unsafe impl Send for WindowsTerminal {}
 
 #[async_trait]
 impl Terminal for WindowsTerminal {
@@ -85,8 +89,7 @@ impl Terminal for WindowsTerminal {
                 X: cols as i16,
                 Y: rows as i16,
             };
-            let mut hpc = HPCON::default();
-            CreatePseudoConsole(size, pty_input_read, pty_output_write, 0, &mut hpc)
+            let hpc = CreatePseudoConsole(size, pty_input_read, pty_output_write, 0)
                 .context("CreatePseudoConsole")?;
 
             // Close the pipe ends that the PTY owns
@@ -162,7 +165,7 @@ impl Terminal for WindowsTerminal {
 
     async fn write_stdin(&mut self, data: &[u8]) -> Result<()> {
         let handle = self.pipe_in.as_ref().context("terminal not spawned")?;
-        let raw = HANDLE(handle.as_raw_handle() as isize);
+        let raw = HANDLE(handle.as_raw_handle() as *mut std::ffi::c_void);
 
         unsafe {
             let mut written: u32 = 0;
@@ -180,7 +183,7 @@ impl Terminal for WindowsTerminal {
 
     async fn read_stdout(&mut self) -> Result<Vec<u8>> {
         let handle = self.pipe_out.as_ref().context("terminal not spawned")?;
-        let raw = HANDLE(handle.as_raw_handle() as isize);
+        let raw = HANDLE(handle.as_raw_handle() as *mut std::ffi::c_void);
 
         let mut buf = vec![0u8; 4096];
         let mut bytes_read: u32 = 0;

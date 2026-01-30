@@ -98,7 +98,15 @@ impl AgentConfig {
     /// Get the relay WebSocket URL
     pub fn relay_url(&self) -> String {
         let base = self.server_url.trim_end_matches('/');
-        format!("{}/relay", base)
+        // Convert http(s) scheme to ws(s) for WebSocket connections
+        let ws_base = if base.starts_with("https://") {
+            base.replacen("https://", "wss://", 1)
+        } else if base.starts_with("http://") {
+            base.replacen("http://", "ws://", 1)
+        } else {
+            base.to_string()
+        };
+        format!("{}/relay", ws_base)
     }
 
     /// Get the enrollment HTTP URL

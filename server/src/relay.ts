@@ -2,6 +2,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { IncomingMessage } from 'http';
 import { URL } from 'url';
 import jwt from 'jsonwebtoken';
+import { getJwtSecret } from './middleware/auth';
 import { agentConnectionStore, AgentConnection } from './services/agentConnectionStore';
 import { deviceStore } from './services/deviceStore';
 import { telemetryStore } from './services/telemetryStore';
@@ -501,8 +502,7 @@ function handleViewerConnection(
   let userId: string;
   try {
     // Try to validate as JWT
-    const jwtSecret = process.env.JWT_SECRET || 'android-remote-secret-key';
-    const decoded = jwt.verify(token, jwtSecret) as { username?: string; sub?: string };
+    const decoded = jwt.verify(token, getJwtSecret()) as { username?: string; sub?: string };
     userId = decoded.username || decoded.sub || 'admin';
   } catch {
     // Also accept session tokens (for simpler auth)

@@ -242,9 +242,9 @@ fn parse_disk_info() -> Vec<DiskInfo> {
         }
 
         let block_size = stat.f_frsize as u64;
-        let total_bytes = stat.f_blocks * block_size;
-        let available_bytes = stat.f_bavail * block_size;
-        let free_bytes = stat.f_bfree * block_size;
+        let total_bytes = stat.f_blocks as u64 * block_size;
+        let available_bytes = stat.f_bavail as u64 * block_size;
+        let free_bytes = stat.f_bfree as u64 * block_size;
         let used_bytes = total_bytes.saturating_sub(free_bytes);
 
         // Skip zero-size filesystems
