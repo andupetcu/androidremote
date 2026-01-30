@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback, useState, type ReactElement } from 'react';
+import { useEffect, useRef, useCallback, useState, type ReactElement, type MutableRefObject } from 'react';
 import { useWebRTC } from '../hooks/useWebRTC';
 import type { ConnectionState } from '../hooks/useWebRTC';
 import { FrameDecoder } from '../lib/FrameDecoder';
@@ -7,6 +7,7 @@ export interface RemoteScreenProps {
   deviceId: string | null;
   signalingUrl: string;
   onConnectionStateChange?: (state: ConnectionState) => void;
+  disconnectRef?: MutableRefObject<(() => void) | null>;
 }
 
 const LONG_PRESS_DELAY = 500;
@@ -29,6 +30,7 @@ export function RemoteScreen({
   deviceId,
   signalingUrl,
   onConnectionStateChange,
+  disconnectRef,
 }: RemoteScreenProps): ReactElement {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const decoderRef = useRef<FrameDecoder | null>(null);
@@ -39,7 +41,19 @@ export function RemoteScreen({
   const longPressTimerRef = useRef<number | null>(null);
   const isLongPressRef = useRef(false);
 
-  const { connectionState, dataChannel, error, sendCommand } = useWebRTC(deviceId, signalingUrl);
+  const { connectionState, dataChannel, error, sendCommand, disconnect } = useWebRTC(deviceId, signalingUrl);
+
+  // Expose disconnect to parent via ref
+  useEffect(() => {
+    if (disconnectRef) {
+      disconnectRef.current = disconnect;
+    }
+    return () => {
+      if (disconnectRef) {
+        disconnectRef.current = null;
+      }
+    };
+  }, [disconnect, disconnectRef]);
 
   // Notify parent of connection state changes
   useEffect(() => {

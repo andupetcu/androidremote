@@ -45,10 +45,23 @@ function AndroidDeviceRemote({ deviceId }: { deviceId: string }) {
   const [connectionState, setConnectionState] = useState<ConnectionState>('disconnected');
   const [phase, setPhase] = useState<'idle' | 'sending' | 'active'>('idle');
   const connectingRef = useRef(false);
+  const disconnectWebRTCRef = useRef<(() => void) | null>(null);
+
+  const cleanupSession = useCallback(() => {
+    // Tear down current WebRTC session if active
+    if (disconnectWebRTCRef.current) {
+      disconnectWebRTCRef.current();
+    }
+  }, []);
 
   const handleConnect = useCallback(async () => {
     if (connectingRef.current) return;
     connectingRef.current = true;
+
+    // Auto-cleanup any existing session before starting a new one
+    if (phase === 'active') {
+      cleanupSession();
+    }
     setPhase('sending');
 
     try {
@@ -74,13 +87,24 @@ function AndroidDeviceRemote({ deviceId }: { deviceId: string }) {
     await new Promise(resolve => setTimeout(resolve, 6000));
     connectingRef.current = false;
     setPhase('active');
-  }, [deviceId]);
+  }, [deviceId, phase, cleanupSession]);
 
   const handleDisconnect = useCallback(() => {
+    cleanupSession();
     setPhase('idle');
     connectingRef.current = false;
     setConnectionState('disconnected');
-  }, []);
+  }, [cleanupSession]);
+
+  const handleReconnect = useCallback(() => {
+    cleanupSession();
+    setPhase('idle');
+    setConnectionState('disconnected');
+    // Use setTimeout to let React unmount RemoteScreen before reconnecting
+    setTimeout(() => {
+      handleConnect();
+    }, 0);
+  }, [cleanupSession, handleConnect]);
 
   return (
     <div className="device-remote">
@@ -93,6 +117,16 @@ function AndroidDeviceRemote({ deviceId }: { deviceId: string }) {
             <Button variant="primary" size="sm" onClick={handleConnect}>
               Connect
             </Button>
+          )}
+          {phase === 'active' && (connectionState === 'disconnected' || connectionState === 'failed') && (
+            <>
+              <Button variant="primary" size="sm" onClick={handleReconnect}>
+                Reconnect
+              </Button>
+              <Button variant="danger" size="sm" onClick={handleDisconnect}>
+                End Session
+              </Button>
+            </>
           )}
           {phase === 'active' && connectionState === 'connected' && (
             <Button variant="danger" size="sm" onClick={handleDisconnect}>
@@ -118,6 +152,7 @@ function AndroidDeviceRemote({ deviceId }: { deviceId: string }) {
             deviceId={deviceId}
             signalingUrl={getSignalingUrl()}
             onConnectionStateChange={setConnectionState}
+            disconnectRef={disconnectWebRTCRef}
           />
         )}
       </div>

@@ -99,6 +99,7 @@ export interface UseWebRTCResult {
   sendCommand: (command: RemoteCommand) => void;
   sendCommandWithResponse: <T extends CommandResponseData>(command: RemoteCommand) => Promise<T | null>;
   lastAck: CommandAck | null;
+  disconnect: () => void;
 }
 
 const ICE_SERVERS: RTCIceServer[] = [
@@ -186,6 +187,24 @@ export function useWebRTC(deviceId: string | null, signalingUrl: string): UseWeb
 
       dc.send(JSON.stringify(envelope));
     });
+  }, []);
+
+  const disconnect = useCallback(() => {
+    if (dataChannelRef.current) {
+      dataChannelRef.current.close();
+      dataChannelRef.current = null;
+    }
+    if (pcRef.current) {
+      pcRef.current.close();
+      pcRef.current = null;
+    }
+    if (wsRef.current) {
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+    setDataChannel(null);
+    setConnectionState('disconnected');
+    setError(null);
   }, []);
 
   useEffect(() => {
@@ -363,5 +382,5 @@ export function useWebRTC(deviceId: string | null, signalingUrl: string): UseWeb
     };
   }, [deviceId, signalingUrl]);
 
-  return { connectionState, dataChannel, error, sendCommand, sendCommandWithResponse, lastAck };
+  return { connectionState, dataChannel, error, sendCommand, sendCommandWithResponse, lastAck, disconnect };
 }

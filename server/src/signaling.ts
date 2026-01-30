@@ -284,10 +284,20 @@ function handleMessage(
         rooms.set(deviceId, room);
       }
 
-      // Check if role already taken
-      if (room[role]) {
-        sendError(ws, `Role ${role} already taken in this room`);
-        return;
+      // If role already taken, evict the stale peer so reconnects always succeed
+      const existingPeer = room[role];
+      if (existingPeer) {
+        // eslint-disable-next-line no-console
+        console.log(`[WS] Replacing stale ${role} in room ${deviceId}`);
+        // Notify the other peer that the old connection left
+        const otherRole = role === 'device' ? 'controller' : 'device';
+        const otherPeer = room[otherRole];
+        if (otherPeer) {
+          send(otherPeer.ws, { type: 'peer-left' });
+        }
+        // Close the old WebSocket cleanly
+        delete room[role];
+        existingPeer.ws.close(1000, 'Replaced by new connection');
       }
 
       const peer: Peer = { ws, role, deviceId };
