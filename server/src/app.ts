@@ -143,6 +143,10 @@ app.use('/api', (req: Request, res: Response, next: NextFunction) => {
     if (req.method === 'GET' && path.includes('/commands/pending')) {
       return next();
     }
+    // GET app-updates is device-facing (auto-update check)
+    if (req.method === 'GET' && path.includes('/app-updates')) {
+      return next();
+    }
     // GET policy is device-facing
     if (req.method === 'GET' && path.includes('/policy')) {
       return next();
