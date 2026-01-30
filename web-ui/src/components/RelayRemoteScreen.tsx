@@ -12,7 +12,6 @@ const INPUT_MOUSE_MOVE = 0x01;
 const INPUT_MOUSE_BUTTON = 0x02;
 const INPUT_MOUSE_SCROLL = 0x03;
 const INPUT_KEY_EVENT = 0x04;
-const INPUT_TYPE_TEXT = 0x05;
 
 export function RelayRemoteScreen({ deviceId }: RelayRemoteScreenProps) {
   const { token } = useAuth();
@@ -349,7 +348,7 @@ async function renderTile(
   if (jpegData.length === 0) return;
 
   try {
-    const blob = new Blob([jpegData], { type: 'image/jpeg' });
+    const blob = new Blob([jpegData as BlobPart], { type: 'image/jpeg' });
     const bitmap = await createImageBitmap(blob);
     const ctx = canvas.getContext('2d');
     if (ctx) {

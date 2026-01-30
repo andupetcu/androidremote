@@ -110,19 +110,20 @@ app.put('/api/auth/password', authMiddleware, changePasswordHandler);
 // ============================================
 app.use('/api', (req: Request, res: Response, next: NextFunction) => {
   // Public routes that don't require auth
+  // NOTE: req.path inside app.use('/api', ...) is stripped of the '/api' prefix
   const publicPrefixes = [
-    '/api/auth/',           // Auth endpoints handled above
-    '/api/pair/',           // Device pairing
-    '/api/enroll/',         // Device enrollment
-    '/api/uploads/',        // Static file serving
+    '/auth/',           // Auth endpoints handled above
+    '/pair/',           // Device pairing
+    '/enroll/',         // Device enrollment
+    '/uploads/',        // Static file serving
   ];
   const publicExact = [
-    '/api/health',
+    '/health',
   ];
 
   // Device-facing endpoints (devices call these with their own session tokens)
   const devicePrefixes = [
-    '/api/devices/',        // Heartbeat, command polling, telemetry reporting, app reporting
+    '/devices/',        // Heartbeat, command polling, telemetry reporting, app reporting
   ];
 
   const path = req.path;

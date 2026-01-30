@@ -1,19 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import { API_BASE, apiFetch } from '../utils/api';
+import type { Device } from '../types/api';
 
-export interface Device {
-  id: string;
-  name: string;
-  model: string | null;
-  androidVersion: string | null;
-  enrolledAt: number;
-  lastSeenAt: number | null;
-  status: 'online' | 'offline';
-  publicKey: string | null;
-  policyId: string | null;
-  groupId: string | null;
-  complianceStatus?: 'compliant' | 'non-compliant' | 'unknown';
-}
+export type { Device };
 
 interface UseDevicesResult {
   devices: Device[];

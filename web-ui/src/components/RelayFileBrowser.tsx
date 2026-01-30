@@ -151,7 +151,7 @@ export function RelayFileBrowser({ deviceId }: RelayFileBrowserProps) {
         const chunk = dl.chunks.get(i);
         if (chunk) parts.push(chunk);
       }
-      const blob = new Blob(parts);
+      const blob = new Blob(parts as BlobPart[]);
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
