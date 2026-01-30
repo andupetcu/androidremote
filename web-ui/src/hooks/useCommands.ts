@@ -101,6 +101,18 @@ export function useDeviceCommands(deviceId: string): UseDeviceCommandsResult {
     refresh();
   }, [refresh]);
 
+  // Auto-poll every 5s while any command is in a non-terminal state
+  useEffect(() => {
+    const NON_TERMINAL: Set<string> = new Set(['pending', 'delivered', 'executing']);
+    const hasInFlight = commands.some((cmd) => NON_TERMINAL.has(cmd.status));
+    if (!hasInFlight) return;
+
+    const interval = setInterval(() => {
+      refresh();
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [commands, refresh]);
+
   const sendCommand = async (
     type: CommandType,
     payload: CommandPayload = {}

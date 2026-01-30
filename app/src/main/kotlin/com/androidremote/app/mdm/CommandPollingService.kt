@@ -195,7 +195,7 @@ class CommandPollingService : Service() {
 
         // Enable notification listener to auto-dismiss admin install notifications
         if (deviceOwnerManager.isDeviceOwner()) {
-            silentInstaller.ensureNotificationListenerEnabled()
+            AdminNotificationManager.grantListenerAccess(this)
         }
 
         // Send initial telemetry and app inventory immediately
@@ -392,17 +392,30 @@ class CommandPollingService : Service() {
                 else -> CommandResult.failure("Unknown command type: ${command.type}")
             }
 
-            // Report result
+            // Report result — wrapped in its own try/catch so a network failure
+            // reporting status doesn't crash the polling loop or mask the outcome.
             if (result.success) {
                 Log.i(TAG, "Command ${command.id} completed successfully")
-                client.markCompleted(command.id)
+                try {
+                    client.markCompleted(command.id)
+                } catch (reportEx: Exception) {
+                    Log.w(TAG, "Failed to report completion for command ${command.id}: ${reportEx.message}")
+                }
             } else {
                 Log.w(TAG, "Command ${command.id} failed: ${result.error}")
-                client.markFailed(command.id, result.error ?: "Unknown error")
+                try {
+                    client.markFailed(command.id, result.error ?: "Unknown error")
+                } catch (reportEx: Exception) {
+                    Log.w(TAG, "Failed to report failure for command ${command.id}: ${reportEx.message}")
+                }
             }
         } catch (e: Exception) {
             Log.e(TAG, "Command ${command.id} threw exception", e)
-            client.markFailed(command.id, "Exception: ${e.message}")
+            try {
+                client.markFailed(command.id, "Exception: ${e.message}")
+            } catch (reportEx: Exception) {
+                Log.w(TAG, "Failed to report exception for command ${command.id}: ${reportEx.message}")
+            }
         }
     }
 
@@ -447,7 +460,7 @@ class CommandPollingService : Service() {
             is InstallResult.Success -> {
                 // Ensure notification listener is active to auto-dismiss
                 // the "Updated by your admin" system notification
-                silentInstaller.ensureNotificationListenerEnabled()
+                AdminNotificationManager.grantListenerAccess(this@CommandPollingService)
 
                 // Save boot start preference if enabled
                 if (autoStartOnBoot || foregroundApp) {

@@ -13,6 +13,7 @@ import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import io.ktor.serialization.kotlinx.json.json
+import kotlinx.coroutines.delay
 import kotlinx.serialization.json.Json
 
 /**
@@ -123,30 +124,47 @@ class CommandApiClient(
     ): Boolean {
         Log.d(TAG, "Acknowledging command $commandId with status $status")
 
-        val response: HttpResponse = httpClient.patch(
-            "$baseUrl/api/devices/$deviceId/commands/$commandId"
-        ) {
-            contentType(ContentType.Application.Json)
-            setBody(CommandAcknowledgeRequest(
-                status = status.name,
-                error = error
-            ))
+        val maxRetries = 3
+        var lastException: Exception? = null
+
+        for (attempt in 1..maxRetries) {
+            try {
+                val response: HttpResponse = httpClient.patch(
+                    "$baseUrl/api/devices/$deviceId/commands/$commandId"
+                ) {
+                    contentType(ContentType.Application.Json)
+                    setBody(CommandAcknowledgeRequest(
+                        status = status.name,
+                        error = error
+                    ))
+                }
+
+                return when (response.status) {
+                    HttpStatusCode.OK -> {
+                        Log.d(TAG, "Command $commandId acknowledged as $status")
+                        true
+                    }
+                    HttpStatusCode.NotFound -> {
+                        Log.w(TAG, "Command $commandId not found")
+                        false
+                    }
+                    else -> {
+                        Log.e(TAG, "Failed to acknowledge command: ${response.status}")
+                        false
+                    }
+                }
+            } catch (e: Exception) {
+                lastException = e
+                if (attempt < maxRetries) {
+                    val backoffMs = (1L shl attempt) * 1000L // 2s, 4s, 8s
+                    Log.w(TAG, "Acknowledge attempt $attempt/$maxRetries failed for command $commandId, retrying in ${backoffMs}ms: ${e.message}")
+                    delay(backoffMs)
+                }
+            }
         }
 
-        return when (response.status) {
-            HttpStatusCode.OK -> {
-                Log.d(TAG, "Command $commandId acknowledged as $status")
-                true
-            }
-            HttpStatusCode.NotFound -> {
-                Log.w(TAG, "Command $commandId not found")
-                false
-            }
-            else -> {
-                Log.e(TAG, "Failed to acknowledge command: ${response.status}")
-                false
-            }
-        }
+        Log.e(TAG, "All $maxRetries attempts to acknowledge command $commandId as $status failed", lastException)
+        return false
     }
 
     /**
