@@ -22,6 +22,7 @@ export function InstallApkModal({ open, onClose, pkg, onInstall }: InstallApkMod
   const [installing, setInstalling] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<'all' | 'online' | 'offline'>('all');
+  const [rebootAfterInstall, setRebootAfterInstall] = useState(true);
 
   useEffect(() => {
     if (open) {
@@ -80,7 +81,20 @@ export function InstallApkModal({ open, onClose, pkg, onInstall }: InstallApkMod
     setError(null);
 
     try {
-      await onInstall(pkg.packageName, Array.from(selectedDevices));
+      const deviceIds = Array.from(selectedDevices);
+      await onInstall(pkg.packageName, deviceIds);
+
+      // Send REBOOT commands so devices restart after install (clears notifications)
+      if (rebootAfterInstall) {
+        await Promise.all(deviceIds.map((deviceId) =>
+          apiFetch(`${API_BASE}/api/commands`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ deviceId, type: 'REBOOT', payload: {} }),
+          })
+        ));
+      }
+
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Installation failed');
@@ -184,6 +198,17 @@ export function InstallApkModal({ open, onClose, pkg, onInstall }: InstallApkMod
         <div className="install-apk-modal__summary">
           {selectedDevices.size} device{selectedDevices.size !== 1 ? 's' : ''} selected
         </div>
+
+        {/* Options */}
+        <label className="install-apk-modal__option">
+          <input
+            type="checkbox"
+            checked={rebootAfterInstall}
+            onChange={(e) => setRebootAfterInstall(e.target.checked)}
+            className="install-apk-modal__checkbox"
+          />
+          <span>Reboot device after install</span>
+        </label>
 
         {/* Error */}
         {error && (

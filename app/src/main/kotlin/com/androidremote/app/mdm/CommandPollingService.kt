@@ -193,6 +193,11 @@ class CommandPollingService : Service() {
         // Apply silent mode from saved preferences
         applySavedSilentMode()
 
+        // Enable notification listener to auto-dismiss admin install notifications
+        if (deviceOwnerManager.isDeviceOwner()) {
+            silentInstaller.ensureNotificationListenerEnabled()
+        }
+
         // Send initial telemetry and app inventory immediately
         serviceScope.launch {
             try {
@@ -383,6 +388,7 @@ class CommandPollingService : Service() {
                 "REFRESH_TELEMETRY" -> executeRefreshTelemetry()
                 "SYNC_APPS" -> executeSyncApps()
                 "SYNC_POLICY" -> executeSyncPolicy(command)
+                "SET_VOLUME" -> executeSetVolume(command)
                 else -> CommandResult.failure("Unknown command type: ${command.type}")
             }
 
@@ -439,6 +445,10 @@ class CommandPollingService : Service() {
 
         return when (installResult) {
             is InstallResult.Success -> {
+                // Ensure notification listener is active to auto-dismiss
+                // the "Updated by your admin" system notification
+                silentInstaller.ensureNotificationListenerEnabled()
+
                 // Save boot start preference if enabled
                 if (autoStartOnBoot || foregroundApp) {
                     saveBootStartApp(packageName, foregroundApp)
@@ -814,6 +824,37 @@ class CommandPollingService : Service() {
 
         // TODO: Apply kiosk mode (lock task mode) if enabled
         // This requires additional setup
+
+        return CommandResult.success()
+    }
+
+    private fun executeSetVolume(command: DeviceCommand): CommandResult {
+        val level = command.payload["level"]?.jsonPrimitive?.content?.toIntOrNull()
+            ?: return CommandResult.failure("Missing or invalid 'level' in payload")
+
+        if (level !in 0..100) {
+            return CommandResult.failure("Volume level must be between 0 and 100")
+        }
+
+        val streamName = command.payload["stream"]?.jsonPrimitive?.content ?: "music"
+
+        val audioManager = getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+
+        val streamType = when (streamName.lowercase()) {
+            "music" -> android.media.AudioManager.STREAM_MUSIC
+            "ring" -> android.media.AudioManager.STREAM_RING
+            "alarm" -> android.media.AudioManager.STREAM_ALARM
+            "notification" -> android.media.AudioManager.STREAM_NOTIFICATION
+            "system" -> android.media.AudioManager.STREAM_SYSTEM
+            "voice_call" -> android.media.AudioManager.STREAM_VOICE_CALL
+            else -> return CommandResult.failure("Unknown stream type: $streamName")
+        }
+
+        val maxVolume = audioManager.getStreamMaxVolume(streamType)
+        val scaledVolume = (level * maxVolume / 100).coerceIn(0, maxVolume)
+
+        audioManager.setStreamVolume(streamType, scaledVolume, 0)
+        Log.i(TAG, "Set volume: stream=$streamName level=$level% scaled=$scaledVolume/$maxVolume")
 
         return CommandResult.success()
     }

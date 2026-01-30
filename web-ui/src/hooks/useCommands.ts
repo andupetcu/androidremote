@@ -142,8 +142,8 @@ export const CommandHelpers = {
   launchApp: (sendCommand: UseDeviceCommandsResult['sendCommand'], packageName: string) =>
     sendCommand('LAUNCH_APP', { packageName }),
 
-  setVolume: (sendCommand: UseDeviceCommandsResult['sendCommand'], level: number) =>
-    sendCommand('SET_VOLUME', { level }),
+  setVolume: (sendCommand: UseDeviceCommandsResult['sendCommand'], level: number, stream: string = 'music') =>
+    sendCommand('SET_VOLUME', { level, stream }),
 
   setBrightness: (sendCommand: UseDeviceCommandsResult['sendCommand'], level: number) =>
     sendCommand('SET_BRIGHTNESS', { level }),

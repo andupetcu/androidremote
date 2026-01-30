@@ -14,6 +14,7 @@ interface DeviceCommandsProps {
 export function DeviceCommands({ deviceId }: DeviceCommandsProps) {
   const { commands, loading, error, refresh, sendCommand } = useDeviceCommands(deviceId);
   const [sending, setSending] = useState<string | null>(null);
+  const [volumeLevel, setVolumeLevel] = useState(50);
 
   const handleCommand = async (action: () => Promise<unknown>, name: string) => {
     setSending(name);
@@ -116,6 +117,40 @@ export function DeviceCommands({ deviceId }: DeviceCommandsProps) {
             onClick={() => handleCommand(() => CommandHelpers.syncPolicy(sendCommand), 'syncPolicy')}
           >
             Reapply Policy
+          </Button>
+        </div>
+      </div>
+
+      <div className="device-commands__volume">
+        <h3>Volume Control</h3>
+        <div className="device-commands__volume-row">
+          <input
+            type="range"
+            min={0}
+            max={100}
+            value={volumeLevel}
+            onChange={(e) => setVolumeLevel(Number(e.target.value))}
+            className="device-commands__volume-slider"
+          />
+          <span className="device-commands__volume-value">{volumeLevel}%</span>
+          <Button
+            variant="secondary"
+            size="sm"
+            loading={sending === 'setVolume'}
+            onClick={() => handleCommand(() => CommandHelpers.setVolume(sendCommand, volumeLevel), 'setVolume')}
+          >
+            Set Volume
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
+            loading={sending === 'mute'}
+            onClick={() => {
+              setVolumeLevel(0);
+              return handleCommand(() => CommandHelpers.setVolume(sendCommand, 0), 'mute');
+            }}
+          >
+            Mute
           </Button>
         </div>
       </div>

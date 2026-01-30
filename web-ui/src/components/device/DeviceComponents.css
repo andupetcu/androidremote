@@ -208,6 +208,39 @@
   gap: 0.5rem;
 }
 
+/* Volume Control */
+.device-commands__volume {
+  margin-bottom: 2rem;
+}
+
+.device-commands__volume h3 {
+  margin: 0 0 1rem;
+  font-size: 1rem;
+  color: #fff;
+}
+
+.device-commands__volume-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.device-commands__volume-slider {
+  flex: 1;
+  min-width: 120px;
+  accent-color: #e94560;
+  height: 6px;
+  cursor: pointer;
+}
+
+.device-commands__volume-value {
+  min-width: 3ch;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.875rem;
+  color: #eee;
+}
+
 .device-commands__history {
   border-top: 1px solid #0f3460;
   padding-top: 1.5rem;
