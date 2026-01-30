@@ -164,6 +164,14 @@ export function initializeSchema(db: Database.Database): void {
     { name: 'compliance_status', type: 'TEXT DEFAULT \'pending\'' },
     { name: 'latitude', type: 'REAL' },
     { name: 'longitude', type: 'REAL' },
+    // Cross-platform agent support
+    { name: 'os_type', type: "TEXT DEFAULT 'android'" },
+    { name: 'os_version_generic', type: 'TEXT' },
+    { name: 'hostname', type: 'TEXT' },
+    { name: 'agent_version', type: 'TEXT' },
+    { name: 'arch', type: 'TEXT' },
+    { name: 'capabilities', type: 'INTEGER DEFAULT 0' },
+    { name: 'agent_telemetry_json', type: 'TEXT' },
   ];
 
   for (const col of extendedColumns) {

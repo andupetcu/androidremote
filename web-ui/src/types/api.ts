@@ -20,6 +20,13 @@ export interface Device {
   groupId: string | null;
   policyId: string | null;
   complianceStatus: 'compliant' | 'non_compliant' | 'pending';
+  // Cross-platform agent fields
+  osType: string;
+  osVersionGeneric: string | null;
+  hostname: string | null;
+  agentVersion: string | null;
+  arch: string | null;
+  capabilities: number;
 }
 
 // Telemetry types

@@ -12,6 +12,8 @@ import {
   DeviceFiles,
   DeviceRemote,
 } from '../components/device';
+import { RelayTerminal } from '../components/RelayTerminal';
+import { RelayFileBrowser } from '../components/RelayFileBrowser';
 import type { Tab } from '../components/ui/Tabs';
 
 const spinKeyframes = {
@@ -226,7 +228,8 @@ export function DeviceDetail() {
 
   const tabs: Tab[] = useMemo(() => {
     if (!device) return [];
-    return [
+    const isNonAndroid = device.osType && device.osType !== 'android';
+    const allTabs: Tab[] = [
       {
         id: 'overview',
         label: 'Overview',
@@ -250,14 +253,24 @@ export function DeviceDetail() {
       {
         id: 'files',
         label: 'Files',
-        content: <DeviceFiles deviceId={device.id} />,
+        content: isNonAndroid
+          ? <RelayFileBrowser deviceId={device.id} />
+          : <DeviceFiles deviceId={device.id} />,
       },
       {
         id: 'remote',
         label: 'Remote',
-        content: <DeviceRemote deviceId={device.id} />,
+        content: <DeviceRemote deviceId={device.id} osType={device.osType} />,
       },
     ];
+    if (isNonAndroid) {
+      allTabs.splice(5, 0, {
+        id: 'terminal',
+        label: 'Terminal',
+        content: <RelayTerminal deviceId={device.id} />,
+      });
+    }
+    return allTabs;
   }, [device, refresh]);
 
   if (loading) {
@@ -314,8 +327,12 @@ export function DeviceDetail() {
             <h1 className={styles.titleH1}>{device.name}</h1>
           </div>
           <div className={styles.meta}>
+            {device.osType && device.osType !== 'android' && <span>{device.osType}</span>}
+            {device.hostname && <span>{device.hostname}</span>}
+            {device.arch && <span>{device.arch}</span>}
             {device.model && <span>Model: {device.model}</span>}
             {device.androidVersion && <span>Android {device.androidVersion}</span>}
+            {device.agentVersion && <span>Agent v{device.agentVersion}</span>}
             <span>Last seen: {formatDate(device.lastSeenAt)}</span>
           </div>
         </div>

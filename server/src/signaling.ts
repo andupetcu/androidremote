@@ -2,6 +2,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { Server } from 'http';
 import { eventStore, DeviceEvent } from './services/eventStore';
 import { deviceStore } from './services/deviceStore';
+import { createRelayWss, getRelayWss } from './relay';
 
 // ICE candidate as received from WebRTC (browser-agnostic definition)
 interface IceCandidate {
@@ -170,10 +171,11 @@ export function setupSignaling(server: Server): WebSocketServer {
   // Use noServer mode to handle multiple WebSocket paths
   const wss = new WebSocketServer({ noServer: true });
   const adminWss = new WebSocketServer({ noServer: true });
+  const relayWss = createRelayWss();
 
   // Handle HTTP upgrade requests manually
   server.on('upgrade', (request, socket, head) => {
-    const pathname = request.url || '';
+    const pathname = (request.url || '').split('?')[0];
 
     if (pathname === '/ws') {
       wss.handleUpgrade(request, socket, head, (ws) => {
@@ -182,6 +184,10 @@ export function setupSignaling(server: Server): WebSocketServer {
     } else if (pathname === '/admin') {
       adminWss.handleUpgrade(request, socket, head, (ws) => {
         adminWss.emit('connection', ws, request);
+      });
+    } else if (pathname === '/relay') {
+      relayWss.handleUpgrade(request, socket, head, (ws) => {
+        relayWss.emit('connection', ws, request);
       });
     } else {
       socket.destroy();

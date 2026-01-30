@@ -1,0 +1,9 @@
+/Users/andrei/Downloads/Projects/android-remote/agent/target/debug/deps/libsystem_configuration-c6baa64de7ef33ff.rmeta: /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/system-configuration-0.6.1/src/lib.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/system-configuration-0.6.1/src/dynamic_store.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/system-configuration-0.6.1/src/network_configuration.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/system-configuration-0.6.1/src/network_reachability.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/system-configuration-0.6.1/src/preferences.rs
+
+/Users/andrei/Downloads/Projects/android-remote/agent/target/debug/deps/system_configuration-c6baa64de7ef33ff.d: /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/system-configuration-0.6.1/src/lib.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/system-configuration-0.6.1/src/dynamic_store.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/system-configuration-0.6.1/src/network_configuration.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/system-configuration-0.6.1/src/network_reachability.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/system-configuration-0.6.1/src/preferences.rs
+
+/Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/system-configuration-0.6.1/src/lib.rs:
+/Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/system-configuration-0.6.1/src/dynamic_store.rs:
+/Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/system-configuration-0.6.1/src/network_configuration.rs:
+/Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/system-configuration-0.6.1/src/network_reachability.rs:
+/Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/system-configuration-0.6.1/src/preferences.rs:

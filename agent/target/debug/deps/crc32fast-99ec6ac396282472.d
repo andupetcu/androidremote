@@ -1,0 +1,10 @@
+/Users/andrei/Downloads/Projects/android-remote/agent/target/debug/deps/libcrc32fast-99ec6ac396282472.rmeta: /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/crc32fast-1.5.0/src/lib.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/crc32fast-1.5.0/src/baseline.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/crc32fast-1.5.0/src/combine.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/crc32fast-1.5.0/src/specialized/mod.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/crc32fast-1.5.0/src/table.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/crc32fast-1.5.0/src/specialized/aarch64.rs
+
+/Users/andrei/Downloads/Projects/android-remote/agent/target/debug/deps/crc32fast-99ec6ac396282472.d: /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/crc32fast-1.5.0/src/lib.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/crc32fast-1.5.0/src/baseline.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/crc32fast-1.5.0/src/combine.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/crc32fast-1.5.0/src/specialized/mod.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/crc32fast-1.5.0/src/table.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/crc32fast-1.5.0/src/specialized/aarch64.rs
+
+/Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/crc32fast-1.5.0/src/lib.rs:
+/Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/crc32fast-1.5.0/src/baseline.rs:
+/Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/crc32fast-1.5.0/src/combine.rs:
+/Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/crc32fast-1.5.0/src/specialized/mod.rs:
+/Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/crc32fast-1.5.0/src/table.rs:
+/Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/crc32fast-1.5.0/src/specialized/aarch64.rs:

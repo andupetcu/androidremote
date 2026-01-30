@@ -1,0 +1,11 @@
+/Users/andrei/Downloads/Projects/android-remote/agent/target/debug/deps/libbitflags-6aaa480584036835.rmeta: /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/bitflags-2.10.0/src/lib.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/bitflags-2.10.0/src/iter.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/bitflags-2.10.0/src/parser.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/bitflags-2.10.0/src/traits.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/bitflags-2.10.0/src/public.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/bitflags-2.10.0/src/internal.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/bitflags-2.10.0/src/external.rs
+
+/Users/andrei/Downloads/Projects/android-remote/agent/target/debug/deps/bitflags-6aaa480584036835.d: /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/bitflags-2.10.0/src/lib.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/bitflags-2.10.0/src/iter.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/bitflags-2.10.0/src/parser.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/bitflags-2.10.0/src/traits.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/bitflags-2.10.0/src/public.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/bitflags-2.10.0/src/internal.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/bitflags-2.10.0/src/external.rs
+
+/Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/bitflags-2.10.0/src/lib.rs:
+/Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/bitflags-2.10.0/src/iter.rs:
+/Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/bitflags-2.10.0/src/parser.rs:
+/Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/bitflags-2.10.0/src/traits.rs:
+/Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/bitflags-2.10.0/src/public.rs:
+/Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/bitflags-2.10.0/src/internal.rs:
+/Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/bitflags-2.10.0/src/external.rs:

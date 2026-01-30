@@ -1,0 +1,12 @@
+/Users/andrei/Downloads/Projects/android-remote/agent/target/debug/deps/libequator-4ef87f579b1c1478.rmeta: /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/equator-0.4.2/src/lib.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/equator-0.4.2/src/decompose.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/equator-0.4.2/src/spec.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/equator-0.4.2/src/spec/by_val.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/equator-0.4.2/src/spec/debug.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/equator-0.4.2/src/spec/sized.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/equator-0.4.2/src/structures.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/equator-0.4.2/src/traits.rs
+
+/Users/andrei/Downloads/Projects/android-remote/agent/target/debug/deps/equator-4ef87f579b1c1478.d: /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/equator-0.4.2/src/lib.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/equator-0.4.2/src/decompose.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/equator-0.4.2/src/spec.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/equator-0.4.2/src/spec/by_val.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/equator-0.4.2/src/spec/debug.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/equator-0.4.2/src/spec/sized.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/equator-0.4.2/src/structures.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/equator-0.4.2/src/traits.rs
+
+/Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/equator-0.4.2/src/lib.rs:
+/Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/equator-0.4.2/src/decompose.rs:
+/Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/equator-0.4.2/src/spec.rs:
+/Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/equator-0.4.2/src/spec/by_val.rs:
+/Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/equator-0.4.2/src/spec/debug.rs:
+/Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/equator-0.4.2/src/spec/sized.rs:
+/Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/equator-0.4.2/src/structures.rs:
+/Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/equator-0.4.2/src/traits.rs:

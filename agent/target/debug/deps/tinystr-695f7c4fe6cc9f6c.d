@@ -1,0 +1,12 @@
+/Users/andrei/Downloads/Projects/android-remote/agent/target/debug/deps/libtinystr-695f7c4fe6cc9f6c.rmeta: /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tinystr-0.8.2/src/lib.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tinystr-0.8.2/src/macros.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tinystr-0.8.2/src/ascii.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tinystr-0.8.2/src/asciibyte.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tinystr-0.8.2/src/error.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tinystr-0.8.2/src/int_ops.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tinystr-0.8.2/src/unvalidated.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tinystr-0.8.2/src/ule.rs
+
+/Users/andrei/Downloads/Projects/android-remote/agent/target/debug/deps/tinystr-695f7c4fe6cc9f6c.d: /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tinystr-0.8.2/src/lib.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tinystr-0.8.2/src/macros.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tinystr-0.8.2/src/ascii.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tinystr-0.8.2/src/asciibyte.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tinystr-0.8.2/src/error.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tinystr-0.8.2/src/int_ops.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tinystr-0.8.2/src/unvalidated.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tinystr-0.8.2/src/ule.rs
+
+/Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tinystr-0.8.2/src/lib.rs:
+/Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tinystr-0.8.2/src/macros.rs:
+/Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tinystr-0.8.2/src/ascii.rs:
+/Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tinystr-0.8.2/src/asciibyte.rs:
+/Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tinystr-0.8.2/src/error.rs:
+/Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tinystr-0.8.2/src/int_ops.rs:
+/Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tinystr-0.8.2/src/unvalidated.rs:
+/Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tinystr-0.8.2/src/ule.rs:

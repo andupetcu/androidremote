@@ -1,0 +1,12 @@
+/Users/andrei/Downloads/Projects/android-remote/agent/target/debug/deps/libtracing-0f29d3450910c412.rmeta: /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tracing-0.1.44/src/lib.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tracing-0.1.44/src/macros.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tracing-0.1.44/src/dispatcher.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tracing-0.1.44/src/field.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tracing-0.1.44/src/instrument.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tracing-0.1.44/src/level_filters.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tracing-0.1.44/src/span.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tracing-0.1.44/src/subscriber.rs
+
+/Users/andrei/Downloads/Projects/android-remote/agent/target/debug/deps/tracing-0f29d3450910c412.d: /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tracing-0.1.44/src/lib.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tracing-0.1.44/src/macros.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tracing-0.1.44/src/dispatcher.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tracing-0.1.44/src/field.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tracing-0.1.44/src/instrument.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tracing-0.1.44/src/level_filters.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tracing-0.1.44/src/span.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tracing-0.1.44/src/subscriber.rs
+
+/Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tracing-0.1.44/src/lib.rs:
+/Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tracing-0.1.44/src/macros.rs:
+/Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tracing-0.1.44/src/dispatcher.rs:
+/Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tracing-0.1.44/src/field.rs:
+/Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tracing-0.1.44/src/instrument.rs:
+/Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tracing-0.1.44/src/level_filters.rs:
+/Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tracing-0.1.44/src/span.rs:
+/Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tracing-0.1.44/src/subscriber.rs:

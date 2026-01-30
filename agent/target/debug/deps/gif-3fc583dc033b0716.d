@@ -1,0 +1,12 @@
+/Users/andrei/Downloads/Projects/android-remote/agent/target/debug/deps/libgif-3fc583dc033b0716.rmeta: /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/gif-0.13.3/src/lib.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/gif-0.13.3/src/traits.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/gif-0.13.3/src/common.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/gif-0.13.3/src/reader/mod.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/gif-0.13.3/src/reader/decoder.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/gif-0.13.3/src/reader/converter.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/gif-0.13.3/src/encoder.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/gif-0.13.3/src/../README.md
+
+/Users/andrei/Downloads/Projects/android-remote/agent/target/debug/deps/gif-3fc583dc033b0716.d: /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/gif-0.13.3/src/lib.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/gif-0.13.3/src/traits.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/gif-0.13.3/src/common.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/gif-0.13.3/src/reader/mod.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/gif-0.13.3/src/reader/decoder.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/gif-0.13.3/src/reader/converter.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/gif-0.13.3/src/encoder.rs /Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/gif-0.13.3/src/../README.md
+
+/Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/gif-0.13.3/src/lib.rs:
+/Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/gif-0.13.3/src/traits.rs:
+/Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/gif-0.13.3/src/common.rs:
+/Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/gif-0.13.3/src/reader/mod.rs:
+/Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/gif-0.13.3/src/reader/decoder.rs:
+/Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/gif-0.13.3/src/reader/converter.rs:
+/Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/gif-0.13.3/src/encoder.rs:
+/Users/andrei/.cargo/registry/src/index.crates.io-6f17d22bba15001f/gif-0.13.3/src/../README.md:

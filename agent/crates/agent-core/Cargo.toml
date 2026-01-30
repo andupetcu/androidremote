@@ -1,0 +1,33 @@
+[package]
+name = "agent-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+tokio = { workspace = true }
+tokio-tungstenite = { workspace = true }
+futures-util = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+bytes = { workspace = true }
+reqwest = { workspace = true }
+sha2 = { workspace = true }
+directories = { workspace = true }
+uuid = { workspace = true }
+image = { workspace = true }
+turbojpeg = { workspace = true }
+agent-platform = { path = "../agent-platform" }
+hostname = "0.4"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+agent-linux = { path = "../agent-linux" }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+agent-windows = { path = "../agent-windows" }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

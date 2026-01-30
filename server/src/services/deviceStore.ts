@@ -27,6 +27,14 @@ export interface Device {
   groupId: string | null;
   policyId: string | null;
   complianceStatus: 'compliant' | 'non_compliant' | 'pending';
+
+  // Cross-platform agent fields
+  osType: string;
+  osVersionGeneric: string | null;
+  hostname: string | null;
+  agentVersion: string | null;
+  arch: string | null;
+  capabilities: number;
 }
 
 export interface DeviceInput {
@@ -46,6 +54,14 @@ export interface DeviceInput {
   displayResolution?: string;
   cpuArchitecture?: string;
   totalRam?: number;
+
+  // Cross-platform agent fields
+  osType?: string;
+  osVersionGeneric?: string;
+  hostname?: string;
+  agentVersion?: string;
+  arch?: string;
+  capabilities?: number;
 }
 
 interface DeviceRow {
@@ -73,6 +89,14 @@ interface DeviceRow {
   compliance_status: string | null;
   latitude: number | null;
   longitude: number | null;
+
+  // Cross-platform agent fields
+  os_type: string | null;
+  os_version_generic: string | null;
+  hostname: string | null;
+  agent_version: string | null;
+  arch: string | null;
+  capabilities: number | null;
 }
 
 /**
@@ -119,9 +143,10 @@ class DeviceStore {
       INSERT INTO devices (
         id, name, model, android_version, public_key, status, enrolled_at,
         manufacturer, serial_number, imei, phone_number, build_fingerprint,
-        kernel_version, display_resolution, cpu_architecture, total_ram
+        kernel_version, display_resolution, cpu_architecture, total_ram,
+        os_type, hostname, arch, agent_version, capabilities
       )
-      VALUES (?, ?, ?, ?, ?, 'offline', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, 'offline', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         name = excluded.name,
         model = COALESCE(excluded.model, model),
@@ -135,7 +160,12 @@ class DeviceStore {
         kernel_version = COALESCE(excluded.kernel_version, kernel_version),
         display_resolution = COALESCE(excluded.display_resolution, display_resolution),
         cpu_architecture = COALESCE(excluded.cpu_architecture, cpu_architecture),
-        total_ram = COALESCE(excluded.total_ram, total_ram)
+        total_ram = COALESCE(excluded.total_ram, total_ram),
+        os_type = COALESCE(excluded.os_type, os_type),
+        hostname = COALESCE(excluded.hostname, hostname),
+        arch = COALESCE(excluded.arch, arch),
+        agent_version = COALESCE(excluded.agent_version, agent_version),
+        capabilities = COALESCE(excluded.capabilities, capabilities)
     `);
 
     const now = Date.now();
@@ -154,7 +184,12 @@ class DeviceStore {
       input.kernelVersion || null,
       input.displayResolution || null,
       input.cpuArchitecture || null,
-      input.totalRam || null
+      input.totalRam || null,
+      input.osType || 'android',
+      input.hostname || null,
+      input.arch || null,
+      input.agentVersion || null,
+      input.capabilities || 0
     );
 
     return this.getDevice(input.id)!;
@@ -421,6 +456,14 @@ class DeviceStore {
       groupId: row.group_id,
       policyId: row.policy_id,
       complianceStatus: (row.compliance_status as 'compliant' | 'non_compliant' | 'pending') || 'pending',
+
+      // Cross-platform agent fields
+      osType: row.os_type || 'android',
+      osVersionGeneric: row.os_version_generic,
+      hostname: row.hostname,
+      agentVersion: row.agent_version,
+      arch: row.arch,
+      capabilities: row.capabilities || 0,
     };
   }
 }

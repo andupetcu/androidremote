@@ -18,6 +18,8 @@ import { COMMAND_TYPES } from './db/schema';
 import { LocalStorageProvider, setStorageProvider, getStorageProvider } from './services/storageProvider';
 import * as appPackageStore from './services/appPackageStore';
 import { syncRequiredApps, syncPolicyRequiredApps } from './services/appSyncService';
+import { agentConnectionStore } from './services/agentConnectionStore';
+import { agentBinaryStore } from './services/agentBinaryStore';
 import { getDatabase } from './db/connection';
 import { authMiddleware, loginHandler, changePasswordHandler } from './middleware/auth';
 import { settingsStore } from './services/settingsStore';
@@ -557,7 +559,8 @@ app.delete('/api/enroll/tokens/:id', (req: Request, res: Response) => {
  * POST /api/enroll/device - Enroll a device using a token
  */
 app.post('/api/enroll/device', (req: Request, res: Response) => {
-  const { token, deviceName, deviceModel, androidVersion, publicKey } = req.body;
+  const { token, deviceName, deviceModel, androidVersion, publicKey,
+    osType, hostname, arch, agentVersion } = req.body;
 
   if (!token) {
     res.status(400).json({ error: 'Missing required field: token' });
@@ -575,6 +578,10 @@ app.post('/api/enroll/device', (req: Request, res: Response) => {
     deviceModel,
     androidVersion,
     publicKey,
+    osType,
+    hostname,
+    arch,
+    agentVersion,
   });
 
   if (!result) {
@@ -598,6 +605,162 @@ app.post('/api/enroll/device', (req: Request, res: Response) => {
     sessionToken: result.sessionToken,
     serverUrl: getBaseUrl(req),
   });
+});
+
+// ============================================
+// Agent Connectivity (Cross-Platform Relay)
+// ============================================
+
+/**
+ * GET /api/agent/status/:deviceId - Check if an agent is connected via relay
+ */
+app.get('/api/agent/status/:deviceId', authMiddleware, (req: Request, res: Response) => {
+  const { deviceId } = req.params;
+  const connected = agentConnectionStore.isAgentConnected(deviceId);
+  const conn = agentConnectionStore.getAgent(deviceId);
+
+  res.json({
+    deviceId,
+    connected,
+    agentVersion: conn?.agentVersion || null,
+    os: conn?.os || null,
+    arch: conn?.arch || null,
+    hostname: conn?.hostname || null,
+    lastHeartbeat: conn?.lastHeartbeat || null,
+    activeSessions: conn ? conn.activeSessions.size : 0,
+  });
+});
+
+/**
+ * GET /api/agent/connections - List all connected relay agents
+ */
+app.get('/api/agent/connections', authMiddleware, (_req: Request, res: Response) => {
+  const deviceIds = agentConnectionStore.getConnectedDeviceIds();
+  const connections = deviceIds.map((id) => {
+    const conn = agentConnectionStore.getAgent(id);
+    return {
+      deviceId: id,
+      agentVersion: conn?.agentVersion,
+      os: conn?.os,
+      arch: conn?.arch,
+      hostname: conn?.hostname,
+      lastHeartbeat: conn?.lastHeartbeat,
+      activeSessions: conn ? conn.activeSessions.size : 0,
+    };
+  });
+
+  res.json({
+    count: connections.length,
+    connections,
+  });
+});
+
+// ============================================
+// Agent Binary Distribution
+// ============================================
+
+// Configure multer for agent binary uploads
+const agentBinaryUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 200 * 1024 * 1024 }, // 200MB max
+});
+
+/**
+ * GET /api/agent/latest - Get latest agent binary info for a platform
+ * Query: ?os=linux&arch=x64
+ */
+app.get('/api/agent/latest', (req: Request, res: Response) => {
+  const os = req.query.os as string;
+  const arch = req.query.arch as string;
+
+  if (!os || !arch) {
+    res.status(400).json({ error: 'os and arch query parameters are required' });
+    return;
+  }
+
+  const info = agentBinaryStore.getLatest(os, arch);
+  if (!info) {
+    res.status(404).json({ error: `no binary available for ${os}/${arch}` });
+    return;
+  }
+
+  // Build download URL
+  const protocol = req.protocol;
+  const host = req.get('host');
+  const url = `${protocol}://${host}/api/agent/download/${os}/${arch}`;
+
+  res.json({
+    version: info.version,
+    url,
+    sha256: info.sha256,
+    size: info.size,
+    uploadedAt: info.uploadedAt,
+  });
+});
+
+/**
+ * GET /api/agent/download/:os/:arch - Download the latest agent binary
+ */
+app.get('/api/agent/download/:os/:arch', (req: Request, res: Response) => {
+  const { os, arch } = req.params;
+
+  const info = agentBinaryStore.getLatest(os, arch);
+  if (!info) {
+    res.status(404).json({ error: `no binary available for ${os}/${arch}` });
+    return;
+  }
+
+  const filePath = agentBinaryStore.getBinaryPath(info);
+  if (!require('fs').existsSync(filePath)) {
+    res.status(404).json({ error: 'binary file not found on disk' });
+    return;
+  }
+
+  const ext = os === 'windows' ? '.exe' : '';
+  res.download(filePath, `android-remote-agent${ext}`);
+});
+
+/**
+ * POST /api/agent/upload - Upload a new agent binary (admin only)
+ * Body: multipart form with 'file', 'os', 'arch', 'version'
+ */
+app.post('/api/agent/upload', authMiddleware, agentBinaryUpload.single('file'), (req: Request, res: Response) => {
+  const { os, arch, version } = req.body;
+  const file = req.file;
+
+  if (!file) {
+    res.status(400).json({ error: 'file is required' });
+    return;
+  }
+  if (!os || !arch || !version) {
+    res.status(400).json({ error: 'os, arch, and version are required' });
+    return;
+  }
+
+  const validOs = ['linux', 'windows'];
+  const validArch = ['x64', 'arm64', 'armv7l'];
+  if (!validOs.includes(os)) {
+    res.status(400).json({ error: `invalid os: ${os}. Must be one of: ${validOs.join(', ')}` });
+    return;
+  }
+  if (!validArch.includes(arch)) {
+    res.status(400).json({ error: `invalid arch: ${arch}. Must be one of: ${validArch.join(', ')}` });
+    return;
+  }
+
+  const info = agentBinaryStore.addBinary(os, arch, version, file.buffer, file.originalname);
+
+  res.json({
+    success: true,
+    binary: info,
+  });
+});
+
+/**
+ * GET /api/agent/binaries - List all uploaded agent binaries (admin)
+ */
+app.get('/api/agent/binaries', authMiddleware, (_req: Request, res: Response) => {
+  res.json({ binaries: agentBinaryStore.listBinaries() });
 });
 
 // ============================================

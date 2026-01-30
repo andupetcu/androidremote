@@ -20,6 +20,11 @@ export interface EnrollmentRequest {
   deviceModel?: string;
   androidVersion?: string;
   publicKey?: string;
+  // Cross-platform agent fields
+  osType?: string;
+  hostname?: string;
+  arch?: string;
+  agentVersion?: string;
 }
 
 export interface EnrollmentResult {
@@ -254,6 +259,10 @@ class EnrollmentStore {
       model: request.deviceModel,
       androidVersion: request.androidVersion,
       publicKey: request.publicKey,
+      osType: request.osType,
+      hostname: request.hostname,
+      arch: request.arch,
+      agentVersion: request.agentVersion,
     });
 
     // Generate session token

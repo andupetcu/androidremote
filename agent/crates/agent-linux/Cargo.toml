@@ -1,0 +1,20 @@
+[package]
+name = "agent-linux"
+version.workspace = true
+edition.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+xcb = { workspace = true }
+nix = { workspace = true }
+libc = "0.2"
+
+[dependencies]
+agent-platform = { path = "../agent-platform" }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+hostname = "0.4"
