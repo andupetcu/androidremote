@@ -817,7 +817,26 @@ app.post('/api/commands', (req: Request, res: Response) => {
     }
   }
 
-  const command = commandStore.queueCommand(deviceId, type as CommandType, payload || {});
+  // Enrich INSTALL_APK payload with policy settings (foregroundApp, autoStart, etc.)
+  let enrichedPayload = payload || {};
+  if (type === 'INSTALL_APK' && device.policyId && payload?.packageName) {
+    const policy = policyStore.getPolicy(device.policyId);
+    if (policy?.requiredApps) {
+      const appConfig = policy.requiredApps.find(
+        (a: { packageName: string }) => a.packageName === payload.packageName
+      );
+      if (appConfig) {
+        enrichedPayload = {
+          ...enrichedPayload,
+          autoStartAfterInstall: appConfig.autoStartAfterInstall || false,
+          foregroundApp: appConfig.foregroundApp || false,
+          autoStartOnBoot: appConfig.autoStartOnBoot || false,
+        };
+      }
+    }
+  }
+
+  const command = commandStore.queueCommand(deviceId, type as CommandType, enrichedPayload);
 
   res.status(201).json({ command });
 });
@@ -887,6 +906,21 @@ app.post('/api/devices/:id/commands', (req: Request, res: Response) => {
   const finalPayload = { ...(payload || {}) };
   if (type === 'START_REMOTE') {
     finalPayload.signalingUrl = getSignalingUrl(req);
+  }
+
+  // Enrich INSTALL_APK payload with policy settings (foregroundApp, autoStart, etc.)
+  if (type === 'INSTALL_APK' && device.policyId && payload?.packageName) {
+    const policy = policyStore.getPolicy(device.policyId);
+    if (policy?.requiredApps) {
+      const appConfig = policy.requiredApps.find(
+        (a: { packageName: string }) => a.packageName === payload.packageName
+      );
+      if (appConfig) {
+        finalPayload.autoStartAfterInstall = appConfig.autoStartAfterInstall || false;
+        finalPayload.foregroundApp = appConfig.foregroundApp || false;
+        finalPayload.autoStartOnBoot = appConfig.autoStartOnBoot || false;
+      }
+    }
   }
 
   const command = commandStore.queueCommand(id, type as CommandType, finalPayload);
@@ -1385,12 +1419,26 @@ app.post('/api/apps/packages/:packageName/install', (req: Request, res: Response
   for (const deviceId of deviceIds) {
     const device = deviceStore.getDevice(deviceId);
     if (device) {
-      const cmd = commandStore.queueCommand(deviceId, 'INSTALL_APK', {
+      // Enrich with policy settings if device has a policy with this app configured
+      const installPayload: Record<string, unknown> = {
         url: pkg.downloadUrl,
         packageName: pkg.packageName,
         appName: pkg.appName,
         versionName: pkg.versionName,
-      });
+      };
+      if (device.policyId) {
+        const policy = policyStore.getPolicy(device.policyId);
+        const appConfig = policy?.requiredApps?.find(
+          (a: { packageName: string }) => a.packageName === pkg.packageName
+        );
+        if (appConfig) {
+          installPayload.autoStartAfterInstall = appConfig.autoStartAfterInstall || false;
+          installPayload.foregroundApp = appConfig.foregroundApp || false;
+          installPayload.autoStartOnBoot = appConfig.autoStartOnBoot || false;
+        }
+      }
+
+      const cmd = commandStore.queueCommand(deviceId, 'INSTALL_APK', installPayload);
       commands.push(cmd);
 
       auditStore.log({
@@ -1431,12 +1479,26 @@ app.post('/api/apps/packages/:packageName/deploy', (req: Request, res: Response)
   for (const deviceId of targets) {
     const device = deviceStore.getDevice(deviceId);
     if (device) {
-      const cmd = commandStore.queueCommand(deviceId, 'INSTALL_APK', {
+      // Enrich with policy settings if device has a policy with this app configured
+      const installPayload: Record<string, unknown> = {
         url: pkg.downloadUrl,
         packageName: pkg.packageName,
         appName: pkg.appName,
         versionName: pkg.versionName,
-      });
+      };
+      if (device.policyId) {
+        const policy = policyStore.getPolicy(device.policyId);
+        const appConfig = policy?.requiredApps?.find(
+          (a: { packageName: string }) => a.packageName === pkg.packageName
+        );
+        if (appConfig) {
+          installPayload.autoStartAfterInstall = appConfig.autoStartAfterInstall || false;
+          installPayload.foregroundApp = appConfig.foregroundApp || false;
+          installPayload.autoStartOnBoot = appConfig.autoStartOnBoot || false;
+        }
+      }
+
+      const cmd = commandStore.queueCommand(deviceId, 'INSTALL_APK', installPayload);
       commands.push(cmd);
     }
   }
