@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use anyhow::Result;
 use tracing::{error, info, warn};
 
@@ -11,21 +12,33 @@ const DOWNLOAD_CHUNK_SIZE: usize = 64 * 1024;
 /// Handles file operation messages (channel 0, request-response)
 pub struct FileHandler {
     fs: Box<dyn FileSystem>,
+    /// Tracks pending uploads: request_id -> (path, accumulated data)
+    pending_uploads: HashMap<u32, PendingUpload>,
+}
+
+struct PendingUpload {
+    path: String,
+    data: Vec<u8>,
+    expected_size: u64,
 }
 
 impl FileHandler {
     pub fn new(fs: Box<dyn FileSystem>) -> Self {
-        Self { fs }
+        Self {
+            fs,
+            pending_uploads: HashMap::new(),
+        }
     }
 
     /// Process a file operation message and send response(s) back
-    pub async fn handle_message(&self, msg: Message, handle: &ConnectionHandle) {
+    pub async fn handle_message(&mut self, msg: Message, handle: &ConnectionHandle) {
         let request_id = msg.header.request_id;
 
         let result = match msg.header.msg_type {
             protocol::FILE_LIST_REQ => self.handle_list(msg, handle).await,
             protocol::FILE_DOWNLOAD_REQ => self.handle_download(msg, handle).await,
             protocol::FILE_UPLOAD_START => self.handle_upload_start(msg, handle).await,
+            protocol::FILE_UPLOAD_DATA => self.handle_upload_data_msg(msg, handle).await,
             protocol::FILE_DELETE_REQ => self.handle_delete(msg, handle).await,
             _ => {
                 warn!("file handler: unexpected message type 0x{:02x}", msg.header.msg_type);
@@ -96,21 +109,56 @@ impl FileHandler {
         Ok(())
     }
 
-    async fn handle_upload_start(&self, msg: Message, handle: &ConnectionHandle) -> Result<()> {
+    async fn handle_upload_start(&mut self, msg: Message, handle: &ConnectionHandle) -> Result<()> {
         let req: protocol::FileUploadStart = msg.parse_json()
             .map_err(|e| anyhow::anyhow!("invalid FILE_UPLOAD_START: {}", e))?;
 
         info!("file upload start: {} ({} bytes)", req.path, req.size);
 
-        // For now, we store the upload path and expect FILE_UPLOAD_DATA messages
-        // to follow on the same request_id. Since channel 0 is used and the relay
-        // forwards viewer messages directly, the viewer will send the data.
-        //
-        // Store upload state so FILE_UPLOAD_DATA can accumulate bytes.
-        // This is handled by the caller (session manager) which tracks upload state.
-        //
-        // Acknowledge the upload request
+        self.pending_uploads.insert(msg.header.request_id, PendingUpload {
+            path: req.path,
+            data: Vec::with_capacity(req.size as usize),
+            expected_size: req.size,
+        });
+
         send_file_result(handle, msg.header.request_id, true, None).await?;
+        Ok(())
+    }
+
+    async fn handle_upload_data_msg(&mut self, msg: Message, handle: &ConnectionHandle) -> Result<()> {
+        let request_id = msg.header.request_id;
+        let payload = &msg.payload;
+
+        // Payload format: [u32 seq][data...]
+        if payload.len() < 4 {
+            anyhow::bail!("FILE_UPLOAD_DATA payload too short");
+        }
+        let _seq = u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
+        let chunk_data = &payload[4..];
+
+        if let Some(upload) = self.pending_uploads.get_mut(&request_id) {
+            upload.data.extend_from_slice(chunk_data);
+            info!("file upload data: {} bytes received ({}/{})",
+                chunk_data.len(), upload.data.len(), upload.expected_size);
+
+            // Check if upload is complete (received all expected data)
+            if upload.data.len() as u64 >= upload.expected_size {
+                let upload = self.pending_uploads.remove(&request_id).unwrap();
+                self.fs.write_file(&upload.path, &upload.data)?;
+
+                let done_resp = protocol::FileResult {
+                    success: true,
+                    error: None,
+                };
+                let reply = Message::control_json(protocol::FILE_UPLOAD_DONE, request_id, &done_resp)?;
+                handle.send_message(&reply).await?;
+
+                info!("file upload complete: {} ({} bytes)", upload.path, upload.data.len());
+            }
+        } else {
+            warn!("FILE_UPLOAD_DATA for unknown request_id {}", request_id);
+        }
+
         Ok(())
     }
 
@@ -125,26 +173,6 @@ impl FileHandler {
         Ok(())
     }
 
-    /// Handle incoming upload data chunk and write to disk when complete
-    pub async fn handle_upload_data(
-        &self,
-        path: &str,
-        data: &[u8],
-        handle: &ConnectionHandle,
-        request_id: u32,
-    ) -> Result<()> {
-        self.fs.write_file(path, data)?;
-
-        let done_resp = protocol::FileResult {
-            success: true,
-            error: None,
-        };
-        let reply = Message::control_json(protocol::FILE_UPLOAD_DONE, request_id, &done_resp)?;
-        handle.send_message(&reply).await?;
-
-        info!("file upload complete: {} ({} bytes)", path, data.len());
-        Ok(())
-    }
 }
 
 async fn send_file_result(

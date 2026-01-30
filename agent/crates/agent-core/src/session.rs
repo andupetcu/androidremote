@@ -409,12 +409,12 @@ fn create_platform_input() -> Result<Box<dyn agent_platform::input::InputInjecto
 
 #[cfg(target_os = "windows")]
 fn create_platform_screen() -> Result<Box<dyn agent_platform::screen::ScreenCapture>> {
-    anyhow::bail!("screen capture not yet implemented for Windows (Phase 6)")
+    agent_windows::screen::create_screen_capture()
 }
 
 #[cfg(target_os = "windows")]
 fn create_platform_input() -> Result<Box<dyn agent_platform::input::InputInjector>> {
-    anyhow::bail!("input injection not yet implemented for Windows (Phase 6)")
+    agent_windows::input::create_input_injector()
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
@@ -440,7 +440,7 @@ fn create_platform_terminal() -> Result<Box<dyn Terminal>> {
 
 #[cfg(target_os = "windows")]
 fn create_platform_terminal() -> Result<Box<dyn Terminal>> {
-    anyhow::bail!("terminal not yet implemented for Windows (Phase 6)")
+    Ok(Box::new(agent_windows::terminal::WindowsTerminal::new()))
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]

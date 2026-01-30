@@ -225,8 +225,212 @@ impl ScreenCapture for DxgiScreenCapture {
     }
 }
 
-/// Factory function for creating screen capture on Windows
+/// GDI-based screen capture fallback for RDP sessions and environments
+/// where DXGI Desktop Duplication is unavailable.
+pub struct GdiScreenCapture {
+    width: u32,
+    height: u32,
+    initialized: bool,
+}
+
+unsafe impl Send for GdiScreenCapture {}
+unsafe impl Sync for GdiScreenCapture {}
+
+impl GdiScreenCapture {
+    pub fn new() -> Self {
+        Self {
+            width: 0,
+            height: 0,
+            initialized: false,
+        }
+    }
+}
+
+#[async_trait]
+impl ScreenCapture for GdiScreenCapture {
+    async fn init(&mut self) -> Result<(u32, u32)> {
+        info!("initializing GDI screen capture (fallback)");
+
+        unsafe {
+            use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
+            let width = GetSystemMetrics(SM_CXSCREEN) as u32;
+            let height = GetSystemMetrics(SM_CYSCREEN) as u32;
+
+            if width == 0 || height == 0 {
+                bail!("GetSystemMetrics returned zero dimensions");
+            }
+
+            info!("GDI screen dimensions: {}x{}", width, height);
+            self.width = width;
+            self.height = height;
+            self.initialized = true;
+            Ok((width, height))
+        }
+    }
+
+    async fn capture_frame(&mut self) -> Result<ScreenFrame> {
+        if !self.initialized {
+            bail!("GDI screen capture not initialized");
+        }
+
+        unsafe {
+            use windows::Win32::Graphics::Gdi::{
+                BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject,
+                GetDIBits, GetDC, ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER,
+                DIB_RGB_COLORS, SRCCOPY,
+            };
+            use windows::Win32::Foundation::HWND;
+
+            let hdc_screen = GetDC(HWND::default());
+            if hdc_screen.0.is_null() {
+                bail!("GetDC(NULL) failed");
+            }
+
+            let hdc_mem = CreateCompatibleDC(hdc_screen);
+            if hdc_mem.0.is_null() {
+                ReleaseDC(HWND::default(), hdc_screen);
+                bail!("CreateCompatibleDC failed");
+            }
+
+            let hbmp = CreateCompatibleBitmap(hdc_screen, self.width as i32, self.height as i32);
+            if hbmp.0.is_null() {
+                DeleteDC(hdc_mem);
+                ReleaseDC(HWND::default(), hdc_screen);
+                bail!("CreateCompatibleBitmap failed");
+            }
+
+            let old_bmp = SelectObject(hdc_mem, hbmp);
+
+            // BitBlt the screen into our bitmap
+            BitBlt(
+                hdc_mem,
+                0, 0,
+                self.width as i32,
+                self.height as i32,
+                hdc_screen,
+                0, 0,
+                SRCCOPY,
+            ).context("BitBlt failed")?;
+
+            // Read pixel data via GetDIBits (BGRA format, top-down)
+            // BI_RGB = 0
+            let mut bmi = BITMAPINFO {
+                bmiHeader: BITMAPINFOHEADER {
+                    biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                    biWidth: self.width as i32,
+                    biHeight: -(self.height as i32), // negative = top-down
+                    biPlanes: 1,
+                    biBitCount: 32,
+                    biCompression: 0, // BI_RGB
+                    biSizeImage: 0,
+                    biXPelsPerMeter: 0,
+                    biYPelsPerMeter: 0,
+                    biClrUsed: 0,
+                    biClrImportant: 0,
+                },
+                bmiColors: [Default::default()],
+            };
+
+            let buf_size = (self.width * self.height * 4) as usize;
+            let mut data = vec![0u8; buf_size];
+
+            let lines = GetDIBits(
+                hdc_mem,
+                hbmp,
+                0,
+                self.height,
+                Some(data.as_mut_ptr() as *mut _),
+                &mut bmi,
+                DIB_RGB_COLORS,
+            );
+
+            // Cleanup GDI objects
+            SelectObject(hdc_mem, old_bmp);
+            let _ = DeleteObject(hbmp);
+            let _ = DeleteDC(hdc_mem);
+            ReleaseDC(HWND::default(), hdc_screen);
+
+            if lines == 0 {
+                bail!("GetDIBits returned 0 lines");
+            }
+
+            Ok(ScreenFrame {
+                width: self.width,
+                height: self.height,
+                data,
+                stride: self.width * 4,
+            })
+        }
+    }
+
+    fn dimensions(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+}
+
+/// Windows screen capture that tries DXGI first, falling back to GDI.
+/// The fallback decision happens in init(), which runs inside the async task.
+pub struct WindowsScreenCapture {
+    inner: WindowsCaptureInner,
+}
+
+enum WindowsCaptureInner {
+    Uninitialized,
+    Dxgi(DxgiScreenCapture),
+    Gdi(GdiScreenCapture),
+}
+
+unsafe impl Send for WindowsScreenCapture {}
+unsafe impl Sync for WindowsScreenCapture {}
+
+impl WindowsScreenCapture {
+    pub fn new() -> Self {
+        Self {
+            inner: WindowsCaptureInner::Uninitialized,
+        }
+    }
+}
+
+#[async_trait]
+impl ScreenCapture for WindowsScreenCapture {
+    async fn init(&mut self) -> Result<(u32, u32)> {
+        // Try DXGI first (GPU-accelerated, faster)
+        let mut dxgi = DxgiScreenCapture::new();
+        match dxgi.init().await {
+            Ok(dims) => {
+                info!("using DXGI Desktop Duplication for screen capture");
+                self.inner = WindowsCaptureInner::Dxgi(dxgi);
+                Ok(dims)
+            }
+            Err(e) => {
+                info!("DXGI unavailable ({}), falling back to GDI capture", e);
+                let mut gdi = GdiScreenCapture::new();
+                let dims = gdi.init().await?;
+                self.inner = WindowsCaptureInner::Gdi(gdi);
+                Ok(dims)
+            }
+        }
+    }
+
+    async fn capture_frame(&mut self) -> Result<ScreenFrame> {
+        match &mut self.inner {
+            WindowsCaptureInner::Dxgi(d) => d.capture_frame().await,
+            WindowsCaptureInner::Gdi(g) => g.capture_frame().await,
+            WindowsCaptureInner::Uninitialized => bail!("screen capture not initialized"),
+        }
+    }
+
+    fn dimensions(&self) -> (u32, u32) {
+        match &self.inner {
+            WindowsCaptureInner::Dxgi(d) => d.dimensions(),
+            WindowsCaptureInner::Gdi(g) => g.dimensions(),
+            WindowsCaptureInner::Uninitialized => (0, 0),
+        }
+    }
+}
+
+/// Factory function for creating screen capture on Windows.
 pub fn create_screen_capture() -> Result<Box<dyn ScreenCapture>> {
     info!("using DXGI Desktop Duplication for screen capture");
-    Ok(Box::new(DxgiScreenCapture::new()))
+    Ok(Box::new(WindowsScreenCapture::new()))
 }

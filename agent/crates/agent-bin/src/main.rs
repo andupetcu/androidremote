@@ -112,7 +112,7 @@ async fn run_agent(mut config: AgentConfig, config_path: std::path::PathBuf) -> 
 
     let handle = connection::run_connection(config.clone(), event_tx).await?;
     let mut session_mgr = SessionManager::new(handle.clone());
-    let file_handler = create_file_handler()?;
+    let mut file_handler = create_file_handler()?;
     let telemetry = create_telemetry_collector()?;
 
     // Periodic telemetry every 60 seconds
@@ -145,7 +145,7 @@ async fn run_agent(mut config: AgentConfig, config_path: std::path::PathBuf) -> 
                         telemetry.send_telemetry_quiet(&handle).await;
                     }
                     Some(ServerEvent::Message(msg)) => {
-                        handle_server_message(msg, &handle, &mut session_mgr, &file_handler, &telemetry, &config).await;
+                        handle_server_message(msg, &handle, &mut session_mgr, &mut file_handler, &telemetry, &config).await;
                     }
                     Some(ServerEvent::Disconnected) => {
                         warn!("disconnected from server, will reconnect...");
@@ -196,7 +196,7 @@ async fn handle_server_message(
     msg: protocol::Message,
     handle: &ConnectionHandle,
     session_mgr: &mut SessionManager,
-    file_handler: &FileHandler,
+    file_handler: &mut FileHandler,
     telemetry: &TelemetryCollector,
     config: &AgentConfig,
 ) {
@@ -216,7 +216,8 @@ async fn handle_server_message(
                 error!("session manager error: {:#}", e);
             }
         }
-        protocol::FILE_LIST_REQ | protocol::FILE_DOWNLOAD_REQ | protocol::FILE_UPLOAD_START | protocol::FILE_DELETE_REQ => {
+        protocol::FILE_LIST_REQ | protocol::FILE_DOWNLOAD_REQ | protocol::FILE_UPLOAD_START
+        | protocol::FILE_UPLOAD_DATA | protocol::FILE_DELETE_REQ => {
             file_handler.handle_message(msg, handle).await;
         }
         protocol::TELEMETRY_REQ => {
