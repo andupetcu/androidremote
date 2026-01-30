@@ -3,6 +3,7 @@ import { RemoteScreen } from '../RemoteScreen';
 import { RelayRemoteScreen } from '../RelayRemoteScreen';
 import { Button } from '../ui/Button';
 import type { ConnectionState } from '../../hooks/useWebRTC';
+import { apiFetch } from '../../utils/api';
 import './DeviceComponents.css';
 
 /**
@@ -51,7 +52,7 @@ function AndroidDeviceRemote({ deviceId }: { deviceId: string }) {
     setPhase('sending');
 
     try {
-      const response = await fetch(`/api/devices/${deviceId}/commands`, {
+      const response = await apiFetch(`/api/devices/${deviceId}/commands`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -139,7 +140,7 @@ function RelayDeviceRemote({ deviceId, osType }: { deviceId: string; osType: str
 
     try {
       // Check if agent is connected
-      const statusResp = await fetch(`/api/agent/status/${deviceId}`);
+      const statusResp = await apiFetch(`/api/agent/status/${deviceId}`);
       const status = await statusResp.json();
 
       if (!status.connected) {

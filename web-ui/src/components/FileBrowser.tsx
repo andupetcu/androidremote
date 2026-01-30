@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, type ReactElement } from 'react';
+import { apiFetch } from '../utils/api';
 
 export interface FileItem {
   name: string;
@@ -26,7 +27,7 @@ export function FileBrowser({ onFileSelect }: FileBrowserProps): ReactElement {
   const fetchFiles = useCallback(async (path: string) => {
     setState({ status: 'loading' });
     try {
-      const response = await fetch(`/api/files?path=${encodeURIComponent(path)}`);
+      const response = await apiFetch(`/api/files?path=${encodeURIComponent(path)}`);
       if (!response.ok) {
         throw new Error('Failed to load files');
       }
@@ -117,7 +118,7 @@ export function FileBrowser({ onFileSelect }: FileBrowserProps): ReactElement {
 
     const fileName = Array.from(selectedFiles)[0];
     try {
-      const response = await fetch(`/api/files/download/${encodeURIComponent(fileName)}`);
+      const response = await apiFetch(`/api/files/download/${encodeURIComponent(fileName)}`);
       const blob = await response.blob();
       const url = URL.createObjectURL(blob);
 
