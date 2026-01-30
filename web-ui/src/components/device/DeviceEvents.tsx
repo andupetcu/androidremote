@@ -1,5 +1,5 @@
-import { useMemo } from 'react';
-import { useEvents } from '../../hooks/useEvents';
+import { useDeviceEvents } from '../../hooks/useEvents';
+import { apiFetch, API_BASE } from '../../utils/api';
 import { Button } from '../ui/Button';
 import { Badge } from '../ui/Badge';
 import { Spinner } from '../ui/Spinner';
@@ -12,8 +12,15 @@ interface DeviceEventsProps {
 }
 
 export function DeviceEvents({ deviceId }: DeviceEventsProps) {
-  const filters = useMemo(() => ({ deviceId }), [deviceId]);
-  const { events, loading, error, refresh, acknowledge } = useEvents(filters);
+  const { events, loading, error, refresh } = useDeviceEvents(deviceId);
+
+  const acknowledge = async (eventId: string): Promise<void> => {
+    const res = await apiFetch(`${API_BASE}/api/events/${eventId}/acknowledge`, {
+      method: 'POST',
+    });
+    if (!res.ok) throw new Error('Failed to acknowledge event');
+    await refresh();
+  };
 
   const severityVariant = (severity: EventSeverity): 'error' | 'warning' | 'info' => {
     switch (severity) {

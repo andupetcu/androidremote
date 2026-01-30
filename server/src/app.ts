@@ -2152,7 +2152,21 @@ app.put('/api/devices/:id/policy', (req: Request, res: Response) => {
  * GET /api/events - List all events
  */
 app.get('/api/events', (req: Request, res: Response) => {
-  const { severity, acknowledged, limit, offset, from, to } = req.query;
+  const { deviceId, severity, acknowledged, limit, offset, from, to } = req.query;
+
+  // If deviceId is provided, use the device-specific query
+  if (deviceId) {
+    const events = eventStore.getDeviceEvents(deviceId as string, {
+      severity: severity as EventSeverity | undefined,
+      acknowledged: acknowledged !== undefined ? acknowledged === 'true' : undefined,
+      limit: limit ? parseInt(limit as string, 10) : 100,
+      offset: offset ? parseInt(offset as string, 10) : undefined,
+      from: from ? parseInt(from as string, 10) : undefined,
+      to: to ? parseInt(to as string, 10) : undefined,
+    });
+    res.json({ events, count: events.length });
+    return;
+  }
 
   const events = eventStore.getAllEvents({
     severity: severity as EventSeverity | undefined,

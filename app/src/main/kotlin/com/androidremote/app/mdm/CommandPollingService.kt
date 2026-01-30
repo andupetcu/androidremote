@@ -37,6 +37,10 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
@@ -101,6 +105,7 @@ class CommandPollingService : Service() {
     private lateinit var telemetryCollector: TelemetryCollector
 
     private var commandApiClient: CommandApiClient? = null
+    private val httpClient = OkHttpClient()
     private var pollIntervalMs = DEFAULT_POLL_INTERVAL_MS
     private var isPolling = false
     private var pollCount = 0
@@ -188,13 +193,19 @@ class CommandPollingService : Service() {
         // Apply silent mode from saved preferences
         applySavedSilentMode()
 
-        // Send initial telemetry immediately
+        // Send initial telemetry and app inventory immediately
         serviceScope.launch {
             try {
                 val success = telemetryCollector.sendTelemetry(httpUrl, deviceId)
                 Log.i(TAG, "Initial telemetry sent: $success")
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to send initial telemetry: ${e.message}")
+            }
+            try {
+                val result = executeSyncApps()
+                Log.i(TAG, "Initial app sync: ${if (result.success) "success" else result.error}")
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to sync initial apps: ${e.message}")
             }
         }
 
@@ -678,13 +689,61 @@ class CommandPollingService : Service() {
     }
 
     private fun executeSyncApps(): CommandResult {
-        // Get list of installed applications and send to server
+        val serverUrl = httpBaseUrl ?: return CommandResult.failure("Server URL not configured")
+        val deviceId = sessionStorage.getDeviceId() ?: return CommandResult.failure("Device not enrolled")
+
         val pm = packageManager
         val packages = pm.getInstalledPackages(0)
-        Log.i(TAG, "Syncing ${packages.size} installed apps")
-        // TODO: Implement actual app list upload to server
-        // For now, just return success - the app inventory sync needs its own endpoint
-        return CommandResult.success()
+        Log.i(TAG, "Syncing ${packages.size} installed apps to server")
+
+        val appsArray = buildString {
+            append("[")
+            packages.forEachIndexed { index, pkg ->
+                if (index > 0) append(",")
+                val appName = pkg.applicationInfo?.loadLabel(pm)?.toString()?.replace("\"", "\\\"") ?: ""
+                val isSystem = (pkg.applicationInfo?.flags ?: 0) and android.content.pm.ApplicationInfo.FLAG_SYSTEM != 0
+                val enabled = pkg.applicationInfo?.enabled ?: true
+                val versionName = (pkg.versionName ?: "").replace("\"", "\\\"")
+                val versionCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    pkg.longVersionCode
+                } else {
+                    @Suppress("DEPRECATION")
+                    pkg.versionCode.toLong()
+                }
+                append("{")
+                append("\"packageName\":\"${pkg.packageName}\",")
+                append("\"appName\":\"${appName}\",")
+                append("\"versionName\":\"${versionName}\",")
+                append("\"versionCode\":${versionCode},")
+                append("\"isSystemApp\":${isSystem},")
+                append("\"enabled\":${enabled}")
+                append("}")
+            }
+            append("]")
+        }
+
+        return try {
+            val body = "{\"apps\":${appsArray}}"
+            val requestBody = body.toRequestBody("application/json".toMediaType())
+            val request = Request.Builder()
+                .url("$serverUrl/api/devices/$deviceId/apps")
+                .post(requestBody)
+                .build()
+
+            val response = httpClient.newCall(request).execute()
+            val success = response.isSuccessful
+            if (success) {
+                Log.i(TAG, "App inventory synced: ${packages.size} apps")
+            } else {
+                Log.w(TAG, "App inventory sync failed: ${response.code}")
+            }
+            response.close()
+
+            if (success) CommandResult.success() else CommandResult.failure("Server returned ${response.code}")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to sync apps", e)
+            CommandResult.failure("Failed to sync apps: ${e.message}")
+        }
     }
 
     private fun executeSyncPolicy(command: DeviceCommand): CommandResult {
