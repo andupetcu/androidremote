@@ -339,8 +339,8 @@ async fn setup_helper_ipc(
     });
 
     // Spawn a task to monitor helper process health and respawn if needed
-    let pipe_name_clone = pipe_name;
-    let exe_path_clone = exe_path;
+    let _pipe_name_clone = pipe_name;
+    let _exe_path_clone = exe_path;
     tokio::spawn(async move {
         let mut check_interval = tokio::time::interval(std::time::Duration::from_secs(5));
         loop {

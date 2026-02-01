@@ -17,7 +17,7 @@ use agent_core::desktop::{self, DesktopConfig};
 use agent_platform::terminal::Terminal;
 
 #[cfg(target_os = "windows")]
-use agent_windows::ipc::{IpcClient, IpcReader, IpcWriter};
+use agent_windows::ipc::{IpcClient, IpcWriter};
 
 struct HelperTerminalSession {
     stdin_tx: mpsc::Sender<Vec<u8>>,

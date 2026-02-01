@@ -142,7 +142,7 @@ impl HelperLauncher {
             let create_result = CreateProcessAsUserW(
                 dup_token,
                 None,
-                PCWSTR(cmd_wide.as_mut_ptr()),
+                windows::core::PWSTR(cmd_wide.as_mut_ptr()),
                 None, // process security attributes
                 None, // thread security attributes
                 false,
@@ -154,7 +154,7 @@ impl HelperLauncher {
             );
 
             // 7. Cleanup
-            DestroyEnvironmentBlock(env_block);
+            let _ = DestroyEnvironmentBlock(env_block);
             let _ = CloseHandle(dup_token);
 
             if create_result.is_err() {

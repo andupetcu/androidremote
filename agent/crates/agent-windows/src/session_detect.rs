@@ -53,10 +53,11 @@ pub fn is_interactive_session() -> bool {
 
     // Try to open the input desktop as a definitive test
     unsafe {
+        use windows::Win32::System::StationsAndDesktops::DESKTOP_ACCESS_FLAGS;
         match OpenInputDesktop(
             windows::Win32::System::StationsAndDesktops::DF_ALLOWOTHERACCOUNTHOOK,
             false,
-            0u32.into(),
+            DESKTOP_ACCESS_FLAGS(0),
         ) {
             Ok(desktop) => {
                 let _ = CloseHandle(HANDLE(desktop.0));
