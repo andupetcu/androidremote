@@ -17,6 +17,7 @@ dependencies = [
  "agent-platform",
  "agent-windows",
  "anyhow",
+ "bytes",
  "clap",
  "hostname",
  "serde",

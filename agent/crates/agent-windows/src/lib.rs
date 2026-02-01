@@ -17,3 +17,12 @@ pub mod system_info;
 
 #[cfg(target_os = "windows")]
 pub mod service;
+
+#[cfg(target_os = "windows")]
+pub mod session_detect;
+
+#[cfg(target_os = "windows")]
+pub mod ipc;
+
+#[cfg(target_os = "windows")]
+pub mod helper_launcher;

@@ -11,6 +11,9 @@ use agent_core::protocol;
 use agent_core::session::SessionManager;
 use agent_core::telemetry::TelemetryCollector;
 
+#[cfg(target_os = "windows")]
+mod helper;
+
 #[derive(Parser, Debug)]
 #[command(name = "android-remote-agent")]
 #[command(about = "Cross-platform remote management agent")]
@@ -35,6 +38,14 @@ struct Cli {
     /// Log level (trace, debug, info, warn, error)
     #[arg(long, default_value = "info", env = "AGENT_LOG_LEVEL")]
     log_level: String,
+
+    /// Run as helper process (spawned by service, not user-facing)
+    #[arg(long, hide = true)]
+    helper_mode: bool,
+
+    /// Named pipe path for helper IPC (used with --helper-mode)
+    #[arg(long, hide = true)]
+    pipe_name: Option<String>,
 }
 
 #[tokio::main]
@@ -56,6 +67,21 @@ async fn main() -> Result<()> {
         std::env::consts::OS,
         std::env::consts::ARCH,
     );
+
+    // Log Windows session context for diagnostics
+    #[cfg(target_os = "windows")]
+    agent_windows::session_detect::log_session_info();
+
+    // If --helper-mode, run as helper process and exit
+    #[cfg(target_os = "windows")]
+    if cli.helper_mode {
+        let pipe_name = cli
+            .pipe_name
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("--pipe-name is required with --helper-mode"))?;
+        info!("starting in helper mode with pipe: {}", pipe_name);
+        return helper::run_helper_mode(pipe_name).await;
+    }
 
     // Load or create config
     let config_path = cli
@@ -108,12 +134,40 @@ async fn main() -> Result<()> {
 }
 
 async fn run_agent(mut config: AgentConfig, config_path: std::path::PathBuf) -> Result<()> {
+    // Detect if we need the helper process architecture (Windows Session 0)
+    #[cfg(target_os = "windows")]
+    let use_helper = agent_windows::session_detect::is_system_service_context();
+    #[cfg(not(target_os = "windows"))]
+    let use_helper = false;
+
+    if use_helper {
+        info!("Session 0 detected — using helper process for desktop/terminal");
+    } else {
+        info!("interactive session — handling desktop/terminal directly");
+    }
+
     let (event_tx, mut event_rx) = mpsc::channel::<ServerEvent>(64);
 
     let handle = connection::run_connection(config.clone(), event_tx).await?;
     let mut session_mgr = SessionManager::new(handle.clone());
     let mut file_handler = create_file_handler()?;
     let telemetry = create_telemetry_collector()?;
+
+    // --- Session 0: set up IPC + helper process ---
+    #[cfg(target_os = "windows")]
+    let ipc_writer: Option<std::sync::Arc<tokio::sync::Mutex<agent_windows::ipc::IpcWriter>>> =
+        if use_helper {
+            match setup_helper_ipc(&config, &handle).await {
+                Ok(writer) => Some(writer),
+                Err(e) => {
+                    error!("failed to set up helper IPC: {:#}", e);
+                    error!("desktop/terminal will not work in this session");
+                    None
+                }
+            }
+        } else {
+            None
+        };
 
     // Periodic telemetry every 60 seconds
     let mut telemetry_interval = tokio::time::interval(std::time::Duration::from_secs(60));
@@ -145,6 +199,22 @@ async fn run_agent(mut config: AgentConfig, config_path: std::path::PathBuf) -> 
                         telemetry.send_telemetry_quiet(&handle).await;
                     }
                     Some(ServerEvent::Message(msg)) => {
+                        // In Session 0 mode, proxy desktop/terminal messages through IPC
+                        #[cfg(target_os = "windows")]
+                        if use_helper {
+                            if is_session_message(msg.header.msg_type) {
+                                if let Some(ref writer) = ipc_writer {
+                                    let encoded = msg.encode();
+                                    if let Err(e) = writer.lock().await.send_raw(&encoded).await {
+                                        error!("failed to forward message to helper: {}", e);
+                                    }
+                                } else {
+                                    warn!("no helper IPC — dropping session message 0x{:02x}", msg.header.msg_type);
+                                }
+                                continue;
+                            }
+                        }
+
                         handle_server_message(msg, &handle, &mut session_mgr, &mut file_handler, &telemetry, &config).await;
                     }
                     Some(ServerEvent::Disconnected) => {
@@ -171,6 +241,133 @@ async fn run_agent(mut config: AgentConfig, config_path: std::path::PathBuf) -> 
     }
 
     Ok(())
+}
+
+/// Check if a message type is a session message (desktop or terminal)
+/// that should be proxied to the helper process.
+#[cfg(target_os = "windows")]
+fn is_session_message(msg_type: u8) -> bool {
+    matches!(
+        msg_type,
+        protocol::TERMINAL_OPEN
+            | protocol::TERMINAL_CLOSE
+            | protocol::TERMINAL_DATA
+            | protocol::TERMINAL_RESIZE
+            | protocol::DESKTOP_OPEN
+            | protocol::DESKTOP_CLOSE
+            | protocol::DESKTOP_INPUT
+            | protocol::DESKTOP_QUALITY
+    )
+}
+
+/// Set up IPC pipe server, spawn helper process, and start the relay task
+/// that forwards helper responses back to the WebSocket.
+#[cfg(target_os = "windows")]
+async fn setup_helper_ipc(
+    config: &AgentConfig,
+    ws_handle: &ConnectionHandle,
+) -> Result<std::sync::Arc<tokio::sync::Mutex<agent_windows::ipc::IpcWriter>>> {
+    use agent_windows::ipc::{IpcServer, pipe_name_for_device};
+    use agent_windows::helper_launcher::HelperLauncher;
+    use agent_windows::session_detect::get_active_console_session;
+
+    let device_id = config.device_id.as_deref().unwrap_or("default");
+    let pipe_name = pipe_name_for_device(device_id);
+
+    // Create the named pipe server
+    let ipc_server = IpcServer::create(&pipe_name)
+        .context("failed to create IPC pipe server")?;
+
+    // Get the executable path for spawning the helper
+    let exe_path = std::env::current_exe()
+        .context("failed to get current exe path")?
+        .to_string_lossy()
+        .to_string();
+
+    // Find the active console session
+    let target_session = get_active_console_session()
+        .ok_or_else(|| anyhow::anyhow!("no active console session found"))?;
+
+    info!("spawning helper in session {} via {}", target_session, exe_path);
+
+    // Spawn the helper process in the user session
+    let mut launcher = HelperLauncher::new(exe_path.clone(), pipe_name.clone());
+    launcher.spawn_in_session(target_session)
+        .context("failed to spawn helper process")?;
+
+    // Wait for the helper to connect to the pipe
+    info!("waiting for helper to connect...");
+    ipc_server.wait_for_connection().await
+        .context("helper failed to connect to pipe")?;
+
+    info!("helper connected, setting up relay");
+
+    // Split the pipe into reader/writer
+    let (reader, writer) = ipc_server.split();
+    let writer = std::sync::Arc::new(tokio::sync::Mutex::new(writer));
+
+    // Spawn relay task: reads messages from helper pipe → sends to WebSocket
+    let ws_handle_clone = ws_handle.clone();
+    let mut ipc_reader = reader;
+    tokio::spawn(async move {
+        loop {
+            match ipc_reader.recv_raw().await {
+                Ok(raw) => {
+                    // Decode and forward to WebSocket
+                    match protocol::Message::decode(&raw) {
+                        Ok(Some((msg, _))) => {
+                            if let Err(e) = ws_handle_clone.send_message(&msg).await {
+                                error!("failed to relay helper message to server: {}", e);
+                                break;
+                            }
+                        }
+                        Ok(None) => {
+                            warn!("incomplete message from helper pipe");
+                        }
+                        Err(e) => {
+                            warn!("failed to decode helper message: {}", e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!("helper pipe disconnected: {}", e);
+                    break;
+                }
+            }
+        }
+        info!("helper relay task ended");
+    });
+
+    // Spawn a task to monitor helper process health and respawn if needed
+    let pipe_name_clone = pipe_name;
+    let exe_path_clone = exe_path;
+    tokio::spawn(async move {
+        let mut check_interval = tokio::time::interval(std::time::Duration::from_secs(5));
+        loop {
+            check_interval.tick().await;
+
+            if !launcher.is_alive() {
+                warn!("helper process died, attempting respawn");
+
+                // Check if session changed
+                let new_session = get_active_console_session();
+                match new_session {
+                    Some(session_id) => {
+                        if let Err(e) = launcher.spawn_in_session(session_id) {
+                            error!("failed to respawn helper: {:#}", e);
+                        } else {
+                            info!("helper respawned in session {}", session_id);
+                        }
+                    }
+                    None => {
+                        warn!("no active console session, will retry later");
+                    }
+                }
+            }
+        }
+    });
+
+    Ok(writer)
 }
 
 async fn send_agent_info(handle: &ConnectionHandle) -> Result<()> {
