@@ -206,12 +206,17 @@ export function EnrollmentModal({ isOpen, onClose, onSuccess }: EnrollmentModalP
 
   const getWindowsScript = () => {
     if (!deployToken || !deployServerUrl) return '';
-    return `irm ${deployServerUrl}/api/downloads/agent/windows -OutFile $env:TEMP\\agent.exe; & $env:TEMP\\agent.exe install --silent --server-url "${deployServerUrl}" --enroll-token "${deployToken}"`;
+    return `irm ${deployServerUrl}/api/downloads/agent/windows -OutFile $env:TEMP\\agent.exe; & $env:TEMP\\agent.exe install --server-url "${deployServerUrl}" --enroll-token "${deployToken}"`;
   };
 
   const getLinuxScript = () => {
     if (!deployToken || !deployServerUrl) return '';
-    return `curl -fsSL ${deployServerUrl}/api/downloads/agent/linux -o /tmp/agent && chmod +x /tmp/agent && sudo /tmp/agent install --silent --server-url "${deployServerUrl}" --enroll-token "${deployToken}"`;
+    return `curl -fsSL ${deployServerUrl}/api/downloads/agent/linux -o /tmp/agent && chmod +x /tmp/agent && sudo /tmp/agent install --server-url "${deployServerUrl}" --enroll-token "${deployToken}"`;
+  };
+
+  const getInstallerUrl = (platform: string, tokenValue: string) => {
+    const base = API_BASE_URL || window.location.origin;
+    return `${base}/api/downloads/installer/${platform}?token=${encodeURIComponent(tokenValue)}`;
   };
 
   const handleTabChange = (tab: Tab) => {
@@ -300,6 +305,24 @@ export function EnrollmentModal({ isOpen, onClose, onSuccess }: EnrollmentModalP
                   </div>
 
                   <p className="enrollment-modal__timer">{formatTimeRemaining()}</p>
+
+                  <div className="enrollment-modal__installer-downloads">
+                    <p className="enrollment-modal__installer-label">Or download a pre-configured installer:</p>
+                    <div className="enrollment-modal__installer-buttons">
+                      <a
+                        href={getInstallerUrl('windows', token.token)}
+                        className="enrollment-modal__installer-btn"
+                        download
+                      >
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
+                          <polyline points="7 10 12 15 17 10" />
+                          <line x1="12" y1="15" x2="12" y2="3" />
+                        </svg>
+                        Windows Installer
+                      </a>
+                    </div>
+                  </div>
 
                   <div className="enrollment-modal__waiting">
                     <div className="spinner" />
@@ -429,6 +452,27 @@ export function EnrollmentModal({ isOpen, onClose, onSuccess }: EnrollmentModalP
                       </button>
                     </div>
                     <pre className="enrollment-modal__script">{getLinuxScript()}</pre>
+                  </div>
+
+                  <div className="enrollment-modal__installer-downloads">
+                    <p className="enrollment-modal__installer-label">Download pre-configured installers:</p>
+                    <div className="enrollment-modal__installer-buttons">
+                      <a
+                        href={getInstallerUrl('windows', deployToken)}
+                        className="enrollment-modal__installer-btn"
+                        download
+                      >
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
+                          <polyline points="7 10 12 15 17 10" />
+                          <line x1="12" y1="15" x2="12" y2="3" />
+                        </svg>
+                        Windows Installer
+                      </a>
+                    </div>
+                    <p className="enrollment-modal__installer-hint">
+                      These installers have the enrollment token pre-configured. Just run them.
+                    </p>
                   </div>
 
                   <p className="enrollment-modal__deploy-info">

@@ -810,6 +810,138 @@ app.get('/api/downloads/agent/:platform', agentDownloadLimiter, (req: Request, r
 });
 
 // ============================================
+// Pre-Configured Installer Downloads
+// ============================================
+
+/**
+ * Installer binary storage directory.
+ * Upload a base NSIS installer via POST /api/agent/upload-installer,
+ * or place it manually at server/data/installers/windows-x64.exe
+ */
+const INSTALLERS_DIR = path.join(__dirname, '..', 'data', 'installers');
+
+/**
+ * GET /api/downloads/installer/:platform - Download a pre-configured installer
+ * Query: ?token=ABC123 (enrollment token value)
+ *
+ * For Windows: reads the base NSIS .exe and appends a JSON config trailer
+ * containing the server URL and enrollment token. The NSIS script reads
+ * this trailer at startup so the user doesn't need to enter anything.
+ *
+ * Trailer format: [original exe bytes][JSON][4-byte JSON length LE][8-byte magic "ARCFG\x00\x00\x00"]
+ */
+app.get('/api/downloads/installer/:platform', agentDownloadLimiter, (req: Request, res: Response) => {
+  const { platform } = req.params;
+  const tokenValue = req.query.token as string;
+
+  if (!tokenValue) {
+    res.status(400).json({ error: 'token query parameter is required' });
+    return;
+  }
+
+  // Validate the enrollment token is active
+  const tokenRecord = enrollmentStore.getTokenByValue(tokenValue);
+  if (!tokenRecord) {
+    res.status(404).json({ error: 'enrollment token not found' });
+    return;
+  }
+  if (tokenRecord.status !== 'active') {
+    res.status(410).json({ error: `enrollment token is ${tokenRecord.status}` });
+    return;
+  }
+
+  // Determine installer file path
+  const installerMap: Record<string, string> = {
+    windows: 'windows-x64.exe',
+  };
+  const installerFile = installerMap[platform];
+  if (!installerFile) {
+    res.status(400).json({ error: `no installer available for platform: ${platform}. Currently only "windows" is supported.` });
+    return;
+  }
+
+  const installerPath = path.join(INSTALLERS_DIR, installerFile);
+  if (!require('fs').existsSync(installerPath)) {
+    res.status(404).json({ error: `installer binary not found. Upload one via POST /api/agent/upload-installer or place it at data/installers/${installerFile}` });
+    return;
+  }
+
+  // Read the base installer
+  const baseExe = require('fs').readFileSync(installerPath) as Buffer;
+
+  // Build the server URL from the current request
+  const serverUrl = getBaseUrl(req);
+
+  // Create JSON config trailer
+  const config = JSON.stringify({ serverUrl, enrollToken: tokenValue });
+  const configBuf = Buffer.from(config, 'utf-8');
+
+  // Build trailer: [JSON bytes][4-byte length LE][8-byte magic]
+  const lengthBuf = Buffer.alloc(4);
+  lengthBuf.writeUInt32LE(configBuf.length, 0);
+
+  // Magic: "ARCFG\x00\x00\x00" (8 bytes)
+  const magicBuf = Buffer.alloc(8, 0);
+  magicBuf.write('ARCFG', 0, 'ascii');
+
+  const result = Buffer.concat([baseExe, configBuf, lengthBuf, magicBuf]);
+
+  // Serve as a download
+  const filename = platform === 'windows' ? 'Setup-AndroidRemote.exe' : `setup-android-remote-${platform}`;
+  res.setHeader('Content-Type', 'application/octet-stream');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  res.setHeader('Content-Length', result.length);
+  res.send(result);
+});
+
+/**
+ * POST /api/agent/upload-installer - Upload a base installer binary (admin only)
+ * Body: multipart form with 'file' and 'platform' (e.g. "windows")
+ */
+const installerUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 200 * 1024 * 1024 }, // 200MB max
+});
+
+app.post('/api/agent/upload-installer', authMiddleware, installerUpload.single('file'), (req: Request, res: Response) => {
+  const { platform } = req.body;
+  const file = req.file;
+
+  if (!file) {
+    res.status(400).json({ error: 'file is required' });
+    return;
+  }
+  if (!platform) {
+    res.status(400).json({ error: 'platform is required (e.g. "windows")' });
+    return;
+  }
+
+  const platformMap: Record<string, string> = {
+    windows: 'windows-x64.exe',
+  };
+  const filename = platformMap[platform];
+  if (!filename) {
+    res.status(400).json({ error: `unsupported platform: ${platform}` });
+    return;
+  }
+
+  // Ensure directory exists
+  if (!require('fs').existsSync(INSTALLERS_DIR)) {
+    require('fs').mkdirSync(INSTALLERS_DIR, { recursive: true });
+  }
+
+  const destPath = path.join(INSTALLERS_DIR, filename);
+  require('fs').writeFileSync(destPath, file.buffer);
+
+  res.json({
+    success: true,
+    platform,
+    filename,
+    size: file.size,
+  });
+});
+
+// ============================================
 // Device Command Queue
 // ============================================
 

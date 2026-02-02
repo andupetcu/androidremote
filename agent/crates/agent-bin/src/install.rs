@@ -1,6 +1,7 @@
-//! Cross-platform install/uninstall orchestration.
+//! Cross-platform install/uninstall orchestration (silent mode only).
 //!
 //! Handles: copying binary, enrolling, saving config, registering and starting the service.
+//! Interactive installation is handled by the NSIS installer (Windows) or deployment scripts.
 
 use anyhow::{Context, Result};
 use tracing::info;
@@ -22,61 +23,36 @@ const BINARY_NAME: &str = "android-remote-agent.exe";
 #[cfg(not(target_os = "windows"))]
 const BINARY_NAME: &str = "android-remote-agent";
 
-// ── Install parameters ─────────────────────────────────────────────────────
-
-struct InstallConfig {
-    server_url: String,
-    enroll_token: String,
-    install_dir: String,
-    install_service: bool,
-    start_service: bool,
-}
-
 // ── Public entry points ────────────────────────────────────────────────────
 
-/// Main install entry point. Dispatches to interactive or silent mode.
+/// Install the agent as a system service (silent/unattended only).
+///
+/// Called by the NSIS installer post-install step or by deployment scripts.
+/// Requires elevated privileges (NSIS runs elevated; Linux scripts use sudo).
 pub async fn run_install(
-    silent: bool,
     install_dir: Option<String>,
     server_url: Option<String>,
     enroll_token: Option<String>,
 ) -> Result<()> {
-    // Step 1: Ensure we have admin/root privileges
-    ensure_elevated(silent)?;
+    ensure_elevated()?;
 
-    // Step 2: Collect install parameters
-    let params = if silent {
-        let server = server_url
-            .context("--server-url is required in silent mode")?;
-        let token = enroll_token
-            .context("--enroll-token is required in silent mode")?;
+    let server = server_url
+        .context("--server-url is required")?;
+    let token = enroll_token
+        .context("--enroll-token is required")?;
+    let dir = install_dir.unwrap_or_else(|| DEFAULT_INSTALL_DIR.to_string());
 
-        InstallConfig {
-            server_url: server,
-            enroll_token: token,
-            install_dir: install_dir.unwrap_or_else(|| DEFAULT_INSTALL_DIR.to_string()),
-            install_service: true,
-            start_service: true,
-        }
-    } else {
-        collect_interactive_params(install_dir, server_url, enroll_token)?
-    };
+    let result = perform_install(&server, &token, &dir).await;
 
-    // Step 3: Run the install
-    let result = perform_install(&params).await;
-
-    // Step 4: Report result
     match &result {
         Ok(()) => {
-            let msg = format!(
-                "Android Remote Agent installed successfully!\n\nInstall directory: {}\nService registered and started.",
-                params.install_dir
+            info!(
+                "Android Remote Agent installed successfully! Install directory: {}, service registered and started.",
+                dir
             );
-            show_success(&msg, silent);
         }
         Err(e) => {
-            let msg = format!("Installation failed: {:#}", e);
-            show_error(&msg, silent);
+            eprintln!("ERROR: Installation failed: {:#}", e);
         }
     }
 
@@ -85,7 +61,7 @@ pub async fn run_install(
 
 /// Main uninstall entry point.
 pub fn run_uninstall(purge: bool) -> Result<()> {
-    ensure_elevated_sync()?;
+    ensure_elevated()?;
 
     info!("uninstalling agent service...");
 
@@ -147,11 +123,11 @@ fn validate_enroll_token(token: &str) -> Result<()> {
 
 // ── Install implementation ─────────────────────────────────────────────────
 
-async fn perform_install(params: &InstallConfig) -> Result<()> {
+async fn perform_install(server_url: &str, enroll_token: &str, install_dir_str: &str) -> Result<()> {
     // Validate inputs before proceeding
-    validate_server_url(&params.server_url)?;
-    validate_enroll_token(&params.enroll_token)?;
-    let install_dir = std::path::Path::new(&params.install_dir);
+    validate_server_url(server_url)?;
+    validate_enroll_token(enroll_token)?;
+    let install_dir = std::path::Path::new(install_dir_str);
     let binary_dest = install_dir.join(BINARY_NAME);
     let config_dest = install_dir.join("config.json");
 
@@ -184,10 +160,10 @@ async fn perform_install(params: &InstallConfig) -> Result<()> {
     }
 
     // 3. Enroll with server
-    info!("enrolling with server {}...", params.server_url);
+    info!("enrolling with server {}...", server_url);
     let mut config = AgentConfig::default();
-    config.server_url = params.server_url.clone();
-    config.enroll_token = Some(params.enroll_token.clone());
+    config.server_url = server_url.to_string();
+    config.enroll_token = Some(enroll_token.to_string());
 
     let (device_id, session_token) = connection::enroll(&config)
         .await
@@ -195,7 +171,7 @@ async fn perform_install(params: &InstallConfig) -> Result<()> {
 
     info!("enrolled as device {}", device_id);
 
-    // 4. Save config
+    // 4. Save config to install directory (not AppData)
     config.device_id = Some(device_id);
     config.session_token = Some(session_token);
     config.enroll_token = None;
@@ -217,39 +193,29 @@ async fn perform_install(params: &InstallConfig) -> Result<()> {
     }
 
     // 5. Register and start the system service
-    if params.install_service {
-        install_service(
-            binary_dest.to_string_lossy().as_ref(),
-            &params.server_url,
-            config_dest.to_string_lossy().as_ref(),
-        )?;
-        info!("service registered");
+    install_service(
+        binary_dest.to_string_lossy().as_ref(),
+        server_url,
+        config_dest.to_string_lossy().as_ref(),
+    )?;
+    info!("service registered");
 
-        if params.start_service {
-            start_service(
-                binary_dest.to_string_lossy().as_ref(),
-                &params.server_url,
-            )?;
-            info!("service started");
-        }
-    }
+    start_service(
+        binary_dest.to_string_lossy().as_ref(),
+        server_url,
+    )?;
+    info!("service started");
 
     Ok(())
 }
 
 // ── Privilege checks ───────────────────────────────────────────────────────
 
-fn ensure_elevated(#[allow(unused)] silent: bool) -> Result<()> {
+fn ensure_elevated() -> Result<()> {
     #[cfg(target_os = "windows")]
     {
         if !agent_windows::installer::is_elevated() {
-            if silent {
-                anyhow::bail!("this command must be run as Administrator (use an elevated command prompt)");
-            }
-            // Re-launch with UAC
-            let args = std::env::args().skip(1).collect::<Vec<_>>().join(" ");
-            agent_windows::installer::relaunch_elevated(&args)?;
-            // relaunch_elevated exits the process on success
+            anyhow::bail!("this command must be run as Administrator (use an elevated command prompt)");
         }
     }
     #[cfg(target_os = "linux")]
@@ -259,83 +225,6 @@ fn ensure_elevated(#[allow(unused)] silent: bool) -> Result<()> {
         }
     }
     Ok(())
-}
-
-fn ensure_elevated_sync() -> Result<()> {
-    ensure_elevated(true)
-}
-
-// ── Interactive parameter collection ───────────────────────────────────────
-
-fn collect_interactive_params(
-    install_dir: Option<String>,
-    server_url: Option<String>,
-    enroll_token: Option<String>,
-) -> Result<InstallConfig> {
-    #[cfg(target_os = "windows")]
-    {
-        let _ = (install_dir.as_ref(), server_url.as_ref(), enroll_token.as_ref());
-        // Show Win32 dialog
-        match agent_windows::installer::show_install_dialog() {
-            Some(params) => Ok(InstallConfig {
-                server_url: params.server_url,
-                enroll_token: params.enroll_token,
-                install_dir: install_dir.unwrap_or_else(|| DEFAULT_INSTALL_DIR.to_string()),
-                install_service: params.install_service,
-                start_service: params.start_service,
-            }),
-            None => {
-                // User cancelled
-                std::process::exit(0);
-            }
-        }
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        // Terminal-based interactive prompts
-        use std::io::{self, BufRead, Write};
-
-        let stdin = io::stdin();
-        let stdout = io::stdout();
-        let mut stdout = stdout.lock();
-
-        let server = if let Some(url) = server_url {
-            url
-        } else {
-            write!(stdout, "Server URL (e.g., https://server:7899): ")?;
-            stdout.flush()?;
-            let mut line = String::new();
-            stdin.lock().read_line(&mut line)?;
-            let trimmed = line.trim().to_string();
-            if trimmed.is_empty() {
-                anyhow::bail!("server URL is required");
-            }
-            trimmed
-        };
-
-        let token = if let Some(t) = enroll_token {
-            t
-        } else {
-            write!(stdout, "Enrollment token: ")?;
-            stdout.flush()?;
-            let mut line = String::new();
-            stdin.lock().read_line(&mut line)?;
-            let trimmed = line.trim().to_string();
-            if trimmed.is_empty() {
-                anyhow::bail!("enrollment token is required");
-            }
-            trimmed
-        };
-
-        Ok(InstallConfig {
-            server_url: server,
-            enroll_token: token,
-            install_dir: install_dir.unwrap_or_else(|| DEFAULT_INSTALL_DIR.to_string()),
-            install_service: true,
-            start_service: true,
-        })
-    }
 }
 
 // ── Service management wrappers ────────────────────────────────────────────
@@ -420,33 +309,5 @@ fn uninstall_service() -> Result<()> {
     #[cfg(not(any(target_os = "windows", target_os = "linux")))]
     {
         anyhow::bail!("service management not supported on this platform")
-    }
-}
-
-// ── User feedback ──────────────────────────────────────────────────────────
-
-fn show_success(message: &str, silent: bool) {
-    if silent {
-        info!("{}", message);
-    } else {
-        #[cfg(target_os = "windows")]
-        agent_windows::installer::show_message_box("Installation Complete", message, false);
-        #[cfg(not(target_os = "windows"))]
-        {
-            println!("\n✓ {}", message);
-        }
-    }
-}
-
-fn show_error(message: &str, silent: bool) {
-    if silent {
-        eprintln!("ERROR: {}", message);
-    } else {
-        #[cfg(target_os = "windows")]
-        agent_windows::installer::show_message_box("Installation Failed", message, true);
-        #[cfg(not(target_os = "windows"))]
-        {
-            eprintln!("\n✗ {}", message);
-        }
     }
 }

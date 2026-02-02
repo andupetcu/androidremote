@@ -374,3 +374,56 @@
   color: #e94560;
   font-size: 0.75rem;
 }
+
+/* Installer download buttons */
+.enrollment-modal__installer-downloads {
+  margin: 1rem 0;
+  padding: 1rem;
+  background: #16213e;
+  border: 1px solid #0f3460;
+  border-radius: 0.5rem;
+}
+
+.enrollment-modal__installer-label {
+  font-size: 0.85rem;
+  color: #888;
+  margin: 0 0 0.75rem;
+}
+
+.enrollment-modal__installer-buttons {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.enrollment-modal__installer-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.6rem 1rem;
+  background: #0f3460;
+  border: 1px solid #1a4a8a;
+  border-radius: 0.375rem;
+  color: #ccc;
+  font-size: 0.85rem;
+  font-weight: 500;
+  text-decoration: none;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.enrollment-modal__installer-btn:hover {
+  background: #1a4a8a;
+  border-color: #2a6aba;
+  color: #fff;
+}
+
+.enrollment-modal__installer-btn svg {
+  flex-shrink: 0;
+}
+
+.enrollment-modal__installer-hint {
+  font-size: 0.75rem;
+  color: #666;
+  margin: 0.5rem 0 0;
+}

@@ -55,12 +55,8 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Install the agent as a system service
+    /// Install the agent as a system service (silent/unattended)
     Install {
-        /// Run in silent/unattended mode (no interactive prompts)
-        #[arg(long)]
-        silent: bool,
-
         /// Installation directory (default: platform-specific)
         #[arg(long)]
         install_dir: Option<String>,
@@ -95,9 +91,8 @@ async fn main() -> Result<()> {
 
     // Dispatch subcommands
     match cli.command {
-        Some(Commands::Install { silent, install_dir }) => {
+        Some(Commands::Install { install_dir }) => {
             return install::run_install(
-                silent,
                 install_dir,
                 cli.server_url,
                 cli.enroll_token,
@@ -108,16 +103,9 @@ async fn main() -> Result<()> {
             return install::run_uninstall(purge);
         }
         None => {
-            // On Windows, if launched from explorer.exe with no args, redirect to install mode
-            #[cfg(target_os = "windows")]
-            if cli.server_url.is_none() && cli.enroll_token.is_none() && cli.config_path.is_none()
-                && !cli.helper_mode
-            {
-                if agent_windows::installer::launched_from_explorer() {
-                    info!("launched from explorer.exe — entering install mode");
-                    return install::run_install(false, None, None, None).await;
-                }
-            }
+            // Run as daemon (default behavior).
+            // Installation is handled exclusively by the `install` subcommand,
+            // invoked by the NSIS installer or deployment scripts.
         }
     }
 
