@@ -19,14 +19,17 @@ pub struct WindowsServiceManager {
     binary_path: String,
     /// Server URL for the service arguments
     server_url: String,
+    /// Optional path to the config file
+    config_path: Option<String>,
 }
 
 #[cfg(target_os = "windows")]
 impl WindowsServiceManager {
-    pub fn new(binary_path: String, server_url: String) -> Self {
+    pub fn new(binary_path: String, server_url: String, config_path: Option<String>) -> Self {
         Self {
             binary_path,
             server_url,
+            config_path,
         }
     }
 }
@@ -36,10 +39,13 @@ impl ServiceManager for WindowsServiceManager {
     fn install(&self) -> Result<()> {
         info!("installing Windows service: {}", SERVICE_NAME);
 
-        let bin_path = format!(
+        let mut bin_path = format!(
             "\"{}\" --server-url \"{}\"",
             self.binary_path, self.server_url
         );
+        if let Some(ref cp) = self.config_path {
+            bin_path.push_str(&format!(" --config-path \"{}\"", cp));
+        }
 
         // Create the service via sc.exe
         let output = std::process::Command::new("sc.exe")

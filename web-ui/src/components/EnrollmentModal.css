@@ -13,7 +13,7 @@
   background: #1a1a2e;
   border: 1px solid #0f3460;
   border-radius: 1rem;
-  max-width: 420px;
+  max-width: 560px;
   width: 100%;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
 }
@@ -251,4 +251,126 @@
   to {
     transform: rotate(360deg);
   }
+}
+
+/* Tabs */
+.enrollment-modal__tabs {
+  display: flex;
+  border-bottom: 1px solid #0f3460;
+}
+
+.enrollment-modal__tab {
+  flex: 1;
+  padding: 0.75rem 1rem;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: #666;
+  font-size: 0.9rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.enrollment-modal__tab:hover {
+  color: #aaa;
+}
+
+.enrollment-modal__tab--active {
+  color: #e94560;
+  border-bottom-color: #e94560;
+}
+
+/* Deploy tab */
+.enrollment-modal__deploy-fields {
+  display: flex;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.enrollment-modal__field {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.enrollment-modal__field span {
+  font-size: 0.8rem;
+  color: #888;
+}
+
+.enrollment-modal__field input {
+  padding: 0.6rem 0.75rem;
+  background: #16213e;
+  border: 1px solid #0f3460;
+  border-radius: 0.375rem;
+  color: #eee;
+  font-size: 0.9rem;
+  outline: none;
+}
+
+.enrollment-modal__field input:focus {
+  border-color: #e94560;
+}
+
+.enrollment-modal__script-block {
+  margin-bottom: 1rem;
+  border: 1px solid #0f3460;
+  border-radius: 0.5rem;
+  overflow: hidden;
+}
+
+.enrollment-modal__script-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.5rem 0.75rem;
+  background: #16213e;
+  border-bottom: 1px solid #0f3460;
+  font-size: 0.8rem;
+  color: #aaa;
+}
+
+.enrollment-modal__copy-btn {
+  background: #0f3460;
+  border: none;
+  color: #aaa;
+  padding: 0.25rem 0.6rem;
+  border-radius: 0.25rem;
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.enrollment-modal__copy-btn:hover {
+  background: #e94560;
+  color: white;
+}
+
+.enrollment-modal__script {
+  margin: 0;
+  padding: 0.75rem;
+  background: #0d1117;
+  color: #7ee787;
+  font-size: 0.75rem;
+  font-family: 'SF Mono', 'Monaco', 'Inconsolata', monospace;
+  white-space: pre-wrap;
+  word-break: break-all;
+  line-height: 1.5;
+}
+
+.enrollment-modal__deploy-info {
+  text-align: center;
+  font-size: 0.8rem;
+  color: #666;
+  margin-top: 0.5rem;
+}
+
+.enrollment-modal__deploy-info code {
+  background: #16213e;
+  padding: 0.15rem 0.4rem;
+  border-radius: 0.25rem;
+  color: #e94560;
+  font-size: 0.75rem;
 }

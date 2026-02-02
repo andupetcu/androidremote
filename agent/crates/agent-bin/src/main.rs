@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 
@@ -14,21 +14,23 @@ use agent_core::telemetry::TelemetryCollector;
 #[cfg(target_os = "windows")]
 mod helper;
 
+mod install;
+
 #[derive(Parser, Debug)]
 #[command(name = "android-remote-agent")]
 #[command(about = "Cross-platform remote management agent")]
 #[command(version)]
 struct Cli {
     /// Server URL (e.g., wss://server:7899 or ws://server:7899)
-    #[arg(long, env = "AGENT_SERVER_URL")]
+    #[arg(long, env = "AGENT_SERVER_URL", global = true)]
     server_url: Option<String>,
 
     /// Enrollment token for first-time registration
-    #[arg(long, env = "AGENT_ENROLL_TOKEN")]
+    #[arg(long, env = "AGENT_ENROLL_TOKEN", global = true)]
     enroll_token: Option<String>,
 
     /// Path to config file
-    #[arg(long, env = "AGENT_CONFIG_PATH")]
+    #[arg(long, env = "AGENT_CONFIG_PATH", global = true)]
     config_path: Option<String>,
 
     /// Run in foreground (don't daemonize)
@@ -36,7 +38,7 @@ struct Cli {
     foreground: bool,
 
     /// Log level (trace, debug, info, warn, error)
-    #[arg(long, default_value = "info", env = "AGENT_LOG_LEVEL")]
+    #[arg(long, default_value = "info", env = "AGENT_LOG_LEVEL", global = true)]
     log_level: String,
 
     /// Run as helper process (spawned by service, not user-facing)
@@ -46,6 +48,29 @@ struct Cli {
     /// Named pipe path for helper IPC (used with --helper-mode)
     #[arg(long, hide = true)]
     pipe_name: Option<String>,
+
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+#[derive(Subcommand, Debug)]
+enum Commands {
+    /// Install the agent as a system service
+    Install {
+        /// Run in silent/unattended mode (no interactive prompts)
+        #[arg(long)]
+        silent: bool,
+
+        /// Installation directory (default: platform-specific)
+        #[arg(long)]
+        install_dir: Option<String>,
+    },
+    /// Remove the agent service and optionally all files
+    Uninstall {
+        /// Also remove config files and installation directory
+        #[arg(long)]
+        purge: bool,
+    },
 }
 
 #[tokio::main]
@@ -67,6 +92,36 @@ async fn main() -> Result<()> {
         std::env::consts::OS,
         std::env::consts::ARCH,
     );
+
+    // Dispatch subcommands
+    match cli.command {
+        Some(Commands::Install { silent, install_dir }) => {
+            return install::run_install(
+                silent,
+                install_dir,
+                cli.server_url,
+                cli.enroll_token,
+            )
+            .await;
+        }
+        Some(Commands::Uninstall { purge }) => {
+            return install::run_uninstall(purge);
+        }
+        None => {
+            // On Windows, if launched from explorer.exe with no args, redirect to install mode
+            #[cfg(target_os = "windows")]
+            if cli.server_url.is_none() && cli.enroll_token.is_none() && cli.config_path.is_none()
+                && !cli.helper_mode
+            {
+                if agent_windows::installer::launched_from_explorer() {
+                    info!("launched from explorer.exe — entering install mode");
+                    return install::run_install(false, None, None, None).await;
+                }
+            }
+        }
+    }
+
+    // Default: run as daemon (existing behavior)
 
     // Log Windows session context for diagnostics
     #[cfg(target_os = "windows")]

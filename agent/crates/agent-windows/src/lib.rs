@@ -26,3 +26,6 @@ pub mod ipc;
 
 #[cfg(target_os = "windows")]
 pub mod helper_launcher;
+
+#[cfg(target_os = "windows")]
+pub mod installer;

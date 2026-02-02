@@ -13,17 +13,24 @@ pub struct SystemdServiceManager {
     binary_path: String,
     /// Server URL for the ExecStart command
     server_url: String,
+    /// Optional path to the config file
+    config_path: Option<String>,
 }
 
 impl SystemdServiceManager {
-    pub fn new(binary_path: String, server_url: String) -> Self {
+    pub fn new(binary_path: String, server_url: String, config_path: Option<String>) -> Self {
         Self {
             binary_path,
             server_url,
+            config_path,
         }
     }
 
     fn generate_unit_file(&self) -> String {
+        let config_arg = match &self.config_path {
+            Some(cp) => format!(" --config-path {}", cp),
+            None => String::new(),
+        };
         format!(
             r#"[Unit]
 Description=Android Remote Agent
@@ -33,7 +40,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 User={user}
-ExecStart={binary} --server-url {server}
+ExecStart={binary} --server-url {server}{config_arg}
 Restart=always
 RestartSec=10
 Environment=AGENT_LOG_LEVEL=info
@@ -51,6 +58,7 @@ WantedBy=multi-user.target
             user = SERVICE_NAME,
             binary = self.binary_path,
             server = self.server_url,
+            config_arg = config_arg,
         )
     }
 }

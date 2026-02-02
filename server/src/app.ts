@@ -116,6 +116,7 @@ app.use('/api', (req: Request, res: Response, next: NextFunction) => {
     '/pair/',           // Device pairing
     '/enroll/',         // Device enrollment
     '/uploads/',        // Static file serving
+    '/downloads/',      // Agent binary downloads (for deployment scripts)
   ];
   const publicExact = [
     '/health',
@@ -766,6 +767,46 @@ app.post('/api/agent/upload', authMiddleware, agentBinaryUpload.single('file'), 
  */
 app.get('/api/agent/binaries', authMiddleware, (_req: Request, res: Response) => {
   res.json({ binaries: agentBinaryStore.listBinaries() });
+});
+
+// Rate limiter for public agent downloads
+const agentDownloadLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 50, // 50 downloads per IP per 15 minutes
+  message: { error: 'Too many download requests, please try again later' },
+});
+
+/**
+ * GET /api/downloads/agent/:platform - Simple agent download for deployment scripts
+ * :platform is "windows" or "linux", optional ?arch= query (defaults to x64)
+ * This endpoint is public (no auth) so deployment one-liners can download directly.
+ */
+app.get('/api/downloads/agent/:platform', agentDownloadLimiter, (req: Request, res: Response) => {
+  const { platform } = req.params;
+  const arch = (req.query.arch as string) || 'x64';
+
+  // Map platform names to os values used by agentBinaryStore
+  const osMap: Record<string, string> = { windows: 'windows', linux: 'linux' };
+  const os = osMap[platform];
+  if (!os) {
+    res.status(400).json({ error: `invalid platform: ${platform}. Use "windows" or "linux"` });
+    return;
+  }
+
+  const info = agentBinaryStore.getLatest(os, arch);
+  if (!info) {
+    res.status(404).json({ error: `no agent binary available for ${platform}/${arch}` });
+    return;
+  }
+
+  const filePath = agentBinaryStore.getBinaryPath(info);
+  if (!require('fs').existsSync(filePath)) {
+    res.status(404).json({ error: 'binary file not found on disk' });
+    return;
+  }
+
+  const ext = platform === 'windows' ? '.exe' : '';
+  res.download(filePath, `android-remote-agent${ext}`);
 });
 
 // ============================================

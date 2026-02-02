@@ -20,6 +20,7 @@ dependencies = [
  "bytes",
  "clap",
  "hostname",
+ "nix",
  "serde",
  "serde_json",
  "tokio",

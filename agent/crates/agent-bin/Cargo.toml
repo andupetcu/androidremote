@@ -22,6 +22,7 @@ bytes = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 agent-linux = { path = "../agent-linux" }
+nix = { workspace = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 agent-windows = { path = "../agent-windows" }
