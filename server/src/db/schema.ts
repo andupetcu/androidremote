@@ -230,9 +230,17 @@ export function initializeSchema(db: Database.Database): void {
       device_id TEXT NOT NULL,
       created_at INTEGER DEFAULT (strftime('%s', 'now') * 1000),
       last_activity INTEGER DEFAULT (strftime('%s', 'now') * 1000),
+      expires_at INTEGER,
       FOREIGN KEY (device_id) REFERENCES devices(id) ON DELETE CASCADE
     )
   `);
+
+  // Migrate: add expires_at column if missing
+  const sessionColumns = db.prepare('PRAGMA table_info(sessions)').all() as Array<{ name: string }>;
+  const sessionColumnNames = new Set(sessionColumns.map((c) => c.name));
+  if (!sessionColumnNames.has('expires_at')) {
+    db.prepare('ALTER TABLE sessions ADD COLUMN expires_at INTEGER').run();
+  }
 
   // Create index for device sessions lookup
   db.exec(`
@@ -666,4 +674,42 @@ export function purgeOldFileTransfers(db: Database.Database, olderThanDays: numb
     WHERE status IN ('completed', 'failed', 'cancelled') AND created_at < ?
   `).run(cutoff);
   return result.changes;
+}
+
+/**
+ * Default session expiry: 30 days in milliseconds
+ */
+export const SESSION_EXPIRY_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * Purge device sessions that have passed their expires_at time
+ */
+export function purgeExpiredDeviceSessions(db: Database.Database): number {
+  const now = Date.now();
+  const result = db.prepare(`
+    DELETE FROM sessions WHERE expires_at IS NOT NULL AND expires_at < ?
+  `).run(now);
+  return result.changes;
+}
+
+/**
+ * Validate a device session token. Returns the device_id if valid, null if expired/missing.
+ */
+export function validateSessionToken(db: Database.Database, token: string, deviceId?: string): string | null {
+  const now = Date.now();
+  let row: { device_id: string } | undefined;
+
+  if (deviceId) {
+    row = db.prepare(`
+      SELECT device_id FROM sessions
+      WHERE token = ? AND device_id = ? AND (expires_at IS NULL OR expires_at > ?)
+    `).get(token, deviceId, now) as { device_id: string } | undefined;
+  } else {
+    row = db.prepare(`
+      SELECT device_id FROM sessions
+      WHERE token = ? AND (expires_at IS NULL OR expires_at > ?)
+    `).get(token, now) as { device_id: string } | undefined;
+  }
+
+  return row?.device_id ?? null;
 }

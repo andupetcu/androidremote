@@ -7,8 +7,10 @@ interface AuthContextType {
   token: string | null;
   username: string | null;
   isAuthenticated: boolean;
+  mustChangePassword: boolean;
   login: (username: string, password: string) => Promise<void>;
   logout: () => void;
+  clearMustChangePassword: () => void;
 }
 
 const AuthContext = createContext<AuthContextType | null>(null);
@@ -16,6 +18,7 @@ const AuthContext = createContext<AuthContextType | null>(null);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [token, setToken] = useState<string | null>(() => localStorage.getItem('auth_token'));
   const [username, setUsername] = useState<string | null>(() => localStorage.getItem('auth_username'));
+  const [mustChangePassword, setMustChangePassword] = useState(false);
 
   const isAuthenticated = !!token;
 
@@ -34,6 +37,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     localStorage.setItem('auth_username', data.username);
     setToken(data.token);
     setUsername(data.username);
+
+    if (data.mustChangePassword) {
+      setMustChangePassword(true);
+    }
   };
 
   const logout = () => {
@@ -41,6 +48,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     localStorage.removeItem('auth_username');
     setToken(null);
     setUsername(null);
+    setMustChangePassword(false);
+  };
+
+  const clearMustChangePassword = () => {
+    setMustChangePassword(false);
   };
 
   // Check token validity on mount
@@ -56,7 +68,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []); // only on mount
 
   return (
-    <AuthContext.Provider value={{ token, username, isAuthenticated, login, logout }}>
+    <AuthContext.Provider value={{ token, username, isAuthenticated, mustChangePassword, login, logout, clearMustChangePassword }}>
       {children}
     </AuthContext.Provider>
   );

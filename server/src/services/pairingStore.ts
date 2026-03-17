@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 import type Database from 'better-sqlite3';
 import { getDatabase } from '../db/connection';
-import { initializeSchema, cleanupExpiredSessions } from '../db/schema';
+import { initializeSchema, cleanupExpiredSessions, SESSION_EXPIRY_MS } from '../db/schema';
 import { deviceStore } from './deviceStore';
 
 export interface PairingSession {
@@ -180,11 +180,12 @@ class PairingStore {
       publicKey: session.devicePublicKey,
     });
 
-    // Create a session entry
+    // Create a session entry with expiry
+    const now = Date.now();
     db.prepare(`
-      INSERT OR REPLACE INTO sessions (token, device_id, created_at, last_activity)
-      VALUES (?, ?, ?, ?)
-    `).run(sessionToken, session.deviceId, Date.now(), Date.now());
+      INSERT OR REPLACE INTO sessions (token, device_id, created_at, last_activity, expires_at)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(sessionToken, session.deviceId, now, now, now + SESSION_EXPIRY_MS);
 
     return {
       ...session,

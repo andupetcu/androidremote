@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 import type Database from 'better-sqlite3';
 import { getDatabase } from '../db/connection';
-import { initializeSchema, cleanupExpiredTokens } from '../db/schema';
+import { initializeSchema, cleanupExpiredTokens, SESSION_EXPIRY_MS } from '../db/schema';
 import { deviceStore } from './deviceStore';
 
 export interface EnrollmentToken {
@@ -268,11 +268,12 @@ class EnrollmentStore {
     // Generate session token
     const sessionToken = crypto.randomBytes(32).toString('base64url');
 
-    // Store session
+    // Store session with expiry
+    const now = Date.now();
     db.prepare(`
-      INSERT INTO sessions (token, device_id, created_at, last_activity)
-      VALUES (?, ?, ?, ?)
-    `).run(sessionToken, deviceId, Date.now(), Date.now());
+      INSERT INTO sessions (token, device_id, created_at, last_activity, expires_at)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(sessionToken, deviceId, now, now, now + SESSION_EXPIRY_MS);
 
     return {
       deviceId,

@@ -12,12 +12,14 @@ import { AppsPage } from './pages/AppsPage';
 import { AuditPage } from './pages/AuditPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { LoginPage } from './pages/LoginPage';
+import { ChangePasswordPage } from './pages/ChangePasswordPage';
 import { AuthProvider, useAuth } from './hooks/useAuth';
 import './App.css';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated, mustChangePassword } = useAuth();
   if (!isAuthenticated) return <Navigate to="/login" replace />;
+  if (mustChangePassword) return <Navigate to="/change-password" replace />;
   return <>{children}</>;
 }
 
@@ -25,6 +27,7 @@ function AppRoutes() {
   return (
     <Routes>
       <Route path="login" element={<LoginPage />} />
+      <Route path="change-password" element={<ChangePasswordPage />} />
       <Route element={<ProtectedRoute><AppLayout /></ProtectedRoute>}>
         <Route index element={<Dashboard />} />
         <Route path="devices" element={<DevicesPage />} />

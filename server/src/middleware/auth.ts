@@ -88,6 +88,8 @@ export async function loginHandler(req: Request, res: Response): Promise<void> {
   const envHash = process.env.ADMIN_PASSWORD_HASH || null;
   const passwordHash = storedHash ?? envHash;
 
+  let mustChangePassword = false;
+
   if (!passwordHash) {
     // First-time setup: accept default password 'admin'
     console.warn(
@@ -97,6 +99,7 @@ export async function loginHandler(req: Request, res: Response): Promise<void> {
       res.status(401).json({ error: 'Invalid credentials.' });
       return;
     }
+    mustChangePassword = true;
   } else {
     const isValid = await bcrypt.compare(password, passwordHash);
     if (!isValid) {
@@ -106,7 +109,7 @@ export async function loginHandler(req: Request, res: Response): Promise<void> {
   }
 
   const token = jwt.sign({ username }, getJwtSecret(), { expiresIn: '24h' });
-  res.json({ token, username });
+  res.json({ token, username, mustChangePassword });
 }
 
 export async function changePasswordHandler(req: Request, res: Response): Promise<void> {

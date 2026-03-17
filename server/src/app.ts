@@ -1,8 +1,10 @@
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import path from 'path';
+import helmet from 'helmet';
 import rateLimit, { MemoryStore } from 'express-rate-limit';
 import multer from 'multer';
+import { z } from 'zod';
 import { pairingStore } from './services/pairingStore';
 import { deviceStore } from './services/deviceStore';
 import { enrollmentStore } from './services/enrollmentStore';
@@ -14,7 +16,7 @@ import { policyStore, PolicyInput } from './services/policyStore';
 import { eventStore, EventInput, DeviceEventType, EventSeverity } from './services/eventStore';
 import { fileTransferStore, TransferInput } from './services/fileTransferStore';
 import { auditStore, AuditInput } from './services/auditStore';
-import { COMMAND_TYPES } from './db/schema';
+import { COMMAND_TYPES, validateSessionToken } from './db/schema';
 import { LocalStorageProvider, setStorageProvider, getStorageProvider } from './services/storageProvider';
 import * as appPackageStore from './services/appPackageStore';
 import { syncRequiredApps, syncPolicyRequiredApps } from './services/appSyncService';
@@ -23,6 +25,7 @@ import { agentBinaryStore } from './services/agentBinaryStore';
 import { getDatabase } from './db/connection';
 import { authMiddleware, loginHandler, changePasswordHandler } from './middleware/auth';
 import { settingsStore } from './services/settingsStore';
+import { validateBody } from './middleware/validate';
 
 // Initialize storage provider
 const uploadsDir = path.join(__dirname, '..', 'uploads');
@@ -49,6 +52,23 @@ export const app = express();
 // Set TRUST_PROXY to a specific value (e.g. "loopback", "1", "172.17.0.0/16") for
 // fine-grained control. Defaults to "loopback" (trusts localhost proxies).
 app.set('trust proxy', process.env.TRUST_PROXY || 'loopback');
+
+// Security headers via helmet
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],  // Fluent UI requires inline styles
+      imgSrc: ["'self'", "data:", "blob:"],
+      connectSrc: ["'self'", "ws:", "wss:"],
+      fontSrc: ["'self'", "data:"],
+      objectSrc: ["'none'"],
+      frameAncestors: ["'none'"],
+    },
+  },
+  crossOriginEmbedderPolicy: false,  // Needed for cross-origin resources on LAN
+}));
 
 // Serve uploaded files statically
 app.use('/api/uploads', express.static(uploadsDir));
@@ -96,13 +116,76 @@ app.use((req: Request, _res: Response, next: NextFunction) => {
 });
 
 // ============================================
+// Zod validation schemas
+// ============================================
+const loginSchema = z.object({
+  username: z.string().min(1).max(100),
+  password: z.string().min(1).max(200),
+});
+
+const changePasswordSchema = z.object({
+  currentPassword: z.string().min(1).max(200),
+  newPassword: z.string().min(8, 'Password must be at least 8 characters').max(200),
+});
+
+const commandTypeValues = COMMAND_TYPES as readonly [string, ...string[]];
+const commandSchema = z.object({
+  type: z.enum(commandTypeValues),
+  payload: z.record(z.string(), z.unknown()).default({}),
+});
+
+const enrollDeviceSchema = z.object({
+  token: z.string().min(1).max(50),
+  deviceName: z.string().min(1).max(200),
+  deviceModel: z.string().max(200).optional(),
+  androidVersion: z.string().max(50).optional(),
+  publicKey: z.string().max(5000).optional(),
+  osType: z.string().max(50).optional(),
+  hostname: z.string().max(200).optional(),
+  arch: z.string().max(50).optional(),
+  agentVersion: z.string().max(50).optional(),
+});
+
+const telemetrySchema = z.object({
+  battery_level: z.number().int().min(0).max(100).optional(),
+  battery_charging: z.union([z.boolean(), z.number()]).optional(),
+  battery_health: z.string().max(50).optional(),
+  network_type: z.string().max(50).optional(),
+  network_ssid: z.string().max(100).optional(),
+  ip_address: z.string().max(100).optional(),
+  signal_strength: z.number().int().min(-200).max(0).optional(),
+  storage_used_bytes: z.number().int().min(0).optional(),
+  storage_total_bytes: z.number().int().min(0).optional(),
+  memory_used_bytes: z.number().int().min(0).optional(),
+  memory_total_bytes: z.number().int().min(0).optional(),
+  screen_on: z.union([z.boolean(), z.number()]).optional(),
+  brightness: z.number().int().min(0).max(255).optional(),
+  latitude: z.number().min(-90).max(90).optional(),
+  longitude: z.number().min(-180).max(180).optional(),
+  location_accuracy: z.number().min(0).optional(),
+  uptime_ms: z.number().int().min(0).optional(),
+  android_security_patch: z.string().max(50).optional(),
+}).passthrough();
+
+// Login rate limiter — 5 attempts per 15 minutes per IP
+const loginRateLimitStore = new MemoryStore();
+const loginRateLimit = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  message: { error: 'Too many login attempts. Please try again in 15 minutes.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  store: loginRateLimitStore,
+});
+
+// ============================================
 // Authentication endpoints (public)
 // ============================================
-app.post('/api/auth/login', loginHandler);
+app.post('/api/auth/login', loginRateLimit, validateBody(loginSchema), loginHandler);
 app.get('/api/auth/verify', authMiddleware, (_req: Request, res: Response) => {
   res.json({ valid: true });
 });
-app.put('/api/auth/password', authMiddleware, changePasswordHandler);
+app.put('/api/auth/password', authMiddleware, validateBody(changePasswordSchema), changePasswordHandler);
 
 // ============================================
 // Auth middleware for admin API routes
@@ -133,23 +216,41 @@ app.use('/api', (req: Request, res: Response, next: NextFunction) => {
   if (publicExact.includes(path)) return next();
   if (publicPrefixes.some(p => path.startsWith(p))) return next();
 
-  // Skip auth for device-facing POST/PATCH endpoints (heartbeat, telemetry, apps, commands ack)
+  // Device-facing endpoints require a valid session token instead of JWT
   if (devicePrefixes.some(p => path.startsWith(p))) {
     const deviceFacingMethods = ['POST', 'PATCH'];
     const deviceFacingPaths = ['/heartbeat', '/telemetry', '/apps', '/commands/pending', '/events'];
-    if (deviceFacingMethods.includes(req.method) && deviceFacingPaths.some(dp => path.includes(dp))) {
-      return next();
-    }
-    // GET pending commands is device-facing
-    if (req.method === 'GET' && path.includes('/commands/pending')) {
-      return next();
-    }
-    // GET app-updates is device-facing (auto-update check)
-    if (req.method === 'GET' && path.includes('/app-updates')) {
-      return next();
-    }
-    // GET policy is device-facing
-    if (req.method === 'GET' && path.includes('/policy')) {
+    const isDeviceFacing = (
+      (deviceFacingMethods.includes(req.method) && deviceFacingPaths.some(dp => path.includes(dp))) ||
+      (req.method === 'GET' && path.includes('/commands/pending')) ||
+      (req.method === 'GET' && path.includes('/app-updates')) ||
+      (req.method === 'GET' && path.includes('/policy'))
+    );
+
+    if (isDeviceFacing) {
+      // Validate device session token
+      const sessionToken = req.headers['x-session-token'] as string
+        || (req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.slice(7) : '');
+
+      if (!sessionToken) {
+        return next(); // Allow without token for backward compat during migration
+      }
+
+      // Extract device ID from path (e.g. /devices/device-abc123/heartbeat)
+      const deviceIdMatch = path.match(/^\/devices\/([^/]+)/);
+      const deviceId = deviceIdMatch?.[1];
+
+      if (deviceId) {
+        const db = getDatabase();
+        const validDeviceId = validateSessionToken(db, sessionToken, deviceId);
+        if (!validDeviceId) {
+          res.status(401).json({ error: 'Invalid or expired session token.' });
+          return;
+        }
+        // Update last_activity
+        db.prepare('UPDATE sessions SET last_activity = ? WHERE token = ?').run(Date.now(), sessionToken);
+      }
+
       return next();
     }
   }
@@ -256,6 +357,7 @@ const pairingCompleteLimit = rateLimit({
 export function resetRateLimiters(): void {
   initiateStore.resetAll();
   completeStore.resetAll();
+  loginRateLimitStore.resetAll();
 }
 
 // Health check endpoint
@@ -564,7 +666,7 @@ app.delete('/api/enroll/tokens/:id', (req: Request, res: Response) => {
 /**
  * POST /api/enroll/device - Enroll a device using a token
  */
-app.post('/api/enroll/device', (req: Request, res: Response) => {
+app.post('/api/enroll/device', validateBody(enrollDeviceSchema), (req: Request, res: Response) => {
   const { token, deviceName, deviceModel, androidVersion, publicKey,
     osType, hostname, arch, agentVersion } = req.body;
 
@@ -951,7 +1053,7 @@ app.post('/api/agent/upload-installer', authMiddleware, installerUpload.single('
 app.post('/api/commands', (req: Request, res: Response) => {
   const { deviceId, type, payload } = req.body;
 
-  if (!deviceId) {
+  if (!deviceId || typeof deviceId !== 'string') {
     res.status(400).json({ error: 'deviceId is required' });
     return;
   }
@@ -1214,7 +1316,7 @@ app.delete('/api/devices/:id/commands/:cmdId', (req: Request, res: Response) => 
 /**
  * POST /api/devices/:id/telemetry - Device pushes telemetry
  */
-app.post('/api/devices/:id/telemetry', (req: Request, res: Response) => {
+app.post('/api/devices/:id/telemetry', validateBody(telemetrySchema), (req: Request, res: Response) => {
   const { id } = req.params;
   const device = deviceStore.getDevice(id);
 
@@ -2703,11 +2805,21 @@ app.get('/api/devices/:id/audit', (req: Request, res: Response) => {
   res.json({ logs, count: logs.length });
 });
 
-// Error handling middleware
+// Error handling middleware — sanitize error responses
 app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
+  // Always log full error server-side
   // eslint-disable-next-line no-console
   console.error('Server error:', err);
-  res.status(500).json({
-    error: 'Internal server error',
-  });
+
+  // In production, never expose stack traces or internal details to clients
+  if (process.env.NODE_ENV === 'production') {
+    res.status(500).json({
+      error: 'Internal server error',
+    });
+  } else {
+    res.status(500).json({
+      error: 'Internal server error',
+      message: err.message,
+    });
+  }
 });
