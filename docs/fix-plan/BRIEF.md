@@ -36,3 +36,13 @@ C5. Command lifecycle. States: pending â†’ delivered (with `lease_expires_at`) â
 C6. APK integrity. At upload the server validates the package name (`^[a-zA-Z][a-zA-Z0-9_]*(\.[a-zA-Z][a-zA-Z0-9_]*)+$`), streams the file to disk, and computes `sha256`, stored with the package. INSTALL_APK command payloads include `sha256` (hex). The device refuses to install when the downloaded file's SHA-256 differs; when the payload has no sha256, it fails with "missing sha256" unless the app was built with BuildConfig flag `ALLOW_UNVERIFIED_APK`, which defaults to false.
 C7. ICE servers. `GET /api/ice-servers` (admin JWT, or device token for a device) returns `{ iceServers: RTCIceServer[] }`, built from env `STUN_URLS` and `TURN_URLS` plus `TURN_SECRET`, with coturn REST-style time-limited credentials (username `<expiry>:<id>`, HMAC-SHA1). START_REMOTE payloads also carry `iceServers`. No TURN credentials in source.
 C8. Capture failure. When the device can't start capture, it sends a data-channel JSON message `{"type":"CAPTURE_FAILED","reason":"..."}`. The web UI shows that reason instead of a black screen.
+C9. Remote-desktop data channels. The browser, which is the offerer, creates two channels:
+- `commands`: reliable and ordered. Carries input, MDM and ack JSON, plus control messages.
+- `video`: `ordered:false, maxRetransmits:0`. Carries H.264 frames in the existing chunk format.
+The device sends video on `video` when that channel is open, and otherwise falls back to `commands` for older browsers. On `commands`, the browser can send `{"type":"REQUEST_KEYFRAME"}` after a decode error or a gap. The device then asks the encoder for a sync frame (MediaCodec `PARAMETER_KEY_REQUEST_SYNC_FRAME`) and answers with a keyframe within about 1 s. The device sends `{"type":"SCREEN_INFO","width":w,"height":h,"rotation":0|90|180|270}` at start and on every rotation or resolution change. The browser maps input against the current SCREEN_INFO.
+C10. New command types, server enum plus device handlers:
+- `SET_KIOSK {packageName, enabled, lockTask:boolean}` replaces the kioskMode flag.
+- `DISABLE_APP {packageName}`, `ENABLE_APP {packageName}`, `LAUNCH_APP {packageName}`.
+- `GRANT_PERMISSION {packageName, permission, state:"granted"|"denied"|"default"}`.
+- `SET_PROTECTED_PACKAGES {packages:string[]}`: the device refuses UNINSTALL or DISABLE for these packages and for itself.
+WIPE requires payload `{confirm:"<deviceId>"}`; the device refuses it otherwise. START_REMOTE payloads carry `iceServers` (C7).
