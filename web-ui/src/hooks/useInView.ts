@@ -11,10 +11,7 @@ export function useInView<T extends Element>(): [React.RefObject<T | null>, bool
   useEffect(() => {
     if (seen) return;
     const el = ref.current;
-    if (!el || typeof IntersectionObserver === 'undefined') {
-      setSeen(true);
-      return;
-    }
+    if (!el) return;
     const io = new IntersectionObserver((entries) => {
       if (entries.some((e) => e.isIntersecting)) {
         setSeen(true);

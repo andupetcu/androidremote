@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useLayoutEffect, useRef } from 'react';
 import { createPoller, type Poller } from '../lib/polling';
 
 /**
@@ -12,7 +12,10 @@ export function usePolling(
   enabled = true
 ): React.RefObject<Poller | null> {
   const taskRef = useRef(task);
-  taskRef.current = task;
+  // Latest-task ref, synced after commit (layout effect runs before the poller effect below).
+  useLayoutEffect(() => {
+    taskRef.current = task;
+  });
   const pollerRef = useRef<Poller | null>(null);
 
   useEffect(() => {

@@ -5,6 +5,30 @@ import { API_BASE, apiFetch } from '../utils/api';
 import { fetchJsonShared } from '../lib/polling';
 import { usePolling } from './usePolling';
 
+/** Telemetry as the server returns it (field names differ from DeviceTelemetry). */
+interface TelemetryApiResponse {
+  deviceId: string;
+  batteryLevel: number | null;
+  batteryCharging: boolean | null;
+  batteryHealth: string | null;
+  networkType: string | null;
+  signalStrength: number | null;
+  networkSsid: string | null;
+  ipAddress: string | null;
+  storageTotalBytes: number | null;
+  storageUsedBytes: number | null;
+  memoryTotalBytes: number | null;
+  memoryUsedBytes: number | null;
+  latitude: number | null;
+  longitude: number | null;
+  locationAccuracy: number | null;
+  kioskActive?: boolean | null;
+  kioskPackage?: string | null;
+  lockTask?: boolean | null;
+  protectedPackages?: unknown;
+  updatedAt?: number | null;
+}
+
 interface UseTelemetryResult {
   telemetry: DeviceTelemetry | null;
   loading: boolean;
@@ -20,7 +44,7 @@ export function useTelemetry(deviceId: string): UseTelemetryResult {
   const fetchOnce = useCallback(async (): Promise<boolean> => {
     try {
       setError(null);
-      const res = await fetchJsonShared<Record<string, any>>(`${API_BASE}/api/devices/${deviceId}/telemetry`);
+      const res = await fetchJsonShared<TelemetryApiResponse>(`${API_BASE}/api/devices/${deviceId}/telemetry`);
       if (!res.ok || !res.data) throw new Error('Failed to fetch telemetry');
       const data = res.data;
 

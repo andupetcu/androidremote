@@ -5,7 +5,9 @@ interface DeviceFilesProps {
   deviceId: string;
 }
 
-export function DeviceFiles({ deviceId: _deviceId }: DeviceFilesProps) {
+// deviceId is accepted for the planned file browser; the placeholder does not use it yet.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export function DeviceFiles(_props: DeviceFilesProps) {
   return (
     <div className="device-files">
       <EmptyState

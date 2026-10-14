@@ -1,20 +1,9 @@
-import { createContext, useContext, useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import type { ReactNode } from 'react';
 import { closeAdminSocket } from '../lib/adminSocket';
+import { AuthContext } from './useAuth';
 
 const API_BASE = import.meta.env.DEV ? 'http://localhost:7899' : '';
-
-interface AuthContextType {
-  token: string | null;
-  username: string | null;
-  isAuthenticated: boolean;
-  mustChangePassword: boolean;
-  login: (username: string, password: string) => Promise<void>;
-  logout: () => void;
-  clearMustChangePassword: () => void;
-}
-
-const AuthContext = createContext<AuthContextType | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [token, setToken] = useState<string | null>(() => localStorage.getItem('auth_token'));
@@ -89,19 +78,4 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       {children}
     </AuthContext.Provider>
   );
-}
-
-export function useAuth(): AuthContextType {
-  const ctx = useContext(AuthContext);
-  if (!ctx) throw new Error('useAuth must be used within AuthProvider');
-  return ctx;
-}
-
-// Helper to get auth headers for fetch calls
-export function getAuthHeaders(): Record<string, string> {
-  const token = localStorage.getItem('auth_token');
-  if (token) {
-    return { 'Authorization': `Bearer ${token}` };
-  }
-  return {};
 }

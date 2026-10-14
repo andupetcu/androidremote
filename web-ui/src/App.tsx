@@ -13,7 +13,8 @@ import { AuditPage } from './pages/AuditPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { LoginPage } from './pages/LoginPage';
 import { ChangePasswordPage } from './pages/ChangePasswordPage';
-import { AuthProvider, useAuth } from './hooks/useAuth';
+import { AuthProvider } from './hooks/AuthProvider';
+import { useAuth } from './hooks/useAuth';
 import './App.css';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {

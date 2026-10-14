@@ -7,7 +7,8 @@ import { API_BASE } from '../utils/api';
 import { EnrollmentModal } from '../components/EnrollmentModal';
 import { DeviceCommands } from '../components/device/DeviceCommands';
 import { InstallApkModal } from '../components/apps/InstallApkModal';
-import { AuthProvider, useAuth } from '../hooks/useAuth';
+import { AuthProvider } from '../hooks/AuthProvider';
+import { useAuth } from '../hooks/useAuth';
 import { FakeWebSocket, installFakeWebSocket } from './fakeWebSocket';
 import { closeAdminSocket } from '../lib/adminSocket';
 

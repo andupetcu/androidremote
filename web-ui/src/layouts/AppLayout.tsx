@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { makeStyles, tokens } from '@fluentui/react-components';
 import { Sidebar } from '../components/layout/Sidebar';
@@ -61,7 +61,6 @@ export function AppLayout() {
   const unreadEvents = stats?.unacknowledged ?? 0;
   const navigate = useNavigate();
   const location = useLocation();
-  const mountIdRef = useRef(Math.random().toString(36).slice(2, 8));
   const { settings } = useSettings();
 
   // Update browser tab title when server name changes
@@ -71,18 +70,21 @@ export function AppLayout() {
 
   // Track AppLayout mounts
   useEffect(() => {
-    console.log('[AppLayout] MOUNTED, id:', mountIdRef.current);
+    const mountId = Math.random().toString(36).slice(2, 8);
+    console.log('[AppLayout] MOUNTED, id:', mountId);
     return () => {
-      console.log('[AppLayout] UNMOUNTED, id:', mountIdRef.current);
+      console.log('[AppLayout] UNMOUNTED, id:', mountId);
     };
   }, []);
 
   // Close mobile sidebar on route change
-  useEffect(() => {
-    if (isMobile) {
-      setSidebarOpen(false);
-    }
-  }, [location.pathname, isMobile]);
+  // (state adjusted during render, keyed on pathname + isMobile, instead of in an effect)
+  const navKey = `${location.pathname}|${isMobile}`;
+  const [prevNavKey, setPrevNavKey] = useState(navKey);
+  if (prevNavKey !== navKey) {
+    setPrevNavKey(navKey);
+    if (isMobile) setSidebarOpen(false);
+  }
 
   const handleNotificationClick = () => {
     navigate('/events');
