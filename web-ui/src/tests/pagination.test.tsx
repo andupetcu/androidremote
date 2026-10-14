@@ -197,7 +197,7 @@ describe('Table virtualisation (WU-17)', () => {
         HttpResponse.json({
           apps: Array.from({ length: 2000 }, (_, i) => ({
             packageName: `com.example.app${i}`, appName: `App ${i}`, versionName: '1', versionCode: 1,
-            installedAt: 1, updatedAt: 1, isSystemApp: false, isEnabled: true,
+            installedAt: 1, updatedAt: 1, isSystemApp: false, enabled: true,
           })),
           count: 2000,
         })

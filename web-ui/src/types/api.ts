@@ -47,6 +47,11 @@ export interface DeviceTelemetry {
   longitude: number | null;
   locationAccuracy: number | null;
   locationUpdatedAt: number | null;
+  /** Kiosk state as the device reports it (T13); null until the device has reported it. */
+  kioskActive: boolean | null;
+  kioskPackage: string | null;
+  lockTask: boolean | null;
+  protectedPackages: string[] | null;
   updatedAt: number;
 }
 
@@ -201,7 +206,8 @@ export interface AppInfo {
   installedAt: number | null;
   updatedAt: number | null;
   isSystemApp: boolean;
-  isEnabled: boolean;
+  /** Server field name (GET /api/devices/:id/apps). False when the app is disabled or hidden. */
+  enabled: boolean;
 }
 
 export interface AppCatalogEntry {

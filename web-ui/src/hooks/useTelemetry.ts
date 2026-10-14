@@ -44,6 +44,10 @@ export function useTelemetry(deviceId: string): UseTelemetryResult {
         longitude: data.longitude,
         locationAccuracy: data.locationAccuracy,
         locationUpdatedAt: null, // Not provided by API
+        kioskActive: data.kioskActive ?? null,
+        kioskPackage: data.kioskPackage ?? null,
+        lockTask: data.lockTask ?? null,
+        protectedPackages: Array.isArray(data.protectedPackages) ? data.protectedPackages : null,
         updatedAt: data.updatedAt ?? Date.now(),
       };
 

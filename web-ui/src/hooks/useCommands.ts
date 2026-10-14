@@ -187,8 +187,8 @@ export const CommandHelpers = {
     sendCommand('REBOOT'),
 
   // The device refuses WIPE unless confirm equals its own id (contract C10).
-  wipe: (sendCommand: UseDeviceCommandsResult['sendCommand'], deviceId: string, preserveFactoryReset = false) =>
-    sendCommand('WIPE', { confirm: deviceId, preserveFactoryReset }),
+  wipe: (sendCommand: UseDeviceCommandsResult['sendCommand'], deviceId: string, wipeExternalStorage = false) =>
+    sendCommand('WIPE', { confirm: deviceId, wipeExternalStorage }),
 
   installApk: (sendCommand: UseDeviceCommandsResult['sendCommand'], url: string) =>
     sendCommand('INSTALL_APK', { url }),

@@ -102,7 +102,7 @@ export function DeviceApps({ deviceId }: DeviceAppsProps) {
           <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', alignItems: 'center' }}>
             {isProtected && <Badge variant="warning" size="sm">Protected</Badge>}
             <Button variant="ghost" size="sm" onClick={() => act('Launch', () => CommandHelpers.launchApp(sendCommand, app.packageName))}>Launch</Button>
-            {app.isEnabled === false ? (
+            {app.enabled === false ? (
               <Button variant="ghost" size="sm" onClick={() => act('Enable', () => CommandHelpers.enableApp(sendCommand, app.packageName))}>Enable</Button>
             ) : (
               <Button variant="ghost" size="sm" disabled={isProtected} onClick={() => disableApp(app)}>Disable</Button>

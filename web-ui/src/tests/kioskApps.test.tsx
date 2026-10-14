@@ -18,7 +18,7 @@ afterEach(() => {
 
 const app = (pkg: string, name: string, extra: Record<string, unknown> = {}) => ({
   packageName: pkg, appName: name, versionName: '1', versionCode: 1, installedAt: 1, updatedAt: 1,
-  isSystemApp: false, isEnabled: true, ...extra,
+  isSystemApp: false, enabled: true, ...extra,
 });
 
 function mockDevice(opts: { apps?: unknown[]; commands?: unknown[]; policy?: unknown } = {}) {
@@ -119,7 +119,7 @@ describe('Kiosk panel (WU-15, C10)', () => {
 });
 
 describe('App management actions (WU-15, C10)', () => {
-  const apps = [app('com.shop.pos', 'POS'), app('com.old.app', 'Old', { isEnabled: false })];
+  const apps = [app('com.shop.pos', 'POS'), app('com.old.app', 'Old', { enabled: false })];
 
   function renderApps() {
     return render(<MemoryRouter><DeviceApps deviceId="dev-1" /></MemoryRouter>);

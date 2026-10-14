@@ -11,6 +11,11 @@ export const handlers = [
     return HttpResponse.json({ iceServers: [{ urls: 'stun:stun.example.test:3478' }] });
   }),
 
+  // Telemetry: nothing reported by default; tests that care override this.
+  http.get('*/api/devices/:id/telemetry', ({ params }) => {
+    return HttpResponse.json({ deviceId: params.id, batteryLevel: null, storageTotalBytes: null });
+  }),
+
   // Pairing endpoints
   http.post('/api/pair/initiate', () => {
     return HttpResponse.json({

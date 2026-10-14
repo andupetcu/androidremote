@@ -70,3 +70,59 @@ describe('T14 Settings QR uses /api/provisioning/info', () => {
     expect(screen.getByRole('button', { name: /copy json/i })).toBeDisabled();
   });
 });
+
+import { DeviceApps } from '../components/device/DeviceApps';
+import { DeviceKiosk } from '../components/device/DeviceKiosk';
+import { MemoryRouter } from 'react-router-dom';
+import { closeAdminSocket } from '../lib/adminSocket';
+import { CommandHelpers } from '../hooks/useCommands';
+
+describe('T14 app inventory uses the server field name `enabled`', () => {
+  afterEach(() => closeAdminSocket());
+  it('shows Enable for an app the server reports as enabled:false', async () => {
+    server.use(
+      http.get(`${API_BASE}/api/devices/dev-1/apps`, () => HttpResponse.json({
+        apps: [
+          { deviceId: 'dev-1', packageName: 'com.off', appName: 'Off', versionName: '1', versionCode: 1, installedAt: 1, updatedAt: 1, isSystemApp: false, enabled: false },
+          { deviceId: 'dev-1', packageName: 'com.on', appName: 'On', versionName: '1', versionCode: 1, installedAt: 1, updatedAt: 1, isSystemApp: false, enabled: true },
+        ], count: 2,
+      })),
+      http.get(`${API_BASE}/api/devices/dev-1/commands`, () => HttpResponse.json({ commands: [] })),
+    );
+    render(<MemoryRouter><DeviceApps deviceId="dev-1" /></MemoryRouter>);
+    const offRow = (await screen.findByText('Off')).closest('tr')!;
+    expect(offRow.textContent).toMatch(/Enable/);
+    expect(offRow.textContent).not.toMatch(/Disable/);
+    const onRow = screen.getByText('On').closest('tr')!;
+    expect(onRow.textContent).toMatch(/Disable/);
+  });
+});
+
+describe('T14 kiosk panel shows what the device reports in telemetry', () => {
+  afterEach(() => closeAdminSocket());
+  it('renders kioskActive / kioskPackage / lockTask from GET /telemetry', async () => {
+    server.use(
+      http.get(`${API_BASE}/api/devices/dev-1/apps`, () => HttpResponse.json({ apps: [], count: 0 })),
+      http.get(`${API_BASE}/api/devices/dev-1/commands`, () => HttpResponse.json({ commands: [] })),
+      http.get(`${API_BASE}/api/policies`, () => HttpResponse.json({ policies: [] })),
+      http.get(`${API_BASE}/api/devices/dev-1/telemetry`, () => HttpResponse.json({
+        deviceId: 'dev-1', batteryLevel: 50, storageTotalBytes: 10, updatedAt: Date.now(),
+        kioskActive: true, kioskPackage: 'com.shop.player', lockTask: true, protectedPackages: ['com.a.b'],
+      })),
+    );
+    render(<DeviceKiosk device={{ id: 'dev-1', policyId: null, complianceStatus: 'compliant' } as never} />);
+    const reported = await screen.findByTestId('kiosk-reported');
+    await waitFor(() => expect(reported.textContent).toMatch(/com\.shop\.player/));
+    expect(reported.textContent).toMatch(/active/i);
+    expect(reported.textContent).toMatch(/lock task on/i);
+  });
+});
+
+describe('T14 wipe helper sends the flag the device reads', () => {
+  it('maps its option to wipeExternalStorage, not an ignored flag', async () => {
+    const sent: Array<[string, Record<string, unknown>]> = [];
+    const send = (async (t: string, p: Record<string, unknown>) => { sent.push([t, p]); return {} as never; }) as never;
+    await CommandHelpers.wipe(send, 'dev-9', true);
+    expect(sent[0]).toEqual(['WIPE', { confirm: 'dev-9', wipeExternalStorage: true }]);
+  });
+});

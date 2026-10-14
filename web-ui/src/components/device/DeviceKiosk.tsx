@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useDeviceApps } from '../../hooks/useApps';
 import { useDeviceCommands, CommandHelpers } from '../../hooks/useCommands';
 import { usePolicies } from '../../hooks/usePolicies';
+import { useTelemetry } from '../../hooks/useTelemetry';
 import { latestCommand, applyState } from '../../lib/deviceState';
 import { Button } from '../ui/Button';
 import { Badge } from '../ui/Badge';
@@ -17,6 +18,7 @@ export function DeviceKiosk({ device }: DeviceKioskProps) {
   const { apps } = useDeviceApps(device.id);
   const { commands, sendCommand } = useDeviceCommands(device.id);
   const { policies } = usePolicies();
+  const { telemetry } = useTelemetry(device.id);
   const [pkg, setPkg] = useState('');
   const [lockTask, setLockTask] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -80,6 +82,17 @@ export function DeviceKiosk({ device }: DeviceKioskProps) {
           <Button size="sm" variant="secondary" loading={busy} onClick={() => run(false)}>Disable kiosk</Button>
         </div>
         {error && <div role="alert" className="device-commands__result device-commands__result--error">{error}</div>}
+        <div data-testid="kiosk-reported" style={{ marginTop: 12 }}>
+          {telemetry && telemetry.kioskActive !== null ? (
+            <>
+              Device reports: kiosk {telemetry.kioskActive ? 'active' : 'not active'}
+              {telemetry.kioskPackage ? ` for ${telemetry.kioskPackage}` : ''}
+              {telemetry.kioskPackage ? ` (lock task ${telemetry.lockTask ? 'on' : 'off'})` : ''}.
+            </>
+          ) : (
+            'The device has not reported its kiosk state yet.'
+          )}
+        </div>
         <div data-testid="kiosk-status" style={{ marginTop: 12 }}>
           <Badge variant={kioskState === 'applied' ? 'success' : kioskState === 'failed' ? 'error' : 'info'} size="sm">
             {active ? 'kiosk on' : 'kiosk off'}
