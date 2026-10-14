@@ -16,3 +16,8 @@
 - [boot/update receivers owner] Call `ScreenServerManager(context).prestart(restart=false)` on BOOT_COMPLETED and `prestart(restart=true)` on MY_PACKAGE_REPLACED, off Main (AR-07 pre-start). (from T8b)
 - [T11] Server: the six C10 command types; WIPE `{confirm: deviceId, wipeExternalStorage?}` with an audit reason; optional `updateWindow {start,end}` ("HH:mm") in SYNC_POLICY. Per-package backoff/staged rollout for auto-updates is optional. (from T9)
 - [user] Silent mode: Do-Not-Disturb access needs a one-time `adb shell cmd notification allow_dnd com.androidremote.app` per device. Kiosk foreground detection needs PACKAGE_USAGE_STATS (the Device Owner self-grants it where allowed). (from T9)
+- [T6] Heartbeat still reads pending commands for the SYNC_APPS auto-queue (C5 forbids this; SR-02). (from T1)
+- [T6] `/pair/status/:deviceId` is public and returns the session token once paired. Make it one-time (clear it after the first successful retrieval) and expire it within the pairing window. (from T1)
+- [T11] Audit login failures; event acknowledge must take `acknowledgedBy` from the JWT, not the client. (from T1)
+- [T12] PairingFlow must send the Authorization header to `/pair/complete`, which now requires the admin JWT. (from T1)
+- [user] Deploy env: set `ADMIN_INITIAL_PASSWORD` (or `ADMIN_PASSWORD_HASH`) and `TRUST_PROXY=1` behind the proxy. Use `ALLOW_TOKENLESS_DEVICES=true` only during the device-app rollout. (from T1)
