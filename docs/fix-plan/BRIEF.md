@@ -13,7 +13,7 @@ For every behaviour change:
 If something genuinely cannot be unit-tested (for example an Android framework call that needs a real device), say so in the evidence file and add the closest testable seam: extract the logic into a pure function or class and test that.
 
 ## How to run tests
-- Server: `cd server && npx jest` (or `npx jest test/<file>`).
+- Server: run under Node 22 (better-sqlite3 doesn't build on the default Node 26): `cd server && PATH=/opt/homebrew/bin:$PATH npx jest`. Check that `node -v` prints v22. (or `npx jest test/<file>`).
 - Web UI: `cd web-ui && npx vitest run` (or a single file).
 - Android: `export JAVA_HOME=/opt/homebrew/opt/openjdk@17 ANDROID_HOME=$HOME/Library/Android/sdk`, then `./gradlew :app:testDebugUnitTest` or `:<module>:test` / `:<module>:testDebugUnitTest`. Compile check: `./gradlew :app:compileDebugKotlin`. Run Gradle commands one at a time; another agent may hold the Gradle daemon lock. If you hit a lock, wait and retry.
 
