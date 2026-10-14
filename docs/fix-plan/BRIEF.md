@@ -24,6 +24,7 @@ Other agents work in the same checkout at the same time. Their files may change 
 ## Commits
 - Commit only your own files: `git add <explicit paths>` then `git commit -m "<task-id>: <summary>"`. Never `git add -A` or `.`. Never amend or rebase.
 - If `.git/index.lock` exists, wait a few seconds and retry; another agent is committing.
+- NEVER run `git stash`, `git checkout -- <file>`, `git reset`, `git restore` or `git clean`: other agents have uncommitted work in this tree. To compare with an older version, use `git show <rev>:<path>` or `git diff`.
 - No AI attribution or Co-Authored-By trailers (owner's rule).
 - Commit when your tests are green. Several commits per task are fine.
 
