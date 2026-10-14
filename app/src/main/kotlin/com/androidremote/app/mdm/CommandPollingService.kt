@@ -193,10 +193,8 @@ class CommandPollingService : Service() {
         // Apply silent mode from saved preferences
         applySavedSilentMode()
 
-        // Enable notification listener to auto-dismiss admin install notifications
-        if (deviceOwnerManager.isDeviceOwner()) {
-            AdminNotificationManager.grantListenerAccess(this)
-        }
+        // Leave system admin-install notifications visible. The upstream
+        // AdminNotificationManager implementation is not included in this project.
 
         // Send initial telemetry and app inventory immediately
         serviceScope.launch {
@@ -458,9 +456,7 @@ class CommandPollingService : Service() {
 
         return when (installResult) {
             is InstallResult.Success -> {
-                // Ensure notification listener is active to auto-dismiss
-                // the "Updated by your admin" system notification
-                AdminNotificationManager.grantListenerAccess(this@CommandPollingService)
+                // Keep the system's admin-install notification visible.
 
                 // Save boot start preference if enabled
                 if (autoStartOnBoot || foregroundApp) {
