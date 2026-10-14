@@ -117,7 +117,7 @@ describe('DeviceCommands (WU-13)', () => {
     commandHandlers({ onPost: () => HttpResponse.json({ error: 'device not found' }, { status: 404 }) });
     const user = userEvent.setup();
     render(<DeviceCommands deviceId="dev-1" />);
-    await user.click(await screen.findByRole('button', { name: /play sound/i }));
+    await user.click(await screen.findByRole('button', { name: /get location/i }));
     expect(await screen.findByRole('alert')).toHaveTextContent(/device not found/i);
   });
 

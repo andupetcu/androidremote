@@ -85,7 +85,7 @@ const useStyles = makeStyles({
 });
 
 export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
-  ({ variant = 'primary', size = 'md', loading, children, className, disabled, icon, onClick, type }, ref) => {
+  ({ variant = 'primary', size = 'md', loading, children, className, disabled, icon, onClick, type, title, ...aria }, ref) => {
     const styles = useStyles();
 
     const sizeClass = styles[size];
@@ -108,6 +108,9 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
         disabled={disabled || loading}
         onClick={onClick}
         type={type}
+        title={title}
+        aria-describedby={aria['aria-describedby']}
+        aria-label={aria['aria-label']}
       >
         {loading && <Spinner size="tiny" className={styles.spinner} />}
         {children}

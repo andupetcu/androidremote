@@ -2,7 +2,8 @@ import { useState } from 'react';
 import { useDeviceApps } from '../../hooks/useApps';
 import { useDeviceCommands, CommandHelpers } from '../../hooks/useCommands';
 import { useConfirm } from '../../hooks/useConfirm';
-import { protectedPackages } from '../../lib/deviceState';
+import { effectiveProtectedPackages } from '../../lib/deviceState';
+import { useTelemetry } from '../../hooks/useTelemetry';
 import { Modal } from '../ui/Modal';
 import { DataTable } from '../data/DataTable';
 import { Badge } from '../ui/Badge';
@@ -25,7 +26,8 @@ export function DeviceApps({ deviceId }: DeviceAppsProps) {
   const [permApp, setPermApp] = useState<AppInfo | null>(null);
   const [permission, setPermission] = useState('');
   const [permState, setPermState] = useState<'granted' | 'denied' | 'default'>('granted');
-  const protectedList = protectedPackages(commands);
+  const { telemetry } = useTelemetry(deviceId);
+  const protectedList = effectiveProtectedPackages(telemetry, commands);
 
   const act = async (what: string, fn: () => Promise<unknown>) => {
     setActionError(null);

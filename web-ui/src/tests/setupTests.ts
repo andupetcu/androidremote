@@ -2,6 +2,12 @@ import '@testing-library/jest-dom/vitest';
 import { afterAll, afterEach, beforeAll, vi } from 'vitest';
 import { server } from './mocks/server';
 
+// Deterministic dialogs: see modalDouble.tsx for why the Fluent Modal is replaced in tests.
+vi.mock('../components/ui/Modal', async () => {
+  const { ModalDouble } = await import('./modalDouble');
+  return { Modal: ModalDouble };
+});
+
 // Establish API mocking before all tests
 beforeAll(() => {
   // WebSocket upgrades (the shared admin socket opens one on mount) are not HTTP calls under

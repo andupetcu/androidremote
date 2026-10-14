@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import { useDeviceCommands, CommandHelpers } from '../../hooks/useCommands';
 import { Button } from '../ui/Button';
 import { Badge } from '../ui/Badge';
@@ -6,16 +6,22 @@ import { Spinner } from '../ui/Spinner';
 import { EmptyState } from '../ui/EmptyState';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
 import type { CommandStatus } from '../../types/api';
+import { isCommandSupported, ANDROID_UNSUPPORTED_HINT } from '../../lib/agentSupport';
 import './DeviceComponents.css';
 
 interface DeviceCommandsProps {
   deviceId: string;
+  /** Agent platform; decides which actions are offered. Missing means Android. */
+  osType?: string;
 }
 
-export function DeviceCommands({ deviceId }: DeviceCommandsProps) {
+export function DeviceCommands({ deviceId, osType }: DeviceCommandsProps) {
   const { commands, loading, error, refresh, sendCommand } = useDeviceCommands(deviceId);
   const [sending, setSending] = useState<string | null>(null);
   const [volumeLevel, setVolumeLevel] = useState(50);
+
+  const soundSupported = isCommandSupported(osType, 'PLAY_SOUND');
+  const soundHintId = useId();
 
   const [actionError, setActionError] = useState<string | null>(null);
   const [pendingConfirm, setPendingConfirm] = useState<'lock' | 'reboot' | 'wipe' | null>(null);
@@ -140,10 +146,18 @@ export function DeviceCommands({ deviceId }: DeviceCommandsProps) {
             variant="secondary"
             size="sm"
             loading={sending === 'sound'}
+            disabled={!soundSupported}
+            title={soundSupported ? undefined : ANDROID_UNSUPPORTED_HINT}
+            aria-describedby={soundSupported ? undefined : soundHintId}
             onClick={() => handleCommand(() => CommandHelpers.playSound(sendCommand), 'sound')}
           >
             Play Sound
           </Button>
+          {!soundSupported && (
+            <span id={soundHintId} className="device-commands__hint">
+              Play Sound: {ANDROID_UNSUPPORTED_HINT}
+            </span>
+          )}
           <Button
             variant="secondary"
             size="sm"

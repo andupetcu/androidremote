@@ -249,7 +249,7 @@ export function DeviceDetail() {
       {
         id: 'commands',
         label: 'Commands',
-        content: <DeviceCommands deviceId={device.id} />,
+        content: <DeviceCommands deviceId={device.id} osType={device.osType} />,
       },
       {
         id: 'events',
