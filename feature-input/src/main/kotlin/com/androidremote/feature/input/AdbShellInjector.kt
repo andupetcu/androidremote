@@ -105,12 +105,37 @@ class AdbShellInjector internal constructor(private val probe: ShellProbe) : Inp
 
     override fun getName(): String = "ADB Shell"
 
+    // One long-lived shell per root mode; avoids forking `su` for every tap (AR-06).
+    private var persistent: PersistentShell? = null
+    private var persistentMode: RootMode? = null
+
+    private fun shellFor(mode: RootMode): PersistentShell = synchronized(this) {
+        if (persistentMode != mode) {
+            persistent?.close()
+            persistent = PersistentShell({
+                val argv = when (mode) {
+                    RootMode.NONE -> listOf("sh")
+                    RootMode.SU_UID -> listOf("su", "0", "sh")
+                    RootMode.SU_C -> listOf("su", "-c", "sh")
+                }
+                ProcessBuilder(argv).redirectErrorStream(true).start()
+            }, COMMAND_TIMEOUT_MS)
+            persistentMode = mode
+        }
+        persistent!!
+    }
+
     private suspend fun run(build: (RootMode) -> List<String>): Result<Unit> = withContext(Dispatchers.IO) {
         // We are off Main here, so a due probe runs synchronously.
         if (!probe.isAvailable()) {
             return@withContext Result.failure(InputInjectionException("Shell input not available"))
         }
-        runCommand(build(probe.rootMode))
+        val mode = probe.rootMode
+        // The persistent shell is already elevated: send the bare `input ...` argv.
+        val bare = build(RootMode.NONE)
+        shellFor(mode).run(bare).also { r ->
+            r.exceptionOrNull()?.let { Log.w(TAG, "Persistent shell: ${it.message}") }
+        }
     }
 
     /** Execute argv directly (no `sh -c`). */
