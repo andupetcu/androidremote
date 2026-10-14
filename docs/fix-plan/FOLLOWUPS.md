@@ -22,4 +22,6 @@
 - [T12] PairingFlow must send the Authorization header to `/pair/complete`, which now requires the admin JWT. (from T1)
 - [user] Deploy env: set `ADMIN_INITIAL_PASSWORD` (or `ADMIN_PASSWORD_HASH`) and `TRUST_PROXY=1` behind the proxy. Use `ALLOW_TOKENLESS_DEVICES=true` only during the device-app rollout. (from T1)
 
-- [T3] `CommandPollingService.executeStartRemote`: add `putExtra(RemoteSessionService.EXTRA_ICE_SERVERS, command.payload["iceServers"]?.toString())` so START_REMOTE ICE servers reach the session (T8a falls back to GET /api/ice-servers). (from T8a)
+- [T3] `CommandPollingService.executeStartRemote`: add `putExtra(RemoteSessionService.EXTRA_ICE_SERVERS, command.payload["iceServers"]?.toString())` so START_REMOTE ICE servers reach the session (T8a falls back to GET /api/ice-servers). (from T8a)- [T11] Expire commands stuck in `executing` on the server (for example 2× the per-type timeout). Emit `device-offline` events. Agent-binary and installer uploads still use memory storage; stream them if feasible. (from T6)
+- [T12] `/api/uploads/*` and `/api/ice-servers` now need the admin JWT; the UI must fetch with the header (no direct <a href> links to APKs). (from T6)
+- [user] Deploy env: `PUBLIC_BASE_URL` (required), `UPLOADS_DIR`, `TURN_URLS` and `TURN_SECRET` (= coturn static-auth-secret), optional `STUN_URLS`, `COMMAND_*` TTLs. (from T6)
