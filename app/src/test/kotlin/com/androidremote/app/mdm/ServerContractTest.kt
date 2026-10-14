@@ -17,7 +17,8 @@ class ServerContractTest {
         "batteryLevel", "batteryCharging", "batteryHealth", "networkType", "networkSsid", "ipAddress",
         "signalStrength", "storageUsedBytes", "storageTotalBytes", "memoryUsedBytes", "memoryTotalBytes",
         "screenOn", "brightness", "latitude", "longitude", "locationAccuracy", "uptimeMs",
-        "androidSecurityPatch", "kioskActive", "kioskPackage", "lockTask", "protectedPackages", "collectedAt"
+        "androidSecurityPatch", "kioskActive", "kioskPackage", "lockTask", "protectedPackages", "collectedAt",
+        "rooted" // T19: agreed field; the server schema must add it (server/ is not touched by T19)
     )
 
     @Test

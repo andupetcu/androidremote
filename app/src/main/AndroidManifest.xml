@@ -9,7 +9,6 @@
 
     <!-- Foreground service permissions (Android 14+) -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
@@ -73,27 +72,15 @@
             </intent-filter>
         </activity>
 
-        <!-- Transparent activity for screen capture permission -->
-        <activity
-            android:name=".ScreenCaptureRequestActivity"
-            android:exported="false"
-            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
-
         <!-- Remote session foreground service -->
         <service
             android:name=".service.RemoteSessionService"
             android:exported="false"
-            android:foregroundServiceType="mediaProjection|specialUse">
+            android:foregroundServiceType="specialUse">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="remoteControl" />
         </service>
-
-        <!-- Screen capture foreground service -->
-        <service
-            android:name=".service.ScreenCaptureService"
-            android:exported="false"
-            android:foregroundServiceType="mediaProjection" />
 
         <!-- Camera streaming foreground service -->
         <service

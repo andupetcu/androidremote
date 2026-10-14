@@ -128,7 +128,10 @@ class TelemetryCollector(
 
             // System
             uptimeMs = safeCall { getUptimeMs() },
-            androidSecurityPatch = safeCall { getSecurityPatch() }
+            androidSecurityPatch = safeCall { getSecurityPatch() },
+
+            // Root (blocking su probe; telemetry is collected off the main thread, result is cached)
+            rooted = safeCall { com.androidremote.app.service.RootProbe.shared.isRootWorking() }
         ).withKiosk(safeCall { kioskStateProvider?.invoke() })
     }
 
@@ -436,5 +439,7 @@ data class TelemetryData(
     /** Always sent (null when no kiosk) so the server can clear a stale package. */
     @OptIn(ExperimentalSerializationApi::class) @EncodeDefault val kioskPackage: String? = null,
     val lockTask: Boolean? = null,
-    val protectedPackages: List<String>? = null
+    val protectedPackages: List<String>? = null,
+    /** Working root (su gives uid 0). Remote desktop needs it; lets the UI know in advance. */
+    val rooted: Boolean? = null
 )

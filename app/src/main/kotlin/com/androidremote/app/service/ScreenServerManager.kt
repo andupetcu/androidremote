@@ -369,7 +369,7 @@ class ScreenServerManager(private val context: Context) {
 
 /** [CaptureBackend] over the real device: root, `su`, local socket. */
 class ScreenServerBackend(private val manager: ScreenServerManager) : CaptureBackend {
-    override fun isRooted(): Boolean = manager.isRooted()
+    override suspend fun isRooted(): Boolean = withContext(Dispatchers.IO) { RootProbe.shared.isRootWorking() }
     override suspend fun isServerRunning(): Boolean = manager.isScreenServerRunning()
     override suspend fun restartServer(): Boolean = manager.restartScreenServer()
     override fun newStream(): ScreenStream = ScreenServerClient()

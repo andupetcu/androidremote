@@ -679,7 +679,12 @@ class CommandPollingService : Service() {
         return CommandResult.success()
     }
 
-    private fun executeStartRemote(command: DeviceCommand): CommandResult {
+    private suspend fun executeStartRemote(command: DeviceCommand): CommandResult {
+        val rooted = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            com.androidremote.app.service.RootProbe.shared.isRootWorking()
+        }
+        RemoteDesktopGate.failureMessage(rooted)?.let { return CommandResult.failure(it) }
+
         val signalingUrl = command.payload["signalingUrl"]?.jsonPrimitive?.content
 
         if (signalingUrl == null) {
@@ -714,10 +719,8 @@ class CommandPollingService : Service() {
     }
 
     private fun executeTakeScreenshot(): CommandResult {
-        // Screenshot requires MediaProjection which needs user consent via Activity
-        // For now, return an error indicating this limitation
-        // A full implementation would trigger the ScreenCaptureService
-        return CommandResult.failure("Screenshot requires an active remote session or user consent")
+        // Not implemented: the non-root MediaProjection consent flow was removed (remote desktop is root-only).
+        return CommandResult.failure("Screenshot is not supported")
     }
 
     private suspend fun executeGetLocation(): CommandResult {

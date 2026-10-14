@@ -32,7 +32,7 @@ class ScreenCaptureControllerTest {
     ) : CaptureBackend {
         val streams = mutableListOf<FakeStream>()
         var restarts = 0
-        override fun isRooted() = rooted
+        override suspend fun isRooted() = rooted
         override suspend fun isServerRunning() = serverRunning
         override suspend fun restartServer(): Boolean { restarts++; return true }
         override fun newStream(): ScreenStream = FakeStream(ArrayDeque(listOf(connectScript.removeFirstOrNull() ?: false))).also { streams += it }
@@ -41,15 +41,18 @@ class ScreenCaptureControllerTest {
     private val policy = CaptureRetryPolicy(baseDelayMs = 1_000, maxDelayMs = 8_000)
 
     @Test
-    fun `no root and no running server reports consent_required`() = runTest {
-        val backend = FakeBackend(rooted = false, serverRunning = false)
+    fun `no working root fails fast with root_required and never retries`() = runTest {
+        val backend = FakeBackend(rooted = false, serverRunning = true)
         val reasons = mutableListOf<String>()
         val c = ScreenCaptureController(this, backend, policy)
         c.onCaptureFailed = { reasons += it }
         c.start()
         runCurrent()
-        assertThat(reasons).containsExactly("consent_required")
+        assertThat(reasons).containsExactly("root_required")
+        advanceTimeBy(120_000); runCurrent()
+        assertThat(reasons).containsExactly("root_required")
         assertThat(backend.streams).isEmpty()
+        assertThat(backend.restarts).isEqualTo(0)
         c.stop()
     }
 

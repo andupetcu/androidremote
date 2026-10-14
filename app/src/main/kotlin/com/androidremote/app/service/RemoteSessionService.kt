@@ -5,18 +5,14 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
-import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
-import android.media.projection.MediaProjectionManager
 import android.util.Log
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import com.androidremote.app.MainActivity
-import com.androidremote.app.ScreenCaptureRequestActivity
 import com.androidremote.app.controller.InputHandler
 import com.androidremote.app.controller.MdmHandler
 import com.androidremote.app.controller.SessionController
@@ -26,8 +22,6 @@ import com.androidremote.app.controller.TextInputHandler
 import com.androidremote.app.webrtc.WebRtcPeerConnectionFactory
 import com.androidremote.feature.input.InputInjectorFactory
 import com.androidremote.feature.input.TextInputService
-import com.androidremote.feature.screen.EncoderConfig
-import com.androidremote.feature.screen.ScreenCaptureManager
 import com.androidremote.app.api.DeviceHttpClient
 import com.androidremote.app.ui.SessionStorage
 import com.androidremote.transport.DeviceCommandChannel
@@ -95,15 +89,12 @@ class RemoteSessionService : Service() {
     private var currentPeerConnectionFactory: WebRtcPeerConnectionFactory? = null
     private var currentWebSocketProvider: KtorWebSocketProvider? = null
 
-    // Screen capture resources (MediaProjection-based - fallback)
-    private var screenCaptureManager: ScreenCaptureManager? = null
     private val _frameDataFlow = MutableSharedFlow<FrameData>(replay = 0, extraBufferCapacity = 64)
     private val frameDataFlow: SharedFlow<FrameData> = _frameDataFlow
 
     // Screen-server capture supervisor (scrcpy-style, preferred): retries, rotation, CAPTURE_FAILED reasons
     private var captureController: ScreenCaptureController? = null
     private var frameForwardJob: Job? = null
-    private var screenCaptureReceiver: BroadcastReceiver? = null
 
     // Decides when capture starts and stops from the session state (AR-15, AR-10)
     private val captureCoordinator = CaptureCoordinator()
@@ -129,51 +120,6 @@ class RemoteSessionService : Service() {
         super.onCreate()
         sessionController = createSessionController()
         createNotificationChannel()
-        registerScreenCaptureReceiver()
-    }
-
-    private fun registerScreenCaptureReceiver() {
-        screenCaptureReceiver = object : BroadcastReceiver() {
-            override fun onReceive(context: Context?, intent: Intent?) {
-                if (intent?.action == ScreenCaptureRequestActivity.ACTION_SCREEN_CAPTURE_RESULT) {
-                    val resultCode = intent.getIntExtra(ScreenCaptureRequestActivity.EXTRA_RESULT_CODE, 0)
-                    val data = intent.getParcelableExtra<Intent>(ScreenCaptureRequestActivity.EXTRA_RESULT_DATA)
-
-                    startService(ScreenCaptureService.cancelIntent(this@RemoteSessionService))
-                    if (resultCode == android.app.Activity.RESULT_OK && data != null) {
-                        Log.i(TAG, "Screen capture permission received, starting capture")
-                        // MediaProjection takes over from the screen-server supervisor.
-                        captureController?.stop()
-                        try {
-                            startScreenCapture(resultCode, data)
-                        } catch (e: Exception) {
-                            Log.e(TAG, "MediaProjection capture failed to start", e)
-                            sessionController.reportCaptureFailed("capture_setup_failed")
-                        }
-                    } else {
-                        Log.w(TAG, "Screen capture permission denied or data missing")
-                        sessionController.reportCaptureFailed("consent_denied")
-                    }
-                }
-            }
-        }
-
-        val filter = IntentFilter(ScreenCaptureRequestActivity.ACTION_SCREEN_CAPTURE_RESULT)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(screenCaptureReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
-        } else {
-            @Suppress("UnspecifiedRegisterReceiverFlag")
-            registerReceiver(screenCaptureReceiver, filter)
-        }
-    }
-
-    /**
-     * Launch the screen capture permission request activity.
-     * This shows a system dialog for the user to grant screen capture permission.
-     */
-    private fun requestScreenCapturePermission() {
-        val intent = ScreenCaptureRequestActivity.createIntent(this)
-        startActivity(intent)
     }
 
     override fun onBind(intent: Intent): IBinder = binder
@@ -273,14 +219,6 @@ class RemoteSessionService : Service() {
     }
 
     override fun onDestroy() {
-        screenCaptureReceiver?.let {
-            try {
-                unregisterReceiver(it)
-            } catch (e: Exception) {
-                Log.w(TAG, "Error unregistering receiver", e)
-            }
-        }
-        screenCaptureReceiver = null
         stopScreenCapture()
         sessionController.disconnect()
         disposeCurrentResources()
@@ -356,7 +294,6 @@ class RemoteSessionService : Service() {
 
     private fun requestKeyFrame() {
         captureController?.requestKeyFrame()
-        screenCaptureManager?.requestKeyFrame()
     }
 
     /**
@@ -433,55 +370,6 @@ class RemoteSessionService : Service() {
     }
 
     /**
-     * Start screen capture and stream to connected session.
-     *
-     * @param resultCode MediaProjection result code from Activity
-     * @param data MediaProjection result Intent from Activity
-     */
-    fun startScreenCapture(resultCode: Int, data: Intent) {
-        val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-        val mediaProjection = projectionManager.getMediaProjection(resultCode, data)
-            ?: throw IllegalStateException("Failed to get MediaProjection")
-
-        val manager = ScreenCaptureManager(this)
-        screenCaptureManager = manager
-
-        val config = EncoderConfig(
-            width = 1280,
-            height = 720,
-            bitrate = 2_000_000,
-            frameRate = 30
-        )
-
-        manager.start(mediaProjection, config)
-        inputHandler.updateScreenConfig(config.width, config.height, 0)
-        sessionController.publishScreenInfo(config.width, config.height, 0)
-
-        // Collect encoded frames and forward to FrameData flow
-        serviceScope.launch {
-            manager.encodedFrames.collect { encodedFrame ->
-                _frameDataFlow.emit(
-                    FrameData(
-                        data = encodedFrame.data,
-                        presentationTimeUs = encodedFrame.presentationTimeUs,
-                        isKeyFrame = encodedFrame.isKeyFrame
-                    )
-                )
-            }
-        }
-
-        // Start video streaming to session (waits for video channel to be available)
-        serviceScope.launch {
-            try {
-                sessionController.startVideoStream(frameDataFlow)
-                Log.i(TAG, "Video streaming started successfully")
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to start video streaming", e)
-            }
-        }
-    }
-
-    /**
      * Start screen capture using the scrcpy-style screen server (supervised: retries with backoff,
      * reports CAPTURE_FAILED reasons, follows rotation).
      *
@@ -511,9 +399,6 @@ class RemoteSessionService : Service() {
             controller.onCaptureFailed = { reason ->
                 Log.w(TAG, "Capture failed: $reason")
                 sessionController.reportCaptureFailed(reason)
-                if (reason == CaptureFailureReason.CONSENT_REQUIRED) {
-                    startService(ScreenCaptureService.promptIntent(this@RemoteSessionService))
-                }
             }
 
             frameForwardJob?.cancel()
@@ -534,9 +419,6 @@ class RemoteSessionService : Service() {
         captureController = null
         frameForwardJob?.cancel()
         frameForwardJob = null
-
-        screenCaptureManager?.stop()
-        screenCaptureManager = null
     }
 
     private fun createNotificationChannel() {

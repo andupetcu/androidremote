@@ -25,14 +25,15 @@ interface ScreenStream {
 
 /** What the controller needs from the device (implemented by [ScreenServerBackend]). */
 interface CaptureBackend {
-    fun isRooted(): Boolean
+    suspend fun isRooted(): Boolean
     suspend fun isServerRunning(): Boolean
     suspend fun restartServer(): Boolean
     fun newStream(): ScreenStream
 }
 
 object CaptureFailureReason {
-    const val CONSENT_REQUIRED = "consent_required"
+    /** No working root. Retrying cannot fix it, so the controller stops. */
+    const val ROOT_REQUIRED = "root_required"
     const val SERVER_UNREACHABLE = "screen_server_unreachable"
     const val CAPTURE_SETUP_FAILED = "capture_setup_failed"
     const val SERVER_DIED = "screen_server_died"
@@ -45,9 +46,8 @@ object CaptureFailureReason {
  * and retries with backoff on any failure. Each distinct failure is reported once through
  * [onCaptureFailed] (the session layer turns it into the CAPTURE_FAILED data-channel message);
  * the report is re-armed when frames flow again. On a device with no root and no running
- * server the reason is [CaptureFailureReason.CONSENT_REQUIRED]: a human must grant
- * MediaProjection consent, after which the session layer starts MediaProjection capture and
- * calls [stop]. If someone starts the server over adb in the meantime, the supervisor picks it up.
+ * server needs root: without it the reason is [CaptureFailureReason.ROOT_REQUIRED], reported once,
+ * and the supervisor ends (no retry loop; retrying cannot fix it). Other reasons keep the backoff.
  */
 class ScreenCaptureController(
     private val scope: CoroutineScope,
@@ -97,13 +97,11 @@ class ScreenCaptureController(
         var forceRestart = false
         while (scope.isActive) {
             val rooted = backend.isRooted()
-            if (!rooted && !backend.isServerRunning()) {
-                report(CaptureFailureReason.CONSENT_REQUIRED)
-                attempt++
-                delay(policy.delayMs(attempt))
-                continue
+            if (!rooted) {
+                report(CaptureFailureReason.ROOT_REQUIRED)
+                return
             }
-            if (rooted && (forceRestart || !backend.isServerRunning())) {
+            if (forceRestart || !backend.isServerRunning()) {
                 backend.restartServer()
                 forceRestart = false
             }
@@ -119,7 +117,7 @@ class ScreenCaptureController(
                 current = null
                 report(CaptureFailureReason.SERVER_UNREACHABLE)
                 attempt++
-                if (rooted && attempt % 3 == 0) forceRestart = true
+                if (attempt % 3 == 0) forceRestart = true
                 delay(policy.delayMs(attempt))
                 continue
             }
@@ -139,7 +137,7 @@ class ScreenCaptureController(
                 if (current === stream) current = null
             }
             report(if (early) CaptureFailureReason.CAPTURE_SETUP_FAILED else CaptureFailureReason.SERVER_DIED)
-            forceRestart = rooted
+            forceRestart = true
             attempt++
             delay(policy.delayMs(attempt))
         }

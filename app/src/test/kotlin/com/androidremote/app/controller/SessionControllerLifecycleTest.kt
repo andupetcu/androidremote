@@ -242,8 +242,8 @@ class SessionControllerLifecycleTest {
     fun `capture failure is forwarded and replayed to a new viewer`() = testScope.runTest {
         create(this)
         connectUp()
-        controller.reportCaptureFailed("consent_required")
-        verify { channel.sendCaptureFailed("consent_required") }
+        controller.reportCaptureFailed("capture_setup_failed")
+        verify { channel.sendCaptureFailed("capture_setup_failed") }
     }
 
     @Test
