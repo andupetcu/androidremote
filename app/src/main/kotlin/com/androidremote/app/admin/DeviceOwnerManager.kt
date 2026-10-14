@@ -53,6 +53,10 @@ class DeviceOwnerManager(private val context: Context) {
         )
     }
 
+    /** Exposed for the kiosk and app-management handlers. */
+    internal val policyManager: DevicePolicyManager get() = devicePolicyManager
+    internal val adminComponent: ComponentName get() = componentName
+
     private val devicePolicyManager: DevicePolicyManager by lazy {
         context.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
     }
@@ -321,20 +325,11 @@ class DeviceOwnerManager(private val context: Context) {
     fun enableSilentMode(): Boolean {
         var success = false
 
-        // Method 0 (Device Owner): Try to grant ourselves notification policy access
-        if (isDeviceOwner() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            try {
-                // Grant notification policy access to this app via secure settings
-                android.provider.Settings.Secure.putString(
-                    context.contentResolver,
-                    "enabled_notification_policy_access_packages",
-                    context.packageName
-                )
-                Log.i(TAG, "Attempted to grant notification policy access via Device Owner")
-            } catch (e: Exception) {
-                Log.d(TAG, "Could not grant notification policy access: ${e.message}")
-            }
-        }
+        // AM-24: the old code wrote Settings.Secure "enabled_notification_policy_access_packages".
+        // That needs WRITE_SECURE_SETTINGS (a Device Owner cannot grant it) and would overwrite the
+        // whole list. DND access is granted once at provisioning instead:
+        //   adb shell cmd notification allow_dnd com.androidremote.app
+        // Without it the audio-stream mute and the Device Owner master mute below still apply.
 
         // Method 1: Enable DND mode
         try {
@@ -373,6 +368,8 @@ class DeviceOwnerManager(private val context: Context) {
         if (isDeviceOwner()) {
             try {
                 devicePolicyManager.setMasterVolumeMuted(componentName, true)
+                // Stop the volume keys from undoing the mute
+                devicePolicyManager.addUserRestriction(componentName, android.os.UserManager.DISALLOW_ADJUST_VOLUME)
                 Log.i(TAG, "Master volume muted via Device Owner")
                 success = true
             } catch (e: Exception) {
@@ -426,6 +423,7 @@ class DeviceOwnerManager(private val context: Context) {
         if (isDeviceOwner()) {
             try {
                 devicePolicyManager.setMasterVolumeMuted(componentName, false)
+                devicePolicyManager.clearUserRestriction(componentName, android.os.UserManager.DISALLOW_ADJUST_VOLUME)
                 Log.i(TAG, "Master volume unmuted via Device Owner")
                 success = true
             } catch (e: Exception) {

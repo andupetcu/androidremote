@@ -5,7 +5,6 @@ import android.content.Context
 import android.content.Intent
 import android.util.Log
 import com.androidremote.app.mdm.CommandPollingService
-import com.androidremote.app.service.RemoteSessionService
 import com.androidremote.app.ui.SessionStorage
 
 /**
@@ -31,24 +30,30 @@ class PackageUpdateReceiver : BroadcastReceiver() {
         val sessionStorage = SessionStorage.create(context)
         val serverUrl = sessionStorage.getServerUrl()
         val deviceId = sessionStorage.getDeviceId()
-        val sessionToken = sessionStorage.getSessionToken()
 
         // Restart command polling if enrolled
         if (sessionStorage.isEnrolled() && serverUrl != null && deviceId != null) {
             Log.i(TAG, "Restarting command polling service after update")
-            CommandPollingService.startService(context, pollIntervalMs = 5000L)
-        }
-
-        // Restart remote session if we have a saved session
-        if (serverUrl != null && sessionToken != null && deviceId != null) {
-            Log.i(TAG, "Restarting remote session service after update")
-            val serviceIntent = Intent(context, RemoteSessionService::class.java).apply {
-                putExtra(RemoteSessionService.EXTRA_AUTO_START, true)
-                putExtra(RemoteSessionService.EXTRA_SERVER_URL, serverUrl)
-                putExtra(RemoteSessionService.EXTRA_SESSION_TOKEN, sessionToken)
-                putExtra(RemoteSessionService.EXTRA_DEVICE_ID, deviceId)
+            try {
+                CommandPollingService.startService(context, pollIntervalMs = 5000L)
+            } catch (e: Exception) {
+                Log.e(TAG, "Could not restart polling service", e)
             }
-            context.startForegroundService(serviceIntent)
         }
+        // New app build may ship a new screen server: restart it (rooted devices only, off Main, non-fatal)
+        val pending = goAsync()
+        kotlin.concurrent.thread {
+            try {
+                kotlinx.coroutines.runBlocking {
+                    com.androidremote.app.service.ScreenServerManager(context).prestart(restart = true)
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Screen server prestart failed: ${e.message}")
+            } finally {
+                pending.finish()
+            }
+        }
+        // RemoteSessionService is not restarted here: a mediaProjection foreground service cannot be
+        // started from a background receiver on Android 14/15 (AM-10). START_REMOTE starts it on demand.
     }
 }

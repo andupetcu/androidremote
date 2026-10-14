@@ -33,6 +33,7 @@ import com.androidremote.app.controller.SessionController
 import com.androidremote.app.controller.SessionState
 import com.androidremote.app.databinding.ActivityMainBinding
 import com.androidremote.app.mdm.CommandPollingService
+import com.androidremote.app.mdm.EnrollmentState
 import com.androidremote.app.service.RemoteSessionService
 import com.androidremote.app.ui.PermissionHelper
 import com.androidremote.app.ui.QrCodeGenerator
@@ -313,6 +314,7 @@ class MainActivity : AppCompatActivity() {
     private fun resetConfiguration() {
         // Stop the command polling service
         CommandPollingService.stopService(this)
+        EnrollmentState.clear(this)
 
         // NOTE: We intentionally do NOT clear Device Owner status here.
         // Device Owner is a system-level privilege set via ADB and should persist.
@@ -509,6 +511,16 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
+            // The server rejected this device's session (401/404): say so, whatever the last status was
+            if (EnrollmentState.isInvalid(this)) {
+                imgStatus?.setImageResource(android.R.drawable.presence_busy)
+                txtStatus?.text = "Enrollment invalid"
+                txtStatus?.setTextColor(getColor(android.R.color.holo_red_dark))
+                txtError?.text = (EnrollmentState.reason(this) ?: "The server no longer accepts this device") +
+                    ". Reset the configuration and enrol again."
+                txtError?.visibility = android.view.View.VISIBLE
+            }
+
             // Last sync time
             if (lastSyncTime > 0) {
                 val elapsed = System.currentTimeMillis() - lastSyncTime
@@ -663,7 +675,10 @@ class MainActivity : AppCompatActivity() {
                 if (!setupComplete) {
                     sessionStorage.setInitialSetupComplete(true)
                 }
-                CommandPollingService.startService(this, pollIntervalMs = 5000L)
+                // An invalid enrolment is shown, not retried on every resume; re-enrolment clears it
+                if (!EnrollmentState.isInvalid(this)) {
+                    CommandPollingService.startService(this, pollIntervalMs = 5000L)
+                }
                 showScreen(ScreenState.MANAGED)
                 updateManagedScreenStatus()
             }
@@ -844,6 +859,8 @@ class MainActivity : AppCompatActivity() {
 
                 Log.i(TAG, "Device enrolled successfully: ${response.deviceId}")
 
+                // Re-enrolment: forget the invalid flag, then (re)start the polling service
+                EnrollmentState.clear(this@MainActivity)
                 // Start command polling service for MDM with fast polling
                 // Use 5 second intervals for responsive remote control
                 CommandPollingService.startService(this@MainActivity, pollIntervalMs = 5000L)

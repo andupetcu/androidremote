@@ -25,6 +25,16 @@ import com.androidremote.app.api.DeviceCommand
 import com.androidremote.app.ui.SessionStorage
 import com.androidremote.app.api.AppUpdatesResponse
 import com.androidremote.app.api.DeviceHttpClient
+import com.androidremote.app.kiosk.AppManagement
+import com.androidremote.app.kiosk.BootApps
+import com.androidremote.app.kiosk.BootAppsMerge
+import com.androidremote.app.kiosk.KioskController
+import com.androidremote.app.kiosk.MaintenanceWindow
+import com.androidremote.app.kiosk.PolicyUpdate
+import com.androidremote.app.kiosk.TargetPackageReceiver
+import com.androidremote.app.kiosk.UpdatePolicy
+import com.androidremote.app.kiosk.WipeGuard
+import kotlinx.serialization.json.JsonObject
 import io.ktor.client.HttpClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -105,6 +115,10 @@ class CommandPollingService : Service() {
     private lateinit var deviceOwnerManager: DeviceOwnerManager
     private lateinit var silentInstaller: SilentPackageInstaller
     private lateinit var telemetryCollector: TelemetryCollector
+    private lateinit var kioskController: KioskController
+    private lateinit var appManagement: AppManagement
+    private var packageReceiver: TargetPackageReceiver? = null
+    private var pollingDeviceId: String? = null
 
     private var commandApiClient: CommandApiClient? = null
     private var httpClient: HttpClient? = null
@@ -114,8 +128,8 @@ class CommandPollingService : Service() {
     private var pollCount = 0
     private var httpBaseUrl: String? = null
 
-    /** Send telemetry every N polls (6 polls at the 10 s minimum interval = about 60 s) */
-    private val TELEMETRY_POLL_INTERVAL = 6
+    /** Check for app updates every N polls */
+    private val UPDATE_CHECK_POLL_INTERVAL = 6
 
     inner class LocalBinder : Binder() {
         fun getService(): CommandPollingService = this@CommandPollingService
@@ -130,6 +144,8 @@ class CommandPollingService : Service() {
         deviceOwnerManager = DeviceOwnerManager(this)
         silentInstaller = SilentPackageInstaller(this)
         telemetryCollector = TelemetryCollector(this)
+        kioskController = KioskController(this, deviceOwnerManager)
+        appManagement = AppManagement(this, deviceOwnerManager)
 
         createNotificationChannel()
     }
@@ -169,6 +185,8 @@ class CommandPollingService : Service() {
         Log.d(TAG, "CommandPollingService destroyed")
         isRunning = false
         stopPolling()
+        packageReceiver?.let { runCatching { unregisterReceiver(it) } }
+        packageReceiver = null
         commandApiClient?.close()
         httpClient?.close()
         serviceScope.cancel()
@@ -188,6 +206,13 @@ class CommandPollingService : Service() {
             stopSelf()
             return
         }
+
+        // Idempotent (AM-10): boot, self-update and MainActivity may all start the service
+        if (isPolling && pollingDeviceId == deviceId) {
+            Log.d(TAG, "Already polling for $deviceId")
+            return
+        }
+        pollingDeviceId = deviceId
 
         // Convert WebSocket URL to HTTP URL
         val httpUrl = serverUrl
@@ -209,6 +234,13 @@ class CommandPollingService : Service() {
             store = PrefsCommandStateStore(getSharedPreferences("command_state", Context.MODE_PRIVATE)),
             handler = { dispatchCommand(it) }
         )
+
+        kioskController.tryGrantUsageAccess()
+        if (packageReceiver == null) {
+            val r = TargetPackageReceiver(kioskController)
+            ContextCompat.registerReceiver(this, r, TargetPackageReceiver.filter(), ContextCompat.RECEIVER_EXPORTED)
+            packageReceiver = r
+        }
 
         BatteryExemption.requestIfDeviceOwner(this, deviceOwnerManager)
         PollingWatchdog.schedule(this)
@@ -272,13 +304,15 @@ class CommandPollingService : Service() {
                     processor?.flushPendingAcks()
                     fetchAndExecuteCommands()
 
-                    // Telemetry and app updates are periodic and must not delay command polling
+                    // Self-throttling telemetry (server-provided interval) and app updates must not delay polling
+                    sendPeriodicTelemetry()
                     pollCount++
-                    if (pollCount >= TELEMETRY_POLL_INTERVAL) {
+                    if (pollCount >= UPDATE_CHECK_POLL_INTERVAL) {
                         pollCount = 0
-                        sendPeriodicTelemetry()
                         startAppUpdateCheck()
                     }
+                    // Keep the kiosk / foreground app in front (AM-07)
+                    kioskController.watchdogTick()
                 },
                 onEnrollmentInvalid = { e -> onEnrollmentInvalid(e) }
             )
@@ -326,8 +360,8 @@ class CommandPollingService : Service() {
         val deviceId = sessionStorage.getDeviceId() ?: return
 
         try {
-            val success = telemetryCollector.sendTelemetrySuspend(serverUrl, deviceId)
-            if (success) {
+            // null means the report interval has not elapsed yet
+            if (telemetryCollector.reportIfDue(serverUrl, deviceId) == true) {
                 Log.d(TAG, "Periodic telemetry sent")
             }
         } catch (e: CancellationException) {
@@ -360,6 +394,15 @@ class CommandPollingService : Service() {
                 return
             }
 
+            // Installs wait for the maintenance window when one is configured (AM-08)
+            val window = readUpdateWindow()
+            val now = java.util.Calendar.getInstance()
+            val minuteOfDay = now.get(java.util.Calendar.HOUR_OF_DAY) * 60 + now.get(java.util.Calendar.MINUTE)
+            if (!UpdatePolicy.mayInstallNow(window, minuteOfDay)) {
+                Log.i(TAG, "${body.updates.size} update(s) waiting for the maintenance window")
+                return
+            }
+
             Log.i(TAG, "Found ${body.updates.size} app update(s) available")
 
             for (update in body.updates) {
@@ -375,7 +418,14 @@ class CommandPollingService : Service() {
                     silentInstaller.installFromUrl(apkUrl, update.packageName, update.sha256, baseUrl)
                 }
                 when (result) {
-                    is InstallResult.Success -> Log.i(TAG, "Auto-update installed: ${update.packageName}")
+                    is InstallResult.Success -> {
+                        Log.i(TAG, "Auto-update installed: ${update.packageName}")
+                        // Package replace force-stops the app; bring the target back (AM-08)
+                        if (update.packageName == kioskController.target()) {
+                            delay(2000)
+                            kioskController.launch(update.packageName)
+                        }
+                    }
                     is InstallResult.Failure -> Log.w(TAG, "Auto-update failed for ${update.packageName}: ${result.message}")
                     null -> Log.w(TAG, "Auto-update timed out for ${update.packageName}")
                 }
@@ -423,6 +473,12 @@ class CommandPollingService : Service() {
             "LOCK" -> executeLock()
             "REBOOT" -> executeReboot()
             "WIPE" -> executeWipe(command)
+            "SET_KIOSK" -> kioskController.setKiosk(command.payload)
+            "DISABLE_APP" -> appManagement.disableApp(command.payload)
+            "ENABLE_APP" -> appManagement.enableApp(command.payload)
+            "LAUNCH_APP" -> executeLaunchApp(command.payload)
+            "GRANT_PERMISSION" -> appManagement.grantPermission(command.payload)
+            "SET_PROTECTED_PACKAGES" -> appManagement.setProtectedPackages(command.payload)
             "START_REMOTE" -> executeStartRemote(command)
             "TAKE_SCREENSHOT" -> executeTakeScreenshot()
             "GET_LOCATION" -> executeGetLocation()
@@ -495,23 +551,21 @@ class CommandPollingService : Service() {
      * Save an app's boot start preference to SharedPreferences.
      */
     private fun saveBootStartApp(packageName: String, isForeground: Boolean) {
-        val prefs = getSharedPreferences("boot_apps", Context.MODE_PRIVATE)
-        val editor = prefs.edit()
-
-        // If this is the foreground app, clear any previous foreground app
-        if (isForeground) {
-            prefs.all.keys.forEach { key ->
-                if (prefs.getBoolean(key, false)) {
-                    editor.remove(key)
-                }
-            }
-        }
-
-        // Store: "packageName" -> true (foreground) or false (regular boot start)
-        editor.putBoolean(packageName, isForeground)
-        editor.apply()
-
+        bootApps().save(packageName, isForeground)
         Log.i(TAG, "Saved boot start preference: $packageName (foreground=$isForeground)")
+    }
+
+    private fun bootApps() = BootApps(getSharedPreferences(BootApps.PREFS, Context.MODE_PRIVATE))
+
+    private fun readUpdateWindow(): MaintenanceWindow? {
+        val p = getSharedPreferences("mdm_settings", Context.MODE_PRIVATE)
+        if (!p.contains("update_window_start")) return null
+        return MaintenanceWindow(p.getInt("update_window_start", 0), p.getInt("update_window_end", 0))
+    }
+
+    private fun executeLaunchApp(payload: JsonObject): CommandResult {
+        val pkg = payload["packageName"]?.jsonPrimitive?.content ?: return CommandResult.failure("Missing packageName")
+        return if (kioskController.launch(pkg)) CommandResult.success() else CommandResult.failure("Could not launch $pkg")
     }
 
     /**
@@ -559,8 +613,15 @@ class CommandPollingService : Service() {
         val packageName = command.payload["packageName"]?.jsonPrimitive?.content
             ?: return CommandResult.failure("Missing packageName in payload")
 
+        // AM-16: never remove the agent itself or a protected package
+        appManagement.uninstallRefusal(packageName)?.let { return CommandResult.failure(it) }
+
         return when (val result = silentInstaller.uninstall(packageName)) {
-            is InstallResult.Success -> CommandResult.success()
+            is InstallResult.Success -> {
+                // AM-09: an uninstalled package must not stay in the boot list
+                bootApps().remove(packageName)
+                CommandResult.success()
+            }
             is InstallResult.Failure -> CommandResult.failure("Uninstall failed: ${result.message}")
         }
     }
@@ -592,14 +653,11 @@ class CommandPollingService : Service() {
             return CommandResult.failure("Wipe requires Device Owner privileges")
         }
 
-        val keepData = command.payload["keepData"]?.jsonPrimitive?.content?.toBoolean() ?: false
-        val flags = if (!keepData) {
-            android.app.admin.DevicePolicyManager.WIPE_EXTERNAL_STORAGE
-        } else {
-            0
-        }
+        // C10: the payload must carry confirm == this device's id
+        WipeGuard.check(command.payload, sessionStorage.getDeviceId())?.let { return CommandResult.failure(it) }
+        val flags = WipeGuard.flags(command.payload)
 
-        Log.w(TAG, "EXECUTING DEVICE WIPE - keepData=$keepData")
+        Log.w(TAG, "EXECUTING DEVICE WIPE - flags=$flags")
         deviceOwnerManager.wipeDevice(flags)
 
         // Note: Device will wipe before this returns
@@ -756,71 +814,44 @@ class CommandPollingService : Service() {
     private fun executeSyncPolicy(command: DeviceCommand): CommandResult {
         Log.i(TAG, "Syncing policy settings")
 
-        // Extract policy settings from payload
-        val silentMode = command.payload["silentMode"]?.jsonPrimitive?.content?.toBoolean() ?: false
-        val kioskMode = command.payload["kioskMode"]?.jsonPrimitive?.content?.toBoolean() ?: false
+        // Only the fields the payload carries are changed (AM-09)
+        val update = PolicyUpdate.parse(command.payload)
 
-        // Save settings for re-applying after boot
         val mdmPrefs = getSharedPreferences("mdm_settings", Context.MODE_PRIVATE)
-        mdmPrefs.edit()
-            .putBoolean("silent_mode", silentMode)
-            .putBoolean("kiosk_mode", kioskMode)
-            .apply()
+        val edit = mdmPrefs.edit()
+        update.silentMode?.let { edit.putBoolean("silent_mode", it) }
+        update.kioskMode?.let { edit.putBoolean("kiosk_mode", it) } // legacy flag; SET_KIOSK is the real control
+        if (update.updateWindowProvided) {
+            val w = update.updateWindow
+            if (w == null) edit.remove("update_window_start").remove("update_window_end")
+            else edit.putInt("update_window_start", w.startMinute).putInt("update_window_end", w.endMinute)
+        }
+        edit.apply()
 
-        // Apply silent mode
-        if (silentMode) {
-            val success = deviceOwnerManager.enableSilentMode()
-            Log.i(TAG, "Silent mode enabled: $success")
-        } else {
-            val success = deviceOwnerManager.disableSilentMode()
-            Log.i(TAG, "Silent mode disabled: $success")
+        update.silentMode?.let { silent ->
+            val success = if (silent) deviceOwnerManager.enableSilentMode() else deviceOwnerManager.disableSilentMode()
+            Log.i(TAG, "Silent mode ${if (silent) "enabled" else "disabled"}: $success")
         }
 
-        // Process required apps - set boot preferences for already-installed apps
-        val requiredAppsJson = command.payload["requiredApps"]
-        if (requiredAppsJson != null) {
-            try {
-                val requiredApps = requiredAppsJson.jsonArray
-                Log.i(TAG, "Processing ${requiredApps.size} required apps for boot preferences")
-
-                for (appElement in requiredApps) {
-                    val appObj = appElement.jsonObject
-                    val packageName = appObj["packageName"]?.jsonPrimitive?.content ?: continue
-                    // Handle both boolean primitives and string representations
-                    val foregroundApp = appObj["foregroundApp"]?.jsonPrimitive?.content?.toBooleanStrictOrNull() ?: false
-                    val autoStartOnBoot = appObj["autoStartOnBoot"]?.jsonPrimitive?.content?.toBooleanStrictOrNull() ?: false
-
-                    Log.d(TAG, "App config: $packageName, foreground=$foregroundApp, bootStart=$autoStartOnBoot")
-
-                    // Check if app is installed
-                    val isInstalled = try {
-                        packageManager.getPackageInfo(packageName, 0)
-                        true
-                    } catch (e: PackageManager.NameNotFoundException) {
-                        Log.d(TAG, "App not installed: $packageName")
-                        false
-                    }
-
-                    if (isInstalled) {
-                        if (foregroundApp || autoStartOnBoot) {
-                            saveBootStartApp(packageName, foregroundApp)
-                            Log.i(TAG, "Set boot preference for $packageName: foreground=$foregroundApp, bootStart=$autoStartOnBoot")
-                        }
-
-                        // If this is the foreground app and we just synced, launch it now
-                        if (foregroundApp) {
-                            Log.i(TAG, "Launching foreground app: $packageName")
-                            launchAppWithRetry(packageName, true)
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to process requiredApps: ${e.message}", e)
+        // requiredApps is authoritative for the boot list: rebuild it so removed apps stop starting
+        val required = update.requiredApps
+        if (required != null) {
+            val isInstalled = { pkg: String ->
+                try { packageManager.getPackageInfo(pkg, 0); true } catch (e: PackageManager.NameNotFoundException) { false }
             }
-        }
+            val kioskPkg = kioskController.config()?.packageName
+            val map = BootAppsMerge.fromRequired(required, isInstalled).toMutableMap()
+            // The kiosk target stays the foreground app, whatever the policy list says
+            if (kioskPkg != null) {
+                map.entries.removeAll { it.value }
+                map[kioskPkg] = true
+            }
+            bootApps().replaceAll(map)
+            Log.i(TAG, "Boot list rebuilt from policy: $map")
 
-        // TODO: Apply kiosk mode (lock task mode) if enabled
-        // This requires additional setup
+            val fg = required.lastOrNull { it.foreground && isInstalled(it.packageName) }
+            if (fg != null && kioskPkg == null) launchAppWithRetry(fg.packageName, true)
+        }
 
         return CommandResult.success()
     }
