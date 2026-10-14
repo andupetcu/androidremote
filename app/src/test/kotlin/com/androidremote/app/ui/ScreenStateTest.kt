@@ -8,10 +8,11 @@ class ScreenStateTest {
     @Test
     fun `screen states have correct ViewFlipper indices`() {
         assertEquals(0, ScreenState.PERMISSIONS.index)
-        assertEquals(1, ScreenState.READY.index)
-        assertEquals(2, ScreenState.PAIRING.index)
-        assertEquals(3, ScreenState.CONNECTED.index)
-        assertEquals(4, ScreenState.ERROR.index)
+        assertEquals(1, ScreenState.ENROLLMENT.index)
+        assertEquals(2, ScreenState.READY.index)
+        assertEquals(3, ScreenState.PAIRING.index)
+        assertEquals(4, ScreenState.CONNECTED.index)
+        assertEquals(5, ScreenState.MANAGED.index)
     }
 
     @Test

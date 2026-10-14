@@ -72,12 +72,13 @@ class PermissionHelperTest {
     }
 
     @Test
-    fun `hasAllRequiredPermissions returns false when accessibility disabled`() {
+    fun `hasAllRequiredPermissions does not depend on accessibility service`() {
         mockkStatic(Settings.Secure::class)
         every {
             Settings.Secure.getString(any(), Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES)
         } returns null
 
-        assertFalse(helper.hasAllRequiredPermissions())
+        // Accessibility is optional for hasAllRequiredPermissions (notification + battery only).
+        assertTrue(helper.hasAllRequiredPermissions())
     }
 }

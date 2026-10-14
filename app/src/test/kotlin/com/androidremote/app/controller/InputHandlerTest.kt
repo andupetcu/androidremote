@@ -8,6 +8,7 @@ import io.mockk.*
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import com.androidremote.app.testsupport.LogStub
 
 class InputHandlerTest {
 
@@ -16,12 +17,14 @@ class InputHandlerTest {
 
     @BeforeEach
     fun setUp() {
+        LogStub.install()
         handler = InputHandler()
         mockService = mockk(relaxed = true)
     }
 
     @AfterEach
     fun tearDown() {
+        LogStub.uninstall()
         clearAllMocks()
         InputInjectionService.instance = null
     }

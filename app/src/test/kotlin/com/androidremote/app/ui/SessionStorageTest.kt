@@ -1,78 +1,73 @@
 package com.androidremote.app.ui
 
-import android.content.SharedPreferences
-import io.mockk.every
-import io.mockk.mockk
-import io.mockk.verify
-import org.junit.jupiter.api.Assertions.assertEquals
-import org.junit.jupiter.api.Assertions.assertNull
-import org.junit.jupiter.api.BeforeEach
-import org.junit.jupiter.api.Test
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Before
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.RuntimeEnvironment
+import org.robolectric.annotation.Config
+import com.androidremote.app.testsupport.TestApplication
 
+/**
+ * Uses the public [SessionStorage.create] factory under Robolectric, so the real
+ * SharedPreferences (and the encrypted-prefs fallback path) are exercised.
+ */
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [33], application = TestApplication::class)
 class SessionStorageTest {
 
-    private lateinit var prefs: SharedPreferences
-    private lateinit var editor: SharedPreferences.Editor
     private lateinit var storage: SessionStorage
 
-    @BeforeEach
+    @Before
     fun setup() {
-        prefs = mockk(relaxed = true)
-        editor = mockk(relaxed = true)
-        every { prefs.edit() } returns editor
-        every { editor.putString(any(), any()) } returns editor
-        every { editor.remove(any()) } returns editor
-        storage = SessionStorage(prefs)
+        storage = SessionStorage.create(RuntimeEnvironment.getApplication())
+        storage.clear()
     }
 
     @Test
     fun `saves session token`() {
         storage.saveSessionToken("test-token")
 
-        verify { editor.putString("session_token", "test-token") }
-        verify { editor.apply() }
+        assertEquals("test-token", storage.getSessionToken())
     }
 
     @Test
     fun `retrieves session token`() {
-        every { prefs.getString("session_token", null) } returns "saved-token"
+        storage.saveSessionToken("saved-token")
 
         assertEquals("saved-token", storage.getSessionToken())
     }
 
     @Test
     fun `returns null when no session token saved`() {
-        every { prefs.getString("session_token", null) } returns null
-
         assertNull(storage.getSessionToken())
     }
 
     @Test
     fun `clears session data`() {
+        storage.saveSessionToken("token")
+        storage.saveDeviceId("device-123")
+        storage.saveServerUrl("ws://example.com")
+
         storage.clear()
 
-        verify { editor.remove("session_token") }
-        verify { editor.remove("device_id") }
-        verify { editor.remove("server_url") }
-        verify { editor.apply() }
+        assertNull(storage.getSessionToken())
+        assertNull(storage.getDeviceId())
+        assertNull(storage.getServerUrl())
     }
 
     @Test
     fun `saves and retrieves server url`() {
-        every { prefs.getString("server_url", null) } returns "ws://example.com"
-
         storage.saveServerUrl("ws://example.com")
-        verify { editor.putString("server_url", "ws://example.com") }
 
         assertEquals("ws://example.com", storage.getServerUrl())
     }
 
     @Test
     fun `saves and retrieves device id`() {
-        every { prefs.getString("device_id", null) } returns "device-123"
-
         storage.saveDeviceId("device-123")
-        verify { editor.putString("device_id", "device-123") }
 
         assertEquals("device-123", storage.getDeviceId())
     }

@@ -20,6 +20,7 @@ import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import com.androidremote.app.testsupport.LogStub
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class SessionControllerTest {
@@ -39,6 +40,7 @@ class SessionControllerTest {
 
     @BeforeEach
     fun setUp() {
+        LogStub.install()
         mockSession = mockk(relaxed = true)
         mockCommandChannel = mockk(relaxed = true)
         mockInputHandler = mockk(relaxed = true)
@@ -67,6 +69,7 @@ class SessionControllerTest {
 
     @AfterEach
     fun tearDown() {
+        LogStub.uninstall()
         if (::controller.isInitialized) {
             controller.cancelJobs()
         }
@@ -119,7 +122,7 @@ class SessionControllerTest {
         // First connect
         coEvery { mockSession.connect(any()) } just Runs
         coEvery { mockSession.startAsAnswerer() } just Runs
-        coEvery { mockSession.disconnect() } just Runs
+        every { mockSession.closeSync() } just Runs
 
         controller.connect("server-url", "token", "device-123")
         advanceUntilIdle()
@@ -132,7 +135,7 @@ class SessionControllerTest {
         advanceUntilIdle()
 
         assertThat(controller.state.value).isEqualTo(SessionState.Disconnected)
-        coVerify { mockSession.disconnect() }
+        verify { mockSession.closeSync() }
     }
 
     @Test
@@ -301,7 +304,7 @@ class SessionControllerTest {
             connectionAttempts++
             throw Exception("Network unavailable")
         }
-        coEvery { mockSession.disconnect() } just Runs
+        every { mockSession.closeSync() } just Runs
 
         // First connection attempt
         controller.connect("server-url", "token", "device-123")
@@ -387,7 +390,7 @@ class SessionControllerTest {
         every { mockSession.videoChannel } returns mockVideoChannel
         coEvery { mockSession.connect(any()) } just Runs
         coEvery { mockSession.startAsAnswerer() } just Runs
-        coEvery { mockSession.disconnect() } just Runs
+        every { mockSession.closeSync() } just Runs
 
         controller.connect("server-url", "token", "device-123")
         advanceUntilIdle()

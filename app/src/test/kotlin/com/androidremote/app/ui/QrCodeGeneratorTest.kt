@@ -8,9 +8,10 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import com.androidremote.app.testsupport.TestApplication
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [33])
+@Config(sdk = [33], application = TestApplication::class)
 class QrCodeGeneratorTest {
 
     @Test

@@ -8,6 +8,8 @@ import io.mockk.just
 import io.mockk.mockk
 import io.mockk.slot
 import io.mockk.verify
+import com.androidremote.app.testsupport.LogStub
+import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -29,8 +31,16 @@ class WebRtcDataChannelTest {
 
     @BeforeEach
     fun setup() {
+        LogStub.install()
         mockNativeChannel = mockk(relaxed = true)
+        // Relaxed mocks return the first enum constant (CONNECTING); send() requires OPEN.
+        every { mockNativeChannel.state() } returns DataChannel.State.OPEN
         webRtcDataChannel = WebRtcDataChannel(mockNativeChannel)
+    }
+
+    @AfterEach
+    fun tearDown() {
+        LogStub.uninstall()
     }
 
     @Test
