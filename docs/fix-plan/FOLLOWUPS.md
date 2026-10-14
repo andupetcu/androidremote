@@ -1,0 +1,7 @@
+# Cross-owner follow-ups (maintained by the coordinator)
+- [T6] INSTALL_APK payloads and app-updates entries must include `sha256` (the device now refuses without it). (from T3)
+- [T6] The ack PATCH returns 4xx (404/409/410) for unknown or expired commands; the device treats 4xx other than 401 as permanent. (from T3)
+- [T9] Surface `EnrollmentState.isInvalid()/reason()` in MainActivity. After re-enrolment, call `EnrollmentState.clear` and restart the service. (from T3)
+- [T11] `POST /api/auth/logout` (the UI calls it best-effort) and server-side revocation. (from T5)
+- [T12] Remaining `window.confirm` in DeviceCard, DevicesPage, group and policy deletes; PairingFlow uses raw fetch; command status by live events instead of 5 s polling. (from T5)
+- [T7] The relay screens still pass `token` to the relay hook as a "signed in" gate only. (from T5)
