@@ -35,6 +35,8 @@ const sampleFields = {
   kioskPackage: str(300),
   lockTask: z.union([z.boolean(), z.number()]).nullable().optional(),
   protectedPackages: z.array(z.string().max(300)).max(500).nullable().optional(),
+  // Remote desktop is root-only: whether su works on the device.
+  rooted: z.union([z.boolean(), z.number()]).nullable().optional(),
   collectedAt: z.number().int().min(0).optional(),
 };
 // Unknown keys (including a deviceId) are stripped: the device ID always comes from the URL (C2).
@@ -49,10 +51,11 @@ function nextReportIn(): number {
 }
 
 function toInput(deviceId: string, sample: z.infer<typeof telemetrySchema>): TelemetryInput {
-  const { batteryCharging, screenOn, kioskActive, lockTask, ...rest } = sample;
+  const { batteryCharging, screenOn, kioskActive, lockTask, rooted, ...rest } = sample;
   const out: TelemetryInput = { ...(rest as Omit<TelemetryInput, 'deviceId'>), deviceId };
   if (kioskActive !== undefined) out.kioskActive = kioskActive === null ? null : Boolean(kioskActive);
   if (lockTask !== undefined) out.lockTask = lockTask === null ? null : Boolean(lockTask);
+  if (rooted !== undefined) out.rooted = rooted === null ? null : Boolean(rooted);
   if (batteryCharging !== undefined) out.batteryCharging = batteryCharging === null ? null : Boolean(batteryCharging);
   if (screenOn !== undefined) out.screenOn = screenOn === null ? null : Boolean(screenOn);
   return out;
@@ -121,6 +124,7 @@ telemetryRouter.get('/devices/:id/telemetry', (req: Request, res: Response) => {
       kioskPackage: null,
       lockTask: null,
       protectedPackages: null,
+      rooted: null,
     });
     return;
   }

@@ -43,6 +43,8 @@ export interface DeviceTelemetry {
   kioskPackage: string | null;
   lockTask: boolean | null;
   protectedPackages: string[] | null;
+  /** Remote desktop is root-only; the device reports whether su works. */
+  rooted: boolean | null;
 
   updatedAt: number;
 }
@@ -74,6 +76,7 @@ export interface TelemetryInput {
   kioskPackage?: string | null;
   lockTask?: boolean | null;
   protectedPackages?: string[] | null;
+  rooted?: boolean | null;
   /** Epoch ms when the device took the sample (buffered samples). Used when plausible. */
   collectedAt?: number;
 }
@@ -147,6 +150,7 @@ interface TelemetryRow {
   kiosk_package: string | null;
   lock_task: number | null;
   protected_packages: string | null;
+  rooted: number | null;
   updated_at: number;
 }
 
@@ -183,6 +187,7 @@ const FIELDS: Array<[keyof TelemetryInput, string, 'num' | 'str' | 'bool' | 'jso
   ['kioskPackage', 'kiosk_package', 'str'],
   ['lockTask', 'lock_task', 'bool'],
   ['protectedPackages', 'protected_packages', 'json'],
+  ['rooted', 'rooted', 'bool'],
 ];
 
 function parseJsonList(raw: string | null): string[] | null {
@@ -516,6 +521,7 @@ class TelemetryStore {
       kioskPackage: row.kiosk_package,
       lockTask: row.lock_task !== null ? row.lock_task === 1 : null,
       protectedPackages: parseJsonList(row.protected_packages),
+      rooted: row.rooted !== null && row.rooted !== undefined ? row.rooted === 1 : null,
       updatedAt: row.updated_at,
     };
   }

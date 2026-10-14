@@ -461,6 +461,7 @@ export function initializeSchema(db: Database.Database): void {
   addColumnIfMissing(db, 'device_telemetry', 'kiosk_package', 'TEXT');
   addColumnIfMissing(db, 'device_telemetry', 'lock_task', 'INTEGER');
   addColumnIfMissing(db, 'device_telemetry', 'protected_packages', 'TEXT');
+  addColumnIfMissing(db, 'device_telemetry', 'rooted', 'INTEGER');
 
   // ============================================
   // Phase 2: Application Inventory
