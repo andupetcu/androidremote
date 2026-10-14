@@ -20,7 +20,20 @@ import java.nio.ByteOrder
  * - Bytes 11-12: total chunk count (uint16 big-endian)
  * - Bytes 13+: chunk payload
  */
-class VideoChannel(private val dataChannel: DataChannelInterface) {
+class VideoChannel internal constructor(
+    private val primary: () -> DataChannelInterface?,
+    private val fallback: () -> DataChannelInterface?
+) {
+
+    constructor(dataChannel: DataChannelInterface) : this({ dataChannel }, { null })
+
+    // Contract C9: frames go on the `video` channel when it is open, otherwise on `commands`.
+    // Both are looked up at send time, so a `video` channel that arrives later is picked up.
+
+    private val dataChannel: DataChannelInterface
+        get() = primary()?.takeIf { it.state == DataChannelState.OPEN }
+            ?: fallback()?.takeIf { it.state == DataChannelState.OPEN }
+            ?: primary() ?: fallback() ?: ClosedChannel
 
     companion object {
         private const val HEADER_SIZE = 9 // 1 byte flags + 8 bytes timestamp
@@ -109,4 +122,13 @@ class VideoChannel(private val dataChannel: DataChannelInterface) {
      */
     val isOpen: Boolean
         get() = dataChannel.state == DataChannelState.OPEN
+}
+
+private object ClosedChannel : DataChannelInterface {
+    override val label = "closed"
+    override val state = DataChannelState.CLOSED
+    override fun send(data: ByteArray) = false
+    override fun send(text: String) = false
+    override fun close() {}
+    override fun setObserver(observer: DataChannelObserver) {}
 }

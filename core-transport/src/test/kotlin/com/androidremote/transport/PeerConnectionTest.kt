@@ -160,7 +160,13 @@ class MockNativePeerConnection : NativePeerConnection {
         remoteDescription = description
     }
 
+    var failNextAddCandidate = false
+
     override suspend fun addIceCandidate(candidate: IceCandidate) {
+        if (failNextAddCandidate) {
+            failNextAddCandidate = false
+            throw IllegalStateException("simulated addIceCandidate failure")
+        }
         addedCandidates.add(candidate)
     }
 

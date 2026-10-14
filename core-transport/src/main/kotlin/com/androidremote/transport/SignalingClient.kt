@@ -20,7 +20,11 @@ class SignalingClient(
     private val serverUrl: String,
     private val deviceId: String,
     private val webSocketProvider: WebSocketProvider,
-    private val scope: CoroutineScope = CoroutineScope(Dispatchers.Default)
+    private val scope: CoroutineScope = CoroutineScope(Dispatchers.Default),
+    /**
+     * Device session token (contract C4). Sent as `Authorization: Bearer <token>` on the upgrade.
+     */
+    private val authToken: String? = null
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -77,7 +81,10 @@ class SignalingClient(
      */
     suspend fun connect() {
         try {
-            session = webSocketProvider.connect(serverUrl, emptyMap())
+            session = webSocketProvider.connect(
+                serverUrl,
+                authToken?.takeIf { it.isNotEmpty() }?.let { mapOf("Authorization" to "Bearer $it") } ?: emptyMap()
+            )
 
             // Start listening for incoming messages
             messageJob = scope.launch {

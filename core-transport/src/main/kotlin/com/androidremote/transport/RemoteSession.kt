@@ -3,7 +3,11 @@ package com.androidremote.transport
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
@@ -34,9 +38,20 @@ class RemoteSession(
      * Configuration for the peer connection including ICE servers.
      * Defaults to standard STUN/TURN servers for development.
      */
-    private val peerConnectionConfig: PeerConnectionConfig = DEFAULT_CONFIG
+    private val peerConnectionConfig: PeerConnectionConfig = DEFAULT_CONFIG,
+    /**
+     * Device session token, sent as `Authorization: Bearer` on the signaling upgrade (contract C4).
+     */
+    private val authToken: String? = null,
+    /**
+     * ICE `disconnected` is often transient (Wi-Fi roam). The session only fails if it does not
+     * recover within this grace period (AR-04).
+     */
+    private val iceDisconnectGraceMs: Long = DEFAULT_ICE_DISCONNECT_GRACE_MS
 ) {
     companion object {
+        const val DEFAULT_ICE_DISCONNECT_GRACE_MS = 10_000L
+
         /**
          * Default ICE servers with STUN only for local network connections.
          * TURN is disabled as it may cause stability issues on some devices.
@@ -55,6 +70,8 @@ class RemoteSession(
     private var _commandChannel: CommandChannel? = null
     private var _videoChannel: VideoChannel? = null
     private var _dataChannelInterface: DataChannelInterface? = null
+    @Volatile private var videoDataChannel: DataChannelInterface? = null
+    private var iceGraceJob: Job? = null
 
     private val _state = MutableStateFlow(SessionState.DISCONNECTED)
     private val _dataChannelAvailable = MutableStateFlow(false)
@@ -63,6 +80,16 @@ class RemoteSession(
     private var remoteIceCandidateJob: Job? = null
     private var connectionStateJob: Job? = null
     private var dataChannelJob: Job? = null
+
+    private val _peerLeft = MutableSharedFlow<Unit>(extraBufferCapacity = 16)
+    private val _peerJoined = MutableSharedFlow<String>(extraBufferCapacity = 16)
+    private var peerEventsJob: Job? = null
+
+    /** The remote peer (viewer) left the signaling room. */
+    val peerLeft: Flow<Unit> = _peerLeft.asSharedFlow()
+
+    /** A peer joined the room; emits its role. */
+    val peerJoined: Flow<String> = _peerJoined.asSharedFlow()
 
     /**
      * Current session state.
@@ -116,10 +143,16 @@ class RemoteSession(
                     serverUrl = serverUrl,
                     deviceId = deviceId,
                     webSocketProvider = webSocketProvider,
-                    scope = scope
+                    scope = scope,
+                    authToken = authToken
                 )
                 client.connect()
                 signalingClient = client
+
+                peerEventsJob = scope.launch {
+                    launch { client.peerLeft.collect { _peerLeft.tryEmit(Unit) } }
+                    launch { client.peerJoined.collect { _peerJoined.tryEmit(it) } }
+                }
 
                 // Create peer connection with configured ICE servers
                 val pc = PeerConnectionWrapper(peerConnectionFactory, peerConnectionConfig)
@@ -128,7 +161,13 @@ class RemoteSession(
                 // Set up ICE candidate forwarding
                 iceCandidateJob = scope.launch {
                     pc.iceCandidates.collect { candidate ->
-                        client.sendIceCandidate(candidate)
+                        try {
+                            client.sendIceCandidate(candidate)
+                        } catch (e: kotlinx.coroutines.CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            System.err.println("RemoteSession: failed to send ICE candidate: ${e.message}")
+                        }
                     }
                 }
 
@@ -136,11 +175,24 @@ class RemoteSession(
                 connectionStateJob = scope.launch {
                     pc.connectionState.collect { connectionState ->
                         when (connectionState) {
-                            ConnectionState.CONNECTED -> _state.value = SessionState.CONNECTED
-                            ConnectionState.FAILED -> _state.value = SessionState.FAILED
+                            ConnectionState.CONNECTED -> {
+                                iceGraceJob?.cancel()
+                                iceGraceJob = null
+                                _state.value = SessionState.CONNECTED
+                            }
+                            ConnectionState.FAILED -> {
+                                iceGraceJob?.cancel()
+                                iceGraceJob = null
+                                _state.value = SessionState.FAILED
+                            }
                             ConnectionState.DISCONNECTED -> {
-                                if (_state.value == SessionState.CONNECTED) {
-                                    _state.value = SessionState.DISCONNECTED
+                                // Transient until proven otherwise (AR-04).
+                                if (_state.value == SessionState.CONNECTED && iceGraceJob == null) {
+                                    iceGraceJob = launch {
+                                        delay(iceDisconnectGraceMs)
+                                        iceGraceJob = null
+                                        _state.value = SessionState.FAILED
+                                    }
                                 }
                             }
                             else -> {}
@@ -151,11 +203,13 @@ class RemoteSession(
                 // Set up data channel handling
                 dataChannelJob = scope.launch {
                     pc.dataChannels.collect { channel ->
-                        if (channel.label == "commands") {
+                        if (channel.label == "video") {
+                            videoDataChannel = channel
+                        } else if (channel.label == "commands") {
                             _dataChannelInterface = channel
                             _dataChannelAvailable.value = true
-                            // Create video channel wrapper for sending encoded frames
-                            _videoChannel = VideoChannel(channel)
+                            // Video prefers the `video` channel and falls back to `commands` (C9)
+                            _videoChannel = VideoChannel({ videoDataChannel }, { _dataChannelInterface })
                             // Only create CommandChannel if enabled (web client mode)
                             // Device mode should use dataChannelInterface to create DeviceCommandChannel
                             if (createCommandChannel) {
@@ -188,14 +242,14 @@ class RemoteSession(
         // Listen for answer
         messageCollectionJob = scope.launch {
             client.answers.collect { answer ->
-                pc.setRemoteDescription(answer)
+                guarded("set remote description") { pc.setRemoteDescription(answer) }
             }
         }
 
         // Listen for remote ICE candidates
         remoteIceCandidateJob = scope.launch {
             client.iceCandidates.collect { candidate ->
-                pc.addIceCandidate(candidate)
+                guarded("add ICE candidate") { pc.addIceCandidate(candidate) }
             }
         }
     }
@@ -212,15 +266,26 @@ class RemoteSession(
         // Listen for incoming offers and respond with answer
         messageCollectionJob = scope.launch {
             client.offers.collect { offer ->
-                handleOffer(offer)
+                guarded("handle offer") { handleOffer(offer) }
             }
         }
 
         // Listen for remote ICE candidates
         remoteIceCandidateJob = scope.launch {
             client.iceCandidates.collect { candidate ->
-                pc.addIceCandidate(candidate)
+                guarded("add ICE candidate") { pc.addIceCandidate(candidate) }
             }
+        }
+    }
+
+    /** One bad message must not end the collector (AR-09). */
+    private suspend fun guarded(what: String, block: suspend () -> Unit) {
+        try {
+            block()
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            System.err.println("RemoteSession: failed to $what: ${e::class.simpleName}")
         }
     }
 
@@ -258,6 +323,10 @@ class RemoteSession(
         remoteIceCandidateJob?.cancel()
         connectionStateJob?.cancel()
         dataChannelJob?.cancel()
+        peerEventsJob?.cancel()
+        iceGraceJob?.cancel()
+        iceGraceJob = null
+        videoDataChannel = null
 
         _commandChannel?.close()
         _commandChannel = null

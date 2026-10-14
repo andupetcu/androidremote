@@ -1,10 +1,10 @@
 package com.androidremote.transport
 
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 /**
@@ -18,8 +18,8 @@ class PeerConnectionWrapper(
 ) : PeerConnectionObserver {
 
     private val _connectionState = MutableStateFlow(ConnectionState.NEW)
-    private val _iceCandidates = MutableSharedFlow<IceCandidate>(replay = 1)
-    private val _dataChannels = MutableSharedFlow<DataChannelInterface>(replay = 1)
+    private val _iceCandidates = Channel<IceCandidate>(Channel.UNLIMITED)
+    private val _dataChannels = Channel<DataChannelInterface>(Channel.UNLIMITED)
 
     /**
      * Current connection state.
@@ -29,12 +29,12 @@ class PeerConnectionWrapper(
     /**
      * Flow of ICE candidates gathered during connection establishment.
      */
-    val iceCandidates: Flow<IceCandidate> = _iceCandidates.asSharedFlow()
+    val iceCandidates: Flow<IceCandidate> = _iceCandidates.receiveAsFlow()
 
     /**
      * Flow of data channels created by the remote peer.
      */
-    val dataChannels: Flow<DataChannelInterface> = _dataChannels.asSharedFlow()
+    val dataChannels: Flow<DataChannelInterface> = _dataChannels.receiveAsFlow()
 
     private val nativeConnection: NativePeerConnection = factory.createPeerConnection(config, this)
 
@@ -79,12 +79,14 @@ class PeerConnectionWrapper(
     fun close() {
         nativeConnection.close()
         _connectionState.value = ConnectionState.CLOSED
+        _iceCandidates.close()
+        _dataChannels.close()
     }
 
     // PeerConnectionObserver implementation
 
     override fun onIceCandidate(candidate: IceCandidate) {
-        _iceCandidates.tryEmit(candidate)
+        _iceCandidates.trySend(candidate)
     }
 
     override fun onConnectionStateChange(state: ConnectionState) {
@@ -102,6 +104,6 @@ class PeerConnectionWrapper(
     }
 
     override fun onDataChannel(channel: DataChannelInterface) {
-        _dataChannels.tryEmit(channel)
+        _dataChannels.trySend(channel)
     }
 }
