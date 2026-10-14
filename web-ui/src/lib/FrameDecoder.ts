@@ -5,6 +5,14 @@ const NAL_TYPE_IDR = 5;
 const NAL_TYPE_SPS = 7;
 const NAL_TYPE_PPS = 8;
 
+/** Max delta frames allowed to sit in the WebCodecs queue before we skip to the next keyframe. */
+const MAX_DECODE_QUEUE = 3;
+/** Bounds for incomplete chunk reassembly (unreliable video channel can lose chunks). */
+const MAX_CHUNK_SETS = 8;
+const MAX_CHUNK_BYTES = 8 * 1024 * 1024;
+const CHUNK_MAX_AGE_MS = 2000;
+const KEYFRAME_REQUEST_INTERVAL_MS = 1000;
+
 /**
  * Decodes H.264 video frames received over WebRTC DataChannel.
  *
@@ -22,7 +30,11 @@ export class FrameDecoder {
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
   private configured = false;
-  private pendingFrames: ArrayBuffer[] = [];
+  /** When true, delta frames are dropped until the next IDR keyframe (WU-07/WU-08). */
+  private needKeyframe = true;
+  private lastKeyframeRequest = -Infinity;
+  private latestFrame: VideoFrame | null = null;
+  private rafPending = false;
   private frameCount = 0;
   private lastFrameTime = 0;
   private webCodecsAvailable = false;
@@ -40,6 +52,23 @@ export class FrameDecoder {
 
   /** Callback invoked when video dimensions are known (from SPS or first frame). */
   onDimensionsChanged: ((width: number, height: number) => void) | null = null;
+
+  /** Invoked with a human-readable message when decoding fails (WU-07). */
+  onError: ((message: string) => void) | null = null;
+
+  /** Invoked (rate limited to 1/s) when the stream needs a fresh keyframe from the device. */
+  onKeyframeNeeded: (() => void) | null = null;
+
+  /** Invoked every time a decoded frame is drawn. */
+  onFrameRendered: (() => void) | null = null;
+
+  /** Number of incomplete chunk sets currently buffered. */
+  get pendingChunkSets(): number { return this.chunkBuffer.size; }
+
+  /** Bytes held by incomplete chunk sets. */
+  get pendingChunkBytes(): number { return this.chunkBytes; }
+
+  private chunkBytes = 0;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -65,8 +94,32 @@ export class FrameDecoder {
     this.webCodecsAvailable = true;
     this.decoder = new VideoDecoder({
       output: (frame) => this.renderFrame(frame),
-      error: (e) => console.error('Decode error:', e),
+      error: (e) => this.handleDecoderError(e),
     });
+  }
+
+  /** The WebCodecs decoder reported an async error and is now closed: rebuild it and resync. */
+  private handleDecoderError(e: unknown): void {
+    const detail = e instanceof Error ? e.message : String(e);
+    this.configured = false;
+    this.needKeyframe = true;
+    this.initDecoder();
+    this.onError?.(`Decode error: ${detail}`);
+    this.requestKeyframe(true);
+  }
+
+  /** Ask the device for a sync frame; at most once per second unless forced. */
+  private requestKeyframe(force = false): void {
+    const now = Date.now();
+    if (!force && now - this.lastKeyframeRequest < KEYFRAME_REQUEST_INTERVAL_MS) return;
+    this.lastKeyframeRequest = now;
+    this.onKeyframeNeeded?.();
+  }
+
+  /** Something was lost: ignore deltas until the next IDR and ask for one. */
+  private markGap(): void {
+    this.needKeyframe = true;
+    this.requestKeyframe();
   }
 
   private showFallbackMessage(message: string): void {
@@ -119,12 +172,6 @@ export class FrameDecoder {
     });
 
     this.configured = true;
-
-    // Process any pending frames
-    for (const frame of this.pendingFrames) {
-      this.decodeFrame(frame);
-    }
-    this.pendingFrames = [];
   }
 
   /**
@@ -173,10 +220,14 @@ export class FrameDecoder {
       this.chunkBuffer.set(timestamp, entry);
     }
 
-    entry.chunks.set(chunkIndex, chunkPayload);
+    if (!entry.chunks.has(chunkIndex)) {
+      // copy: the payload is a view into the transport buffer
+      entry.chunks.set(chunkIndex, chunkPayload);
+      this.chunkBytes += chunkPayload.length;
+    }
 
     if (entry.chunks.size === entry.total) {
-      // All chunks received — reassemble
+      // All chunks received: reassemble
       let totalLen = 0;
       for (const chunk of entry.chunks.values()) totalLen += chunk.length;
 
@@ -189,28 +240,53 @@ export class FrameDecoder {
       const payload = new Uint8Array(reassembled, 9);
       let offset = 0;
       for (let i = 0; i < entry.total; i++) {
-        const chunk = entry.chunks.get(i)!;
+        const chunk = entry.chunks.get(i);
+        if (!chunk) { // inconsistent chunk indexes: treat as loss
+          this.dropChunkSet(timestamp);
+          this.markGap();
+          return;
+        }
         payload.set(chunk, offset);
         offset += chunk.length;
       }
 
-      this.chunkBuffer.delete(timestamp);
+      this.dropChunkSet(timestamp);
 
-      const isKey = (entry.flags & 0x01) !== 0;
-      if (this.frameCount <= 10 || this.frameCount % 100 === 0) {
-        console.log(`FrameDecoder: reassembled ${entry.total} chunks -> ${totalLen} bytes, key=${isKey}`);
+      // The channel is unordered/unreliable: any older set that is still incomplete
+      // has lost chunks for good. Drop it and resync on the next keyframe.
+      let gap = false;
+      for (const ts of Array.from(this.chunkBuffer.keys())) {
+        if (ts < timestamp) { this.dropChunkSet(ts); gap = true; }
       }
+      if (gap) this.markGap();
 
       this.processCompleteFrame(reassembled);
     }
 
-    // Garbage-collect stale incomplete frames (older than 2 seconds)
-    if (this.chunkBuffer.size > 3) {
-      const cutoff = Date.now() - 2000;
-      for (const [ts, e] of this.chunkBuffer) {
-        if (e.receivedAt < cutoff) this.chunkBuffer.delete(ts);
-      }
+    this.enforceChunkBounds();
+  }
+
+  private dropChunkSet(timestamp: bigint): void {
+    const e = this.chunkBuffer.get(timestamp);
+    if (!e) return;
+    for (const c of e.chunks.values()) this.chunkBytes -= c.length;
+    this.chunkBuffer.delete(timestamp);
+  }
+
+  /** Age out stale sets and cap the buffer by count and bytes, oldest first. */
+  private enforceChunkBounds(): void {
+    let evicted = false;
+    const cutoff = Date.now() - CHUNK_MAX_AGE_MS;
+    for (const [ts, e] of Array.from(this.chunkBuffer)) {
+      if (e.receivedAt < cutoff) { this.dropChunkSet(ts); evicted = true; }
     }
+    while (this.chunkBuffer.size > MAX_CHUNK_SETS || this.chunkBytes > MAX_CHUNK_BYTES) {
+      const oldest = this.chunkBuffer.keys().next().value as bigint | undefined;
+      if (oldest === undefined) break;
+      this.dropChunkSet(oldest);
+      evicted = true;
+    }
+    if (evicted) this.markGap();
   }
 
   /**
@@ -229,7 +305,6 @@ export class FrameDecoder {
       if (hasConfig) {
         // Extract and store SPS/PPS for later use
         this.configData = this.extractConfigNals(h264Data);
-        console.log('FrameDecoder: stored SPS/PPS config data,', this.configData.length, 'bytes');
       }
 
       if (!hasIdr) {
@@ -244,10 +319,25 @@ export class FrameDecoder {
       }
     }
 
-    if (!this.configured) {
-      // Queue non-keyframes until we get a keyframe to configure
-      this.pendingFrames.push(data);
-      return;
+    if (isKeyFrame) {
+      // Backlog skip: a keyframe lets us throw away everything queued in the decoder.
+      if (this.decoder && this.decoder.state !== 'closed' && this.decoder.decodeQueueSize > MAX_DECODE_QUEUE) {
+        this.decoder.reset();
+        this.configured = false;
+        const dims = this.parseSpsForDimensions(new Uint8Array(data, 9));
+        this.configure(dims.width, dims.height);
+      }
+      this.needKeyframe = false;
+    } else {
+      // Nothing to decode against yet, or we are resyncing: drop (never buffer) deltas.
+      if (!this.configured || this.needKeyframe) {
+        this.requestKeyframe(); // still waiting: keep asking (rate limited)
+        return;
+      }
+      if (this.decoder && this.decoder.decodeQueueSize > MAX_DECODE_QUEUE) {
+        this.markGap();
+        return;
+      }
     }
 
     this.decodeFrame(data);
@@ -285,11 +375,30 @@ export class FrameDecoder {
         data: frameData,
       }));
     } catch (e) {
-      console.error('Failed to decode frame:', e);
+      this.handleDecoderError(e);
     }
   }
 
+  /** Decoder output: keep only the newest frame and paint it on the next animation frame. */
   private renderFrame(frame: VideoFrame): void {
+    this.latestFrame?.close();
+    this.latestFrame = frame;
+    if (typeof requestAnimationFrame !== 'function') {
+      this.paint();
+      return;
+    }
+    if (this.rafPending) return;
+    this.rafPending = true;
+    requestAnimationFrame(() => {
+      this.rafPending = false;
+      this.paint();
+    });
+  }
+
+  private paint(): void {
+    const frame = this.latestFrame;
+    if (!frame) return;
+    this.latestFrame = null;
     // Update canvas size if needed
     if (this.canvas.width !== frame.displayWidth ||
         this.canvas.height !== frame.displayHeight) {
@@ -300,6 +409,7 @@ export class FrameDecoder {
 
     this.ctx.drawImage(frame, 0, 0);
     frame.close();
+    this.onFrameRendered?.();
   }
 
   /**
@@ -471,7 +581,6 @@ export class FrameDecoder {
     const width = (picWidthInMbsMinus1 + 1) * 16 - (cropLeft + cropRight) * 2;
     const height = (2 - frameMbsOnly) * (picHeightInMapUnitsMinus1 + 1) * 16 - (cropTop + cropBottom) * 2;
 
-    console.log(`FrameDecoder: parsed SPS dimensions ${width}x${height}`);
     return { width, height };
   }
 
@@ -484,8 +593,11 @@ export class FrameDecoder {
     }
     this.configured = false;
     this.configData = null;
-    this.pendingFrames = [];
+    this.needKeyframe = true;
     this.chunkBuffer.clear();
+    this.chunkBytes = 0;
+    this.latestFrame?.close();
+    this.latestFrame = null;
     this.frameCount = 0;
     this.lastFrameTime = 0;
     this.initDecoder();
@@ -499,6 +611,8 @@ export class FrameDecoder {
       this.decoder.close();
     }
     this.decoder = null;
+    this.latestFrame?.close();
+    this.latestFrame = null;
   }
 }
 

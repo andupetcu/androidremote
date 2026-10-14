@@ -13,6 +13,9 @@ const INPUT_MOUSE_BUTTON = 0x02;
 const INPUT_MOUSE_SCROLL = 0x03;
 const INPUT_KEY_EVENT = 0x04;
 
+const RECONNECT_BASE_MS = 1000;
+const RECONNECT_MAX_MS = 15000;
+
 export function RelayRemoteScreen({ deviceId }: RelayRemoteScreenProps) {
   const { token } = useAuth();
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -22,9 +25,13 @@ export function RelayRemoteScreen({ deviceId }: RelayRemoteScreenProps) {
   const screenSizeRef = useRef(screenSize);
   screenSizeRef.current = screenSize;
 
+  // Tiles are decoded concurrently but drawn strictly in arrival order (WU-11).
+  const drawChainRef = useRef<Promise<void>>(Promise.resolve());
+
   const onMessage = useCallback((msg: Protocol.ProtocolMessage) => {
     if (msg.header.type === Protocol.DESKTOP_FRAME) {
-      renderTile(canvasRef.current, msg.payload);
+      const decoded = decodeTile(msg.payload);
+      drawChainRef.current = drawChainRef.current.then(() => drawTile(canvasRef.current, decoded));
     } else if (msg.header.type === Protocol.DESKTOP_RESIZE) {
       if (msg.payload.length >= 4) {
         const view = new DataView(msg.payload.buffer, msg.payload.byteOffset, msg.payload.byteLength);
@@ -76,10 +83,41 @@ export function RelayRemoteScreen({ deviceId }: RelayRemoteScreenProps) {
       connect();
     }
     return () => {
+      userDisconnectedRef.current = true;
       disconnect();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
+
+  // Reconnect after an unexpected drop. connect() fetches a fresh single-use ticket.
+  const userDisconnectedRef = useRef(false);
+  const attemptsRef = useRef(0);
+  useEffect(() => {
+    if (state === 'connected') {
+      attemptsRef.current = 0;
+      return;
+    }
+    if (!token || userDisconnectedRef.current) return;
+    if (state !== 'disconnected' && state !== 'error') return;
+    const delay = Math.min(RECONNECT_BASE_MS * 2 ** attemptsRef.current, RECONNECT_MAX_MS);
+    const timer = window.setTimeout(() => {
+      attemptsRef.current += 1;
+      connect();
+    }, delay);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state, token]);
+
+  const handleManualConnect = useCallback(() => {
+    userDisconnectedRef.current = false;
+    attemptsRef.current = 0;
+    connect();
+  }, [connect]);
+
+  const handleManualDisconnect = useCallback(() => {
+    userDisconnectedRef.current = true;
+    disconnect();
+  }, [disconnect]);
 
   // --- Input Handlers ---
 
@@ -106,23 +144,70 @@ export function RelayRemoteScreen({ deviceId }: RelayRemoteScreenProps) {
     [send]
   );
 
+  // Mouse moves are coalesced to one message per animation frame (latest position wins).
+  const pendingMoveRef = useRef<[number, number] | null>(null);
+  const moveRafRef = useRef<number | null>(null);
+
   const handleMouseMove = useCallback(
     (e: React.MouseEvent) => {
       const coords = toScreenCoords(e.clientX, e.clientY);
       if (!coords) return;
-      const buf = new Uint8Array(4);
-      const view = new DataView(buf.buffer);
-      view.setUint16(0, coords[0], true);
-      view.setUint16(2, coords[1], true);
-      sendDesktopInput(INPUT_MOUSE_MOVE, buf);
+      pendingMoveRef.current = coords;
+      if (moveRafRef.current !== null) return;
+      moveRafRef.current = requestAnimationFrame(() => {
+        moveRafRef.current = null;
+        const c = pendingMoveRef.current;
+        pendingMoveRef.current = null;
+        if (!c) return;
+        const buf = new Uint8Array(4);
+        const view = new DataView(buf.buffer);
+        view.setUint16(0, c[0], true);
+        view.setUint16(2, c[1], true);
+        sendDesktopInput(INPUT_MOUSE_MOVE, buf);
+      });
     },
     [toScreenCoords, sendDesktopInput]
   );
+
+  useEffect(() => () => {
+    if (moveRafRef.current !== null) cancelAnimationFrame(moveRafRef.current);
+  }, []);
+
+  // Keys and buttons currently held on the remote, so they can be released on blur (WU-11).
+  const heldKeysRef = useRef<Set<number>>(new Set());
+  const heldButtonsRef = useRef<Set<number>>(new Set());
+
+  const sendKeyRelease = useCallback(
+    (scancode: number) => {
+      const buf = new Uint8Array(4);
+      const view = new DataView(buf.buffer);
+      view.setUint16(0, scancode, true);
+      buf[2] = 1; // release
+      buf[3] = 0;
+      sendDesktopInput(INPUT_KEY_EVENT, buf);
+    },
+    [sendDesktopInput]
+  );
+
+  const sendButtonRelease = useCallback(
+    (btn: number) => {
+      sendDesktopInput(INPUT_MOUSE_BUTTON, Uint8Array.of(btn, 1));
+    },
+    [sendDesktopInput]
+  );
+
+  const releaseAll = useCallback(() => {
+    for (const code of heldKeysRef.current) sendKeyRelease(code);
+    heldKeysRef.current.clear();
+    for (const btn of heldButtonsRef.current) sendButtonRelease(btn);
+    heldButtonsRef.current.clear();
+  }, [sendKeyRelease, sendButtonRelease]);
 
   const handleMouseDown = useCallback(
     (e: React.MouseEvent) => {
       e.preventDefault();
       const btn = e.button === 0 ? 0 : e.button === 2 ? 1 : 2; // left=0, right=1, middle=2
+      heldButtonsRef.current.add(btn);
       const buf = new Uint8Array(2);
       buf[0] = btn;
       buf[1] = 0; // press
@@ -135,6 +220,7 @@ export function RelayRemoteScreen({ deviceId }: RelayRemoteScreenProps) {
     (e: React.MouseEvent) => {
       e.preventDefault();
       const btn = e.button === 0 ? 0 : e.button === 2 ? 1 : 2;
+      heldButtonsRef.current.delete(btn);
       const buf = new Uint8Array(2);
       buf[0] = btn;
       buf[1] = 1; // release
@@ -142,6 +228,11 @@ export function RelayRemoteScreen({ deviceId }: RelayRemoteScreenProps) {
     },
     [sendDesktopInput]
   );
+
+  const handleMouseLeave = useCallback(() => {
+    for (const btn of heldButtonsRef.current) sendButtonRelease(btn);
+    heldButtonsRef.current.clear();
+  }, [sendButtonRelease]);
 
   const handleWheel = useCallback(
     (e: React.WheelEvent) => {
@@ -163,6 +254,7 @@ export function RelayRemoteScreen({ deviceId }: RelayRemoteScreenProps) {
       // Use e.code to get physical key position, map to scancode
       const scancode = codeToScancode(e.code);
       if (scancode === 0) return;
+      heldKeysRef.current.add(scancode);
 
       const mods =
         (e.shiftKey ? 0x01 : 0) |
@@ -185,15 +277,10 @@ export function RelayRemoteScreen({ deviceId }: RelayRemoteScreenProps) {
       e.preventDefault();
       const scancode = codeToScancode(e.code);
       if (scancode === 0) return;
-
-      const buf = new Uint8Array(4);
-      const view = new DataView(buf.buffer);
-      view.setUint16(0, scancode, true);
-      buf[2] = 1; // release
-      buf[3] = 0;
-      sendDesktopInput(INPUT_KEY_EVENT, buf);
+      heldKeysRef.current.delete(scancode);
+      sendKeyRelease(scancode);
     },
-    [sendDesktopInput]
+    [sendKeyRelease]
   );
 
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
@@ -251,7 +338,7 @@ export function RelayRemoteScreen({ deviceId }: RelayRemoteScreenProps) {
         <div style={{ display: 'flex', gap: '0.5rem' }}>
           {state !== 'connected' && state !== 'connecting' && (
             <button
-              onClick={connect}
+              onClick={handleManualConnect}
               style={{
                 padding: '0.25rem 0.75rem',
                 fontSize: '0.75rem',
@@ -267,7 +354,7 @@ export function RelayRemoteScreen({ deviceId }: RelayRemoteScreenProps) {
           )}
           {state === 'connected' && (
             <button
-              onClick={disconnect}
+              onClick={handleManualDisconnect}
               style={{
                 padding: '0.25rem 0.75rem',
                 fontSize: '0.75rem',
@@ -308,6 +395,8 @@ export function RelayRemoteScreen({ deviceId }: RelayRemoteScreenProps) {
           onMouseMove={handleMouseMove}
           onMouseDown={handleMouseDown}
           onMouseUp={handleMouseUp}
+          onMouseLeave={handleMouseLeave}
+          onBlur={releaseAll}
           onWheel={handleWheel}
           onKeyDown={handleKeyDown}
           onKeyUp={handleKeyUp}
@@ -330,33 +419,35 @@ export function RelayRemoteScreen({ deviceId }: RelayRemoteScreenProps) {
 
 // --- Tile rendering ---
 
-async function renderTile(
-  canvas: HTMLCanvasElement | null,
-  payload: Uint8Array
-): Promise<void> {
-  if (!canvas || payload.length < 10) return;
+interface DecodedTile {
+  x: number;
+  y: number;
+  bitmap: Promise<ImageBitmap | null>;
+}
 
+/** Start decoding a tile immediately; drawing is sequenced separately. */
+function decodeTile(payload: Uint8Array): DecodedTile | null {
+  if (payload.length < 10) return null;
   const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
   const x = view.getUint16(0, true);
   const y = view.getUint16(2, true);
-  // w and h are at offset 4 and 6 (used for future reference but blob decode handles size)
-  // const w = view.getUint16(4, true);
-  // const h = view.getUint16(6, true);
-  // encoding = payload[8], flags = payload[9]
+  // w and h are at offset 4 and 6; the blob decode handles size. encoding = payload[8], flags = payload[9]
   const jpegData = payload.subarray(10);
+  if (jpegData.length === 0) return null;
+  const blob = new Blob([jpegData as BlobPart], { type: 'image/jpeg' });
+  return { x, y, bitmap: createImageBitmap(blob).catch(() => null) };
+}
 
-  if (jpegData.length === 0) return;
-
+/** Draw a decoded tile. Called through a promise chain so tiles land in arrival order. */
+async function drawTile(canvas: HTMLCanvasElement | null, tile: DecodedTile | null): Promise<void> {
+  if (!tile) return;
+  const bitmap = await tile.bitmap;
+  if (!bitmap) return; // undecodable tile: skip it
   try {
-    const blob = new Blob([jpegData as BlobPart], { type: 'image/jpeg' });
-    const bitmap = await createImageBitmap(blob);
-    const ctx = canvas.getContext('2d');
-    if (ctx) {
-      ctx.drawImage(bitmap, x, y);
-    }
+    const ctx = canvas?.getContext('2d');
+    if (ctx) ctx.drawImage(bitmap, tile.x, tile.y);
+  } finally {
     bitmap.close();
-  } catch {
-    // Ignore decode errors for individual tiles
   }
 }
 

@@ -2,6 +2,7 @@ import { useEffect, useRef, useCallback, useState, type ReactElement, type Mutab
 import { useWebRTC } from '../hooks/useWebRTC';
 import type { ConnectionState } from '../hooks/useWebRTC';
 import { FrameDecoder } from '../lib/FrameDecoder';
+import { mapPointToContent } from '../lib/screenGeometry';
 
 export interface RemoteScreenProps {
   deviceId: string | null;
@@ -12,6 +13,7 @@ export interface RemoteScreenProps {
 
 const LONG_PRESS_DELAY = 500;
 const SWIPE_THRESHOLD = 10; // pixels
+const STALL_AFTER_MS = 3000;
 
 // Android key codes
 const KEYCODE_HOME = 3;
@@ -35,13 +37,27 @@ export function RemoteScreen({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const decoderRef = useRef<FrameDecoder | null>(null);
   const [videoDimensions, setVideoDimensions] = useState<{ width: number; height: number } | null>(null);
+  // Decoder / stall problems shown over the picture (WU-07)
+  const [videoProblem, setVideoProblem] = useState<string | null>(null);
+  const lastFrameAtRef = useRef(0);
 
   // Touch state
-  const pointerStartRef = useRef<{ x: number; y: number; time: number } | null>(null);
+  const gestureRef = useRef<{ x: number; y: number; nx: number; ny: number } | null>(null);
   const longPressTimerRef = useRef<number | null>(null);
   const isLongPressRef = useRef(false);
 
-  const { connectionState, dataChannel, error, sendCommand, disconnect } = useWebRTC(deviceId, signalingUrl);
+  const {
+    connectionState, dataChannel, error, sendCommand, disconnect,
+    screenInfo, captureError, subscribeVideo, requestKeyframe,
+  } = useWebRTC(deviceId, signalingUrl);
+
+  const requestKeyframeRef = useRef(requestKeyframe);
+  useEffect(() => { requestKeyframeRef.current = requestKeyframe; }, [requestKeyframe]);
+
+  // The device screen size (SCREEN_INFO, rotation aware) wins over the decoded size.
+  const contentSize = screenInfo ?? videoDimensions;
+  const contentSizeRef = useRef(contentSize);
+  useEffect(() => { contentSizeRef.current = contentSize; }, [contentSize]);
 
   // Expose disconnect to parent via ref
   useEffect(() => {
@@ -60,46 +76,39 @@ export function RemoteScreen({
     onConnectionStateChange?.(connectionState);
   }, [connectionState, onConnectionStateChange]);
 
-  // Set up frame decoder and data channel listener
+  // Set up the frame decoder and subscribe to video from the hook. The hook owns the
+  // data channel handlers and demultiplexes; nothing here overwrites onmessage.
   useEffect(() => {
-    if (!canvasRef.current) {
-      console.warn('[RemoteScreen] useEffect: canvas not available, skipping setup');
-      return;
-    }
+    if (!canvasRef.current || !subscribeVideo) return;
 
-    // Initialize decoder
-    if (!decoderRef.current) {
-      const decoder = new FrameDecoder(canvasRef.current);
-      decoder.onDimensionsChanged = (w, h) => setVideoDimensions({ width: w, height: h });
-      decoderRef.current = decoder;
-      console.log('[RemoteScreen] FrameDecoder created');
-    }
+    const decoder = new FrameDecoder(canvasRef.current);
+    decoder.onDimensionsChanged = (w, h) => setVideoDimensions({ width: w, height: h });
+    decoder.onError = (message) => setVideoProblem(message);
+    decoder.onKeyframeNeeded = () => requestKeyframeRef.current?.();
+    decoder.onFrameRendered = () => {
+      lastFrameAtRef.current = Date.now();
+      setVideoProblem(null);
+    };
+    decoderRef.current = decoder;
+    lastFrameAtRef.current = Date.now();
 
-    // Listen for video frames on data channel
-    if (dataChannel) {
-      console.log('[RemoteScreen] Setting up data channel message handler, readyState:', dataChannel.readyState);
-      let frameCount = 0;
-      dataChannel.onmessage = (event) => {
-        if (event.data instanceof ArrayBuffer) {
-          frameCount++;
-          if (frameCount === 1 || frameCount % 100 === 0) {
-            console.log(`[RemoteScreen] Video frame #${frameCount}, size: ${event.data.byteLength} bytes`);
-          }
-          decoderRef.current?.decode(event.data);
-        } else {
-          // Text message (command ACK)
-          console.log('[RemoteScreen] Text message (ACK?):', event.data);
-        }
-      };
-    } else {
-      console.warn('[RemoteScreen] useEffect: dataChannel is null');
-    }
+    const unsubscribe = subscribeVideo((data) => decoder.decode(data));
+
+    // Stall watchdog: frames stopped arriving although the connection says it is up.
+    const watchdog = window.setInterval(() => {
+      if (Date.now() - lastFrameAtRef.current > STALL_AFTER_MS) {
+        setVideoProblem('Video stalled, requesting keyframe...');
+        requestKeyframeRef.current?.();
+      }
+    }, 1000);
 
     return () => {
-      decoderRef.current?.destroy();
+      window.clearInterval(watchdog);
+      unsubscribe();
+      decoder.destroy();
       decoderRef.current = null;
     };
-  }, [dataChannel]);
+  }, [dataChannel, connectionState, subscribeVideo]);
 
   // Reset decoder when reconnecting
   useEffect(() => {
@@ -108,42 +117,51 @@ export function RemoteScreen({
     }
   }, [connectionState]);
 
-  const getNormalizedCoordinates = useCallback((clientX: number, clientY: number) => {
-    if (!canvasRef.current) return { x: 0, y: 0 };
-
-    const rect = canvasRef.current.getBoundingClientRect();
-    return {
-      x: (clientX - rect.left) / rect.width,
-      y: (clientY - rect.top) / rect.height,
-    };
+  /** Map a client point onto the device screen, accounting for letterboxing. */
+  const mapPoint = useCallback((clientX: number, clientY: number, clamp: boolean) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return null;
+    return mapPointToContent(clientX, clientY, canvas.getBoundingClientRect(), contentSizeRef.current, clamp);
   }, []);
 
+  const cancelGesture = useCallback(() => {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+    gestureRef.current = null;
+    isLongPressRef.current = false;
+  }, []);
+
+  // Never leave a long-press timer running after unmount
+  useEffect(() => cancelGesture, [cancelGesture]);
+
   const handlePointerDown = useCallback((e: React.PointerEvent) => {
-    console.log(`[RemoteScreen] pointerDown: client=(${e.clientX.toFixed(0)}, ${e.clientY.toFixed(0)})`);
-    const coords = getNormalizedCoordinates(e.clientX, e.clientY);
-    pointerStartRef.current = {
-      x: e.clientX,
-      y: e.clientY,
-      time: Date.now(),
-    };
+    cancelGesture();
+    const start = mapPoint(e.clientX, e.clientY, false);
+    if (!start || !start.inside) return; // presses in the letterbox bars are ignored
+
+    // Keep receiving move/up even if the pointer leaves the canvas (WU-06)
+    try {
+      e.currentTarget.setPointerCapture?.(e.pointerId);
+    } catch { /* capture is best effort */ }
+
+    gestureRef.current = { x: e.clientX, y: e.clientY, nx: start.x, ny: start.y };
     isLongPressRef.current = false;
 
-    // Start long press timer
     longPressTimerRef.current = window.setTimeout(() => {
+      longPressTimerRef.current = null;
       isLongPressRef.current = true;
-      sendCommand({
-        type: 'LONG_PRESS',
-        x: coords.x,
-        y: coords.y,
-      });
+      sendCommand({ type: 'LONG_PRESS', x: start.x, y: start.y });
     }, LONG_PRESS_DELAY);
-  }, [getNormalizedCoordinates, sendCommand]);
+  }, [mapPoint, cancelGesture, sendCommand]);
 
   const handlePointerMove = useCallback((e: React.PointerEvent) => {
-    if (!pointerStartRef.current) return;
+    const g = gestureRef.current;
+    if (!g) return;
 
-    const dx = e.clientX - pointerStartRef.current.x;
-    const dy = e.clientY - pointerStartRef.current.y;
+    const dx = e.clientX - g.x;
+    const dy = e.clientY - g.y;
     const distance = Math.sqrt(dx * dx + dy * dy);
 
     // Cancel long press if moving
@@ -154,49 +172,35 @@ export function RemoteScreen({
   }, []);
 
   const handlePointerUp = useCallback((e: React.PointerEvent) => {
-    // Clear long press timer
-    if (longPressTimerRef.current) {
-      clearTimeout(longPressTimerRef.current);
-      longPressTimerRef.current = null;
-    }
+    const g = gestureRef.current;
+    const wasLongPress = isLongPressRef.current;
+    cancelGesture();
+    if (!g || wasLongPress) return;
 
-    if (!pointerStartRef.current || isLongPressRef.current) {
-      pointerStartRef.current = null;
-      return;
-    }
+    // The release may be outside the picture (pointer capture): clamp to the screen edge
+    const end = mapPoint(e.clientX, e.clientY, true);
+    if (!end) return;
 
-    const startCoords = getNormalizedCoordinates(
-      pointerStartRef.current.x,
-      pointerStartRef.current.y
-    );
-    const endCoords = getNormalizedCoordinates(e.clientX, e.clientY);
-
-    const dx = e.clientX - pointerStartRef.current.x;
-    const dy = e.clientY - pointerStartRef.current.y;
+    const dx = e.clientX - g.x;
+    const dy = e.clientY - g.y;
     const distance = Math.sqrt(dx * dx + dy * dy);
 
     if (distance > SWIPE_THRESHOLD) {
-      // Swipe
-      console.log(`[RemoteScreen] SWIPE: (${startCoords.x.toFixed(3)},${startCoords.y.toFixed(3)}) -> (${endCoords.x.toFixed(3)},${endCoords.y.toFixed(3)}), dist=${distance.toFixed(1)}`);
       sendCommand({
         type: 'SWIPE',
-        startX: startCoords.x,
-        startY: startCoords.y,
-        endX: endCoords.x,
-        endY: endCoords.y,
+        startX: g.nx,
+        startY: g.ny,
+        endX: end.x,
+        endY: end.y,
       });
     } else {
-      // Tap
-      console.log(`[RemoteScreen] TAP: normalized=(${startCoords.x.toFixed(3)}, ${startCoords.y.toFixed(3)}), dist=${distance.toFixed(1)}`);
       sendCommand({
         type: 'TAP',
-        x: startCoords.x,
-        y: startCoords.y,
+        x: g.nx,
+        y: g.ny,
       });
     }
-
-    pointerStartRef.current = null;
-  }, [getNormalizedCoordinates, sendCommand]);
+  }, [mapPoint, cancelGesture, sendCommand]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     // Map special keys to Android key codes
@@ -277,33 +281,66 @@ export function RemoteScreen({
     );
   }
 
-  // Determine aspect ratio and max size from video dimensions
-  const isLandscape = videoDimensions ? videoDimensions.width > videoDimensions.height : false;
-  const aspectRatio = videoDimensions
-    ? `${videoDimensions.width}/${videoDimensions.height}`
+  // Determine aspect ratio and max size from the current device screen
+  const isLandscape = contentSize ? contentSize.width > contentSize.height : false;
+  const aspectRatio = contentSize
+    ? `${contentSize.width}/${contentSize.height}`
     : '9/16'; // Default portrait until dimensions are known
+  const problem = captureError
+    ? `Screen capture failed on the device: ${captureError}`
+    : videoProblem;
 
   return (
     <div className="remote-screen remote-screen--connected">
-      <canvas
-        ref={canvasRef}
-        data-testid="video-canvas"
-        tabIndex={0}
-        onPointerDown={handlePointerDown}
-        onPointerMove={handlePointerMove}
-        onPointerUp={handlePointerUp}
-        onKeyDown={handleKeyDown}
+      <div
         style={{
+          position: 'relative',
           width: '100%',
           maxWidth: isLandscape ? '800px' : '400px',
-          maxHeight: '80vh',
-          aspectRatio,
-          backgroundColor: '#000',
-          outline: 'none',
-          cursor: 'pointer',
-          objectFit: 'contain',
         }}
-      />
+      >
+        <canvas
+          ref={canvasRef}
+          data-testid="video-canvas"
+          tabIndex={0}
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUp}
+          onPointerCancel={cancelGesture}
+          onLostPointerCapture={cancelGesture}
+          onKeyDown={handleKeyDown}
+          style={{
+            width: '100%',
+            maxHeight: '80vh',
+            aspectRatio,
+            backgroundColor: '#000',
+            outline: 'none',
+            cursor: 'pointer',
+            objectFit: 'contain',
+            touchAction: 'none',
+            display: 'block',
+          }}
+        />
+        {problem && (
+          <div
+            role="alert"
+            className="remote-screen__problem"
+            style={{
+              position: 'absolute',
+              left: 0,
+              right: 0,
+              top: 0,
+              padding: '8px 12px',
+              background: 'rgba(160, 30, 30, 0.9)',
+              color: '#fff',
+              fontSize: '13px',
+              pointerEvents: 'none',
+            }}
+          >
+            {problem}
+          </div>
+        )}
+      </div>
       <div
         style={{
           display: 'flex',
