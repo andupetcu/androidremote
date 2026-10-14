@@ -230,6 +230,29 @@ describe('FileBrowser', () => {
       });
     });
 
+    // KNOWN-BUG: WU-20 FileBrowser upload uses bare fetch() and sends no Authorization header
+    it.skip('sends the auth token with the upload request', async () => {
+      const user = userEvent.setup();
+      const file = new File(['hello'], 'hello.txt', { type: 'text/plain' });
+      localStorage.setItem('auth_token', 'jwt-123');
+      let authHeader: string | null = 'unset';
+
+      server.use(
+        http.post('/api/files/upload', ({ request }) => {
+          authHeader = request.headers.get('authorization');
+          return HttpResponse.json({ success: true });
+        })
+      );
+
+      render(<FileBrowser />);
+      await screen.findByText('photo.jpg');
+      await user.upload(screen.getByLabelText(/upload/i), file);
+
+      await waitFor(() => expect(authHeader).not.toBe('unset'));
+      expect(authHeader).toBe('Bearer jwt-123');
+      localStorage.removeItem('auth_token');
+    });
+
     it('shows upload progress', async () => {
       const user = userEvent.setup();
       const file = new File(['hello world content'], 'test.txt', { type: 'text/plain' });

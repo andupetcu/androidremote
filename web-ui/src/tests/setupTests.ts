@@ -3,7 +3,19 @@ import { afterAll, afterEach, beforeAll, vi } from 'vitest';
 import { server } from './mocks/server';
 
 // Establish API mocking before all tests
-beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
+beforeAll(() => {
+  server.listen({ onUnhandledRequest: 'error' });
+
+  // Node's fetch cannot resolve relative URLs ('/api/files'), unlike a browser.
+  // Resolve them against the jsdom origin so MSW's relative handlers match.
+  const msFetch = globalThis.fetch;
+  globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+    if (typeof input === 'string' && input.startsWith('/')) {
+      input = new URL(input, window.location.origin).toString();
+    }
+    return msFetch(input, init);
+  }) as typeof fetch;
+});
 
 // Reset handlers after each test
 afterEach(() => server.resetHandlers());
@@ -28,3 +40,30 @@ class MediaStreamMock {
 // Mock URL.createObjectURL
 URL.createObjectURL = vi.fn(() => 'mock-url');
 URL.revokeObjectURL = vi.fn();
+
+// jsdom has no canvas implementation: getContext() returns null, which makes
+// FrameDecoder throw. Provide a no-op 2D context stub.
+const ctx2dStub = new Proxy({}, {
+  get: (_t, prop) => (prop === 'canvas' ? undefined : vi.fn()),
+  set: () => true,
+});
+HTMLCanvasElement.prototype.getContext = vi.fn(() => ctx2dStub) as unknown as HTMLCanvasElement['getContext'];
+
+// Recent Node versions ship an experimental global localStorage that shadows
+// jsdom's and throws unless --localstorage-file is given. Install a plain
+// in-memory Storage so code under test (apiFetch reads auth_token) behaves
+// as in a browser.
+function createMemoryStorage(): Storage {
+  let store = new Map<string, string>();
+  return {
+    get length() { return store.size; },
+    clear: () => { store = new Map(); },
+    getItem: (k: string) => (store.has(k) ? store.get(k)! : null),
+    key: (i: number) => Array.from(store.keys())[i] ?? null,
+    removeItem: (k: string) => { store.delete(k); },
+    setItem: (k: string, v: string) => { store.set(k, String(v)); },
+  };
+}
+const memoryStorage = createMemoryStorage();
+Object.defineProperty(globalThis, 'localStorage', { value: memoryStorage, configurable: true, writable: true });
+Object.defineProperty(window, 'localStorage', { value: memoryStorage, configurable: true, writable: true });

@@ -18,6 +18,7 @@ describe('RemoteScreen', () => {
       dataChannel: { onmessage: null },
       error: null,
       sendCommand: mockSendCommand,
+      disconnect: vi.fn(),
     });
   });
 
@@ -71,7 +72,10 @@ describe('RemoteScreen', () => {
     it('displays canvas when connected', () => {
       render(<RemoteScreen deviceId="device-123" signalingUrl="ws://test/ws" />);
       expect(screen.getByTestId('video-canvas')).toBeInTheDocument();
-      expect(screen.getByText(/connected/i)).toBeInTheDocument();
+      // Connected view has no status text; it shows the canvas plus nav buttons
+      expect(screen.getByRole('button', { name: 'Back' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Home' })).toBeInTheDocument();
+      expect(screen.queryByText(/connecting to device/i)).not.toBeInTheDocument();
     });
 
     it('notifies parent of connection state changes', () => {
@@ -136,6 +140,32 @@ describe('RemoteScreen', () => {
           x: 0.5,
           y: 0.5,
         });
+      });
+    });
+  });
+
+  describe('Tap Interaction (letterboxed canvas)', () => {
+    // KNOWN-BUG: WU-05 tap/swipe coordinates are normalised against the element rect, ignoring object-fit:contain letterbox bars
+    it.skip('maps taps relative to the rendered video area, not the whole canvas element', async () => {
+      render(<RemoteScreen deviceId="device-123" signalingUrl="ws://test/ws" />);
+
+      const canvas = screen.getByTestId('video-canvas') as HTMLCanvasElement;
+      // Square video (1000x1000) letterboxed inside a 1000x2000 element:
+      // video occupies y in [500, 1500].
+      canvas.width = 1000;
+      canvas.height = 1000;
+      vi.spyOn(canvas, 'getBoundingClientRect').mockReturnValue({
+        left: 0, top: 0, width: 1000, height: 2000,
+        right: 1000, bottom: 2000, x: 0, y: 0,
+        toJSON: () => ({}),
+      });
+
+      // Tap on the top edge of the video picture
+      fireEvent.pointerDown(canvas, { clientX: 500, clientY: 500, pointerId: 1 });
+      fireEvent.pointerUp(canvas, { clientX: 500, clientY: 500, pointerId: 1 });
+
+      await waitFor(() => {
+        expect(mockSendCommand).toHaveBeenCalledWith({ type: 'TAP', x: 0.5, y: 0 });
       });
     });
   });
