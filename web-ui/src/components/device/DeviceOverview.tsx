@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useState, lazy, Suspense } from 'react';
+import { useInView } from '../../hooks/useInView';
 import { useTelemetry } from '../../hooks/useTelemetry';
 import { usePolicies } from '../../hooks/usePolicies';
 import { Badge } from '../ui/Badge';
@@ -7,6 +8,9 @@ import { Button } from '../ui/Button';
 import { API_BASE, apiFetch } from '../../utils/api';
 import type { Device } from '../../hooks/useDevices';
 import './DeviceComponents.css';
+
+// Charts load on demand: neither the code nor the history request happens until Trends is in view
+const DeviceTrends = lazy(() => import('./DeviceTrends'));
 
 interface DeviceOverviewProps {
   device: Device & { location?: { latitude: number; longitude: number; accuracy: number | null; source?: 'manual' | 'telemetry' } | null };
@@ -24,6 +28,7 @@ export function DeviceOverview({ device, onDeviceUpdate }: DeviceOverviewProps) 
   const [latValue, setLatValue] = useState(device.location?.latitude?.toString() ?? '');
   const [lngValue, setLngValue] = useState(device.location?.longitude?.toString() ?? '');
   const [savingLocation, setSavingLocation] = useState(false);
+  const [trendsRef, trendsVisible] = useInView<HTMLDivElement>();
 
   const formatDate = (timestamp: number | null) => {
     if (!timestamp) return 'Never';
@@ -342,6 +347,21 @@ export function DeviceOverview({ device, onDeviceUpdate }: DeviceOverviewProps) 
           </div>
         ) : (
           <p className="device-overview__empty">No telemetry data available</p>
+        )}
+      </div>
+
+      <div className="device-overview__section" ref={trendsRef}>
+        <h3>Trends</h3>
+        {trendsVisible ? (
+          <Suspense fallback={<Spinner size="sm" />}>
+            <DeviceTrends
+              deviceId={device.id}
+              storageTotal={telemetry?.storageTotal}
+              memoryTotal={telemetry?.memoryTotal}
+            />
+          </Suspense>
+        ) : (
+          <p className="device-overview__empty">Charts load when this section is in view.</p>
         )}
       </div>
     </div>

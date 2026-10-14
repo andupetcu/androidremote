@@ -4,7 +4,14 @@ import { server } from './mocks/server';
 
 // Establish API mocking before all tests
 beforeAll(() => {
-  server.listen({ onUnhandledRequest: 'error' });
+  // WebSocket upgrades (the shared admin socket opens one on mount) are not HTTP calls under
+  // test: ignore them. Every other unmatched request is still an error.
+  server.listen({
+    onUnhandledRequest(request, print) {
+      if (/^wss?:/.test(request.url) || request.headers.get('upgrade') === 'websocket') return;
+      print.error();
+    },
+  });
 
   // Node's fetch cannot resolve relative URLs ('/api/files'), unlike a browser.
   // Resolve them against the jsdom origin so MSW's relative handlers match.

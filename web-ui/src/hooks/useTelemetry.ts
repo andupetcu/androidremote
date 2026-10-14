@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
-import type { DeviceTelemetry, TelemetryHistory } from '../types/api';
+import type { DeviceTelemetry } from '../types/api';
+import { normalizeHistory, type HistoryPoint } from '../lib/telemetrySeries';
 import { API_BASE, apiFetch } from '../utils/api';
 import { fetchJsonShared } from '../lib/polling';
 import { usePolling } from './usePolling';
@@ -75,44 +76,49 @@ export function useTelemetry(deviceId: string): UseTelemetryResult {
 }
 
 interface UseTelemetryHistoryResult {
-  history: TelemetryHistory[];
+  points: HistoryPoint[];
   loading: boolean;
   error: string | null;
   refresh: () => Promise<void>;
 }
 
+/**
+ * Bounded, server-downsampled telemetry history for one device (WU-19).
+ * `window` must be stable between renders (memoize it); pass enabled=false to stay idle (lazy).
+ */
 export function useTelemetryHistory(
   deviceId: string,
-  from?: number,
-  to?: number
+  window: { from: number; to: number; bucket?: string; limit?: number },
+  enabled = true
 ): UseTelemetryHistoryResult {
-  const [history, setHistory] = useState<TelemetryHistory[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [points, setPoints] = useState<HistoryPoint[]>([]);
+  const [loading, setLoading] = useState(enabled);
   const [error, setError] = useState<string | null>(null);
+  const { from, to, bucket, limit } = window;
 
   const refresh = useCallback(async () => {
+    if (!enabled) return;
     try {
       setError(null);
-      const params = new URLSearchParams();
-      if (from) params.set('from', from.toString());
-      if (to) params.set('to', to.toString());
-      const url = `${API_BASE}/api/devices/${deviceId}/telemetry/history?${params}`;
-      const res = await apiFetch(url);
+      const params = new URLSearchParams({ from: String(from), to: String(to) });
+      if (bucket) params.set('bucket', bucket);
+      if (limit) params.set('limit', String(limit));
+      const res = await apiFetch(`${API_BASE}/api/devices/${deviceId}/telemetry/history?${params}`);
       if (!res.ok) throw new Error('Failed to fetch telemetry history');
-      const data = await res.json();
-      setHistory(data.history);
+      setPoints(normalizeHistory(await res.json()));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error');
     } finally {
       setLoading(false);
     }
-  }, [deviceId, from, to]);
+  }, [deviceId, from, to, bucket, limit, enabled]);
 
   useEffect(() => {
-    refresh();
-  }, [refresh]);
+    setLoading(enabled);
+    void refresh();
+  }, [refresh, enabled]);
 
-  return { history, loading, error, refresh };
+  return { points, loading, error, refresh };
 }
 
 interface UseAllTelemetryResult {
