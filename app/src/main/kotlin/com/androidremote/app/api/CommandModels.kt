@@ -106,7 +106,8 @@ data class AppUpdateEntry(
     val apkUrl: String,
     val latestVersionCode: Int,
     val latestVersionName: String? = null,
-    val installedVersionCode: Int? = null,
+    /** The installed version, as the server names it (`currentVersionCode`). */
+    val currentVersionCode: Int? = null,
     /** Hex SHA-256 of the APK (contract C6). */
     val sha256: String? = null
 )

@@ -416,7 +416,7 @@ class CommandPollingService : Service() {
                     update.apkUrl
                 }
 
-                Log.i(TAG, "Auto-updating ${update.packageName}: installed=${update.installedVersionCode} -> latest=${update.latestVersionCode}")
+                Log.i(TAG, "Auto-updating ${update.packageName}: installed=${update.currentVersionCode} -> latest=${update.latestVersionCode}")
 
                 val result = withTimeoutOrNull(CommandProcessor.INSTALL_TIMEOUT_MS) {
                     silentInstaller.installFromUrl(apkUrl, update.packageName, update.sha256, baseUrl)

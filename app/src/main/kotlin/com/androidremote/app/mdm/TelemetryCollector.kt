@@ -31,6 +31,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import com.androidremote.app.mdm.telemetry.BatchOutcome
 import com.androidremote.app.mdm.telemetry.KioskReport
+import com.androidremote.app.mdm.telemetry.TelemetryValues
 import com.androidremote.app.mdm.telemetry.LocationFix
 import com.androidremote.app.mdm.telemetry.LocationPolicy
 import com.androidremote.app.mdm.telemetry.ReportSchedule
@@ -98,7 +99,7 @@ class TelemetryCollector(
     fun collectTelemetry(): TelemetryData {
         return TelemetryData(
             // Battery
-            batteryLevel = safeCall { getBatteryLevel() },
+            batteryLevel = safeCall { TelemetryValues.batteryPercent(getBatteryLevel()) },
             batteryCharging = safeCall { isCharging() },
             batteryHealth = safeCall { getBatteryHealth() },
 
@@ -201,10 +202,7 @@ class TelemetryCollector(
     private suspend fun postSingle(client: HttpClient, base: String, sample: String): Boolean = try {
         val response = client.post(base) { contentType(ContentType.Application.Json); setBody(sample) }
         if (response.status.isSuccess()) {
-            runCatching {
-                val obj = json.parseToJsonElement(response.bodyAsText()) as? JsonObject
-                schedule.update(obj?.get("nextReportIn")?.jsonPrimitive?.longOrNull)
-            }
+            runCatching { schedule.update(TelemetryValues.nextReportMs(response.bodyAsText())) }
             true
         } else false
     } catch (e: CancellationException) { throw e } catch (e: Exception) { false }
@@ -215,7 +213,11 @@ class TelemetryCollector(
             setBody("{\"samples\":[" + samples.joinToString(",") + "]}")
         }
         when {
-            response.status.isSuccess() -> BatchOutcome.OK
+            response.status.isSuccess() -> {
+                // The batch answer carries nextReportIn (ms) too
+                runCatching { schedule.update(TelemetryValues.nextReportMs(response.bodyAsText())) }
+                BatchOutcome.OK
+            }
             response.status == HttpStatusCode.NotFound -> BatchOutcome.NOT_FOUND
             else -> BatchOutcome.FAILED
         }
@@ -288,7 +290,7 @@ class TelemetryCollector(
         val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
         @Suppress("DEPRECATION")
         val rssi = wifiManager.connectionInfo?.rssi ?: return null
-        return WifiManager.calculateSignalLevel(rssi, 100)
+        return TelemetryValues.signalDbm(rssi) // dBm, as the server's schema expects
     }
 
     // ==================== Storage ====================
