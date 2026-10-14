@@ -9,6 +9,8 @@ export const COMMAND_TYPES = [
   // App Management
   'UPDATE_APP', 'CLEAR_APP_DATA', 'CLEAR_APP_CACHE', 'ENABLE_APP', 'DISABLE_APP',
   'SET_DEFAULT_APP', 'LAUNCH_APP', 'STOP_APP',
+  // Kiosk, permissions, protected packages (contract C10)
+  'SET_KIOSK', 'GRANT_PERMISSION', 'SET_PROTECTED_PACKAGES',
   // Device Control
   'UNLOCK', 'SET_VOLUME', 'SET_BRIGHTNESS', 'TAKE_SCREENSHOT', 'SCREEN_ON', 'SCREEN_OFF',
   // Security
@@ -33,6 +35,20 @@ export function commandTtlMs(type: string): number {
   const short = Number(process.env.COMMAND_TTL_SHORT_MS) > 0 ? Number(process.env.COMMAND_TTL_SHORT_MS) : 15 * 60 * 1000;
   const long = Number(process.env.COMMAND_TTL_DEFAULT_MS) > 0 ? Number(process.env.COMMAND_TTL_DEFAULT_MS) : 7 * 24 * 60 * 60 * 1000;
   return COMMAND_SHORT_TTL_TYPES.includes(type) ? short : long;
+}
+
+/** Commands that legitimately run for a while on the device (download, install, transfer). */
+const LONG_RUNNING_TYPES: readonly string[] = ['INSTALL_APK', 'UPDATE_APP', 'DOWNLOAD_FILE', 'UPLOAD_FILE', 'ENCRYPT_DEVICE'];
+
+/**
+ * How long a command may stay in `executing` before the server gives up on it: twice the per-type
+ * execution timeout (5 min, or 15 min for long-running types). COMMAND_EXECUTING_TIMEOUT_MS overrides the
+ * per-type timeout for every type.
+ */
+export function executingTimeoutMs(type: string): number {
+  const override = Number(process.env.COMMAND_EXECUTING_TIMEOUT_MS);
+  const base = override > 0 ? override : LONG_RUNNING_TYPES.includes(type) ? 15 * 60_000 : 5 * 60_000;
+  return base * 2;
 }
 
 function addColumnIfMissing(db: Database.Database, table: string, column: string, ddl: string): void {
@@ -62,6 +78,7 @@ function migrateDeviceCommands(db: Database.Database, commandTypeCheck: string):
       error TEXT,
       lease_expires_at INTEGER,
       expires_at INTEGER,
+      executing_at INTEGER,
       FOREIGN KEY (device_id) REFERENCES devices(id) ON DELETE CASCADE
     )`;
 
@@ -78,6 +95,7 @@ function migrateDeviceCommands(db: Database.Database, commandTypeCheck: string):
     COMMAND_TYPES.every(t => sql.includes(`'${t}'`)) &&
     sql.includes(`'expired'`) &&
     sql.includes('lease_expires_at') &&
+    sql.includes('executing_at') &&
     sql.includes('expires_at');
   if (current) return;
 
@@ -86,7 +104,7 @@ function migrateDeviceCommands(db: Database.Database, commandTypeCheck: string):
     db.exec('DROP TABLE IF EXISTS device_commands_new');
     db.exec(createSql('device_commands_new'));
     const shared = ['id', 'device_id', 'type', 'payload', 'status', 'created_at', 'delivered_at', 'completed_at', 'error',
-      'lease_expires_at', 'expires_at'].filter(c => oldCols.has(c));
+      'lease_expires_at', 'expires_at', 'executing_at'].filter(c => oldCols.has(c));
     const list = shared.join(', ');
     const dropped = db.prepare(`SELECT COUNT(*) AS c FROM device_commands WHERE type NOT IN (${commandTypeCheck})`)
       .get() as { c: number };
@@ -364,6 +382,14 @@ export function initializeSchema(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_device_commands_status ON device_commands(device_id, status, lease_expires_at)
   `);
 
+  // SR-10: "recent first" listings (per device and global) and the retention sweep
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_device_commands_dev_created ON device_commands(device_id, created_at DESC)
+  `);
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_device_commands_created ON device_commands(created_at DESC)
+  `);
+
   // ============================================
   // Phase 1: Device Telemetry
   // ============================================
@@ -423,6 +449,13 @@ export function initializeSchema(db: Database.Database): void {
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_telemetry_history_device ON telemetry_history(device_id, recorded_at DESC)
   `);
+
+  // A retried batch must not duplicate history rows (INSERT OR IGNORE on this key).
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_telemetry_history_dedupe ON telemetry_history(device_id, recorded_at)
+  `);
+  // SR-08: last battery alert state (ok | low | critical), so alerts fire on transitions only.
+  addColumnIfMissing(db, 'device_telemetry', 'battery_alert_state', "TEXT DEFAULT 'ok'");
 
   // ============================================
   // Phase 2: Application Inventory
@@ -548,6 +581,10 @@ export function initializeSchema(db: Database.Database): void {
   `);
 
   db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_device_events_created ON device_events(created_at DESC)
+  `);
+
+  db.exec(`
     CREATE INDEX IF NOT EXISTS idx_device_events_unack ON device_events(acknowledged, severity) WHERE acknowledged = 0
   `);
 
@@ -622,6 +659,36 @@ export function initializeSchema(db: Database.Database): void {
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_audit_logs_action ON audit_logs(action)
   `);
+
+  // ============================================
+  // SS-09: revoked admin sessions (JWT jti). Rows can be dropped once the token would have expired anyway.
+  // ============================================
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS revoked_tokens (
+      jti TEXT PRIMARY KEY,
+      expires_at INTEGER NOT NULL
+    )
+  `);
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_revoked_tokens_expires ON revoked_tokens(expires_at)
+  `);
+
+  // SR-15: when the last device-offline event was raised for a device (compared with last_seen_at).
+  addColumnIfMissing(db, 'devices', 'offline_notified_at', 'INTEGER');
+}
+
+/** Delete finished commands (completed, failed, expired) older than the given number of days. */
+export function purgeFinishedCommands(db: Database.Database, olderThanDays: number = 30): number {
+  const cutoff = Date.now() - olderThanDays * 24 * 60 * 60 * 1000;
+  return db.prepare(`
+    DELETE FROM device_commands
+    WHERE status IN ('completed', 'failed', 'expired') AND created_at < ?
+  `).run(cutoff).changes;
+}
+
+/** Delete revoked-token rows whose token has expired anyway. */
+export function purgeExpiredRevokedTokens(db: Database.Database): number {
+  return db.prepare('DELETE FROM revoked_tokens WHERE expires_at < ?').run(Date.now()).changes;
 }
 
 /**

@@ -1,8 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
-import jwt from 'jsonwebtoken';
 import { deviceStore } from '../services/deviceStore';
 import { fileTransferStore } from '../services/fileTransferStore';
-import { authMiddleware, getJwtSecret } from './auth';
+import { authMiddleware, verifyAdminToken } from './auth';
 
 /**
  * Authentication gate for everything under /api (mounted with `app.use('/api', apiGate)`).
@@ -28,6 +27,9 @@ export const PUBLIC_ROUTES: PublicRoute[] = [
   { method: 'POST', pattern: /^\/enroll\/device$/ },
   // Deployment one-liners download the agent/installer without credentials.
   { method: 'GET', pattern: /^\/downloads\/(agent|installer)\/[^/]+$/ },
+  // Android QR provisioning: a factory-fresh device downloads the agent APK without any credential.
+  // Serves only the configured agent package (routes/provisioning.ts); every other upload needs a token.
+  { method: 'GET', pattern: /^\/provisioning\/agent\.apk$/ },
 ];
 
 interface DeviceRoute {
@@ -47,6 +49,7 @@ export const DEVICE_ROUTES: DeviceRoute[] = [
   { method: 'GET', pattern: new RegExp(`^/devices/${ID}/commands/pending$`), deviceOf: fromGroup1 },
   { method: 'PATCH', pattern: new RegExp(`^/devices/${ID}/commands/[^/]+$`), allowAdmin: true, deviceOf: fromGroup1 },
   { method: 'POST', pattern: new RegExp(`^/devices/${ID}/telemetry$`), deviceOf: fromGroup1 },
+  { method: 'POST', pattern: new RegExp(`^/devices/${ID}/telemetry/batch$`), deviceOf: fromGroup1 },
   { method: 'POST', pattern: new RegExp(`^/devices/${ID}/apps$`), deviceOf: fromGroup1 },
   { method: 'POST', pattern: new RegExp(`^/devices/${ID}/events$`), deviceOf: fromGroup1 },
   { method: 'GET', pattern: new RegExp(`^/devices/${ID}/app-updates$`), allowAdmin: true, deviceOf: fromGroup1 },
@@ -80,7 +83,9 @@ function adminJwtOk(req: Request): boolean {
   const auth = req.headers.authorization;
   if (!auth || !auth.startsWith('Bearer ')) return false;
   try {
-    req.user = jwt.verify(auth.slice(7), getJwtSecret());
+    const payload = verifyAdminToken(auth.slice(7));
+    if (!payload) return false;
+    req.user = payload;
     return true;
   } catch {
     return false;

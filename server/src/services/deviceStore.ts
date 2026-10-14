@@ -102,6 +102,12 @@ interface DeviceRow {
 /**
  * Device store - manages enrolled devices in the database
  */
+/** A device that has not reported for this long counts as offline (default 2 minutes). */
+export function offlineAfterMs(): number {
+  const v = Number(process.env.DEVICE_OFFLINE_AFTER_MS);
+  return v > 0 ? v : 2 * 60 * 1000;
+}
+
 class DeviceStore {
   private db: Database.Database | null = null;
   private initialized = false;
@@ -235,6 +241,43 @@ class DeviceStore {
     `).run(status, status, Date.now(), id);
 
     return result.changes > 0;
+  }
+
+  /**
+   * Record that the device just talked to the server. Reports whether it counted as offline before
+   * (stored status offline, never seen, or silent for longer than the offline threshold), so the caller
+   * can raise one device-online event. `found` is false for an unknown device.
+   */
+  markSeen(id: string): { found: boolean; wasOffline: boolean } {
+    this.initialize();
+    const db = this.getDb();
+    const row = db.prepare('SELECT status, last_seen_at FROM devices WHERE id = ?').get(id) as
+      { status: string; last_seen_at: number | null } | undefined;
+    if (!row) return { found: false, wasOffline: false };
+    const now = Date.now();
+    const wasOffline = row.status !== 'online' || row.last_seen_at === null || now - row.last_seen_at >= offlineAfterMs();
+    db.prepare(`UPDATE devices SET last_seen_at = ?, status = 'online' WHERE id = ?`).run(now, id);
+    return { found: true, wasOffline };
+  }
+
+  /**
+   * Devices that were seen at some point, have been silent for longer than the offline threshold and
+   * have not had a device-offline event for that silence yet.
+   */
+  findNewlyOffline(now: number = Date.now()): Array<{ id: string; name: string; model: string | null; lastSeenAt: number }> {
+    this.initialize();
+    const rows = this.getDb().prepare(`
+      SELECT id, name, model, last_seen_at FROM devices
+      WHERE last_seen_at IS NOT NULL AND last_seen_at < ?
+        AND (offline_notified_at IS NULL OR offline_notified_at < last_seen_at)
+    `).all(now - offlineAfterMs()) as Array<{ id: string; name: string; model: string | null; last_seen_at: number }>;
+    return rows.map(r => ({ id: r.id, name: r.name, model: r.model, lastSeenAt: r.last_seen_at }));
+  }
+
+  /** Mark a device offline after its device-offline event was raised. Keeps last_seen_at. */
+  markOfflineNotified(id: string, now: number = Date.now()): void {
+    this.initialize();
+    this.getDb().prepare(`UPDATE devices SET status = 'offline', offline_notified_at = ? WHERE id = ?`).run(now, id);
   }
 
   /**
@@ -446,7 +489,7 @@ class DeviceStore {
   private rowToDevice(row: DeviceRow): Device {
     // Compute online status based on last seen time
     // Device is online if seen within last 2 minutes (120,000 ms)
-    const ONLINE_THRESHOLD_MS = 2 * 60 * 1000;
+    const ONLINE_THRESHOLD_MS = offlineAfterMs();
     const now = Date.now();
     const isOnline = row.last_seen_at !== null &&
       (now - row.last_seen_at) < ONLINE_THRESHOLD_MS;

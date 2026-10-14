@@ -78,3 +78,43 @@ export class HashingDiskStorage implements StorageEngine {
     fs.unlink(p, err => cb(err && (err as NodeJS.ErrnoException).code !== 'ENOENT' ? err : null));
   }
 }
+
+/**
+ * Same as HashingDiskStorage, but the directory is resolved (and created) on the first upload, so importing
+ * the app does not create directories.
+ */
+export class LazyHashingDiskStorage implements StorageEngine {
+  private inner: HashingDiskStorage | null = null;
+  private dir: string | null = null;
+
+  constructor(private readonly rootDir: () => string) {}
+
+  private engine(): HashingDiskStorage {
+    const dir = this.rootDir();
+    if (!this.inner || this.dir !== dir) {
+      this.inner = new HashingDiskStorage(dir);
+      this.dir = dir;
+    }
+    return this.inner;
+  }
+
+  _handleFile(req: Request, file: Express.Multer.File, cb: Parameters<HashingDiskStorage['_handleFile']>[2]): void {
+    this.engine()._handleFile(req, file, cb);
+  }
+
+  _removeFile(req: Request, file: Express.Multer.File, cb: (error: Error | null) => void): void {
+    this.engine()._removeFile(req, file, cb);
+  }
+}
+
+/** Move a finished upload into place: rename, or copy then delete across file systems. */
+export function moveFile(from: string, to: string): void {
+  fs.mkdirSync(path.dirname(to), { recursive: true });
+  try {
+    fs.renameSync(from, to);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'EXDEV') throw err;
+    fs.copyFileSync(from, to);
+    fs.unlinkSync(from);
+  }
+}

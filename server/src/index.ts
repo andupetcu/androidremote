@@ -1,7 +1,11 @@
 import { createServer } from 'http';
 import { app } from './app';
-import { setupSignaling } from './signaling';
+import { setupSignaling, closeAllWebSocketServers } from './signaling';
+import { shutdownRelay } from './relay';
 import { ensureInitialAdminPassword } from './middleware/auth';
+import { getDatabase, closeDatabase } from './db/connection';
+import { startMaintenance } from './services/maintenance';
+import { createShutdown, installProcessHandlers } from './shutdown';
 
 const PORT = process.env.PORT || 7899;
 
@@ -29,6 +33,22 @@ const server = createServer(app);
 
 // Attach WebSocket signaling
 setupSignaling(server);
+
+// Retention purges, offline detection, command expiry (SR-08, SR-15)
+const maintenance = startMaintenance({ db: getDatabase() });
+
+// Graceful shutdown and process-level error handling (SR-13)
+const shutdown = createShutdown({
+  server,
+  stopJobs: () => maintenance.stop(),
+  closeWebSockets: () => {
+    shutdownRelay();
+    closeAllWebSocketServers();
+  },
+  closeDatabase: closeDatabase,
+  exit: code => process.exit(code),
+});
+installProcessHandlers(process, shutdown);
 
 server.listen(PORT, () => {
   // eslint-disable-next-line no-console

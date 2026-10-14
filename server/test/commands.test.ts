@@ -83,7 +83,7 @@ describe('Device Commands API', () => {
         .post('/api/devices/test-device/commands').set('Authorization', adminAuthHeader())
         .send({
           type: 'WIPE',
-          payload: { keepData: false },
+          payload: { confirm: 'test-device' },
         });
 
       expect(response.status).toBe(201);

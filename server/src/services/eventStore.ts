@@ -150,6 +150,25 @@ class EventStore {
     return this.rowToEvent(row);
   }
 
+  /** Number of events matching the filters (same filters as getAllEvents / getDeviceEvents, no paging). */
+  countEvents(options?: {
+    deviceId?: string;
+    severity?: EventSeverity;
+    acknowledged?: boolean;
+    from?: number;
+    to?: number;
+  }): number {
+    this.initialize();
+    let query = 'SELECT COUNT(*) AS c FROM device_events WHERE 1=1';
+    const params: (string | number)[] = [];
+    if (options?.deviceId) { query += ' AND device_id = ?'; params.push(options.deviceId); }
+    if (options?.severity) { query += ' AND severity = ?'; params.push(options.severity); }
+    if (options?.acknowledged !== undefined) { query += ' AND acknowledged = ?'; params.push(options.acknowledged ? 1 : 0); }
+    if (options?.from) { query += ' AND created_at >= ?'; params.push(options.from); }
+    if (options?.to) { query += ' AND created_at <= ?'; params.push(options.to); }
+    return (this.getDb().prepare(query).get(...params) as { c: number }).c;
+  }
+
   /**
    * Get events for a device
    */

@@ -2,6 +2,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { Server, IncomingMessage } from 'http';
 import type Database from 'better-sqlite3';
 import { eventStore, DeviceEvent } from './services/eventStore';
+import { commandStore } from './services/commandStore';
 import { wsTicketStore } from './services/wsTicketStore';
 import { validateSessionToken } from './db/schema';
 import { getDatabase } from './db/connection';
@@ -89,13 +90,23 @@ const adminConnections = new Map<WebSocket, AdminSubscription>();
 
 // Subscribe to event store for broadcasting
 let eventUnsubscribe: (() => void) | null = null;
+let commandUnsubscribe: (() => void) | null = null;
 
 function setupEventBroadcasting(): void {
-  if (eventUnsubscribe) return;
-
-  eventUnsubscribe = eventStore.subscribe((event: DeviceEvent) => {
-    broadcastEventToAdmins(event);
-  });
+  if (!eventUnsubscribe) {
+    eventUnsubscribe = eventStore.subscribe((event: DeviceEvent) => {
+      broadcastEventToAdmins(event);
+    });
+  }
+  // Every command state change reaches the admin UI as { type: 'command-update', deviceId, command }
+  if (!commandUnsubscribe) {
+    commandUnsubscribe = commandStore.subscribe((command) => {
+      for (const [ws, sub] of adminConnections) {
+        if (sub.deviceIds.size > 0 && !sub.deviceIds.has(command.deviceId)) continue;
+        send(ws, { type: 'command-update', deviceId: command.deviceId, command });
+      }
+    });
+  }
 }
 
 function broadcastEventToAdmins(event: DeviceEvent): void {
@@ -204,6 +215,18 @@ function handleAdminMessage(ws: WebSocket, message: AdminMessage, subscription: 
   }
 }
 
+const openServers: WebSocketServer[] = [];
+
+/** Close every WebSocket server created by setupSignaling, and their clients (graceful shutdown, SR-13). */
+export function closeAllWebSocketServers(): void {
+  for (const wss of openServers.splice(0)) {
+    for (const client of wss.clients) {
+      try { client.close(1001, 'Server shutting down'); } catch { /* already closed */ }
+    }
+    wss.close();
+  }
+}
+
 export function setupSignaling(server: Server, opts: { db?: Database.Database } = {}): WebSocketServer {
   signalingDb = opts.db ?? null;
   // Setup event broadcasting
@@ -215,6 +238,7 @@ export function setupSignaling(server: Server, opts: { db?: Database.Database } 
   const relayWss = createRelayWss({ db: opts.db });
   startPingSweep(wss);
   startPingSweep(adminWss);
+  openServers.push(wss, adminWss, relayWss);
   server.on('close', () => {
     wss.close();
     adminWss.close();

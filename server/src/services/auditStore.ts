@@ -18,6 +18,7 @@ export type AuditAction =
   | 'command.failed'
   | 'command.cancelled'
   | 'command.batch_queued'
+  | 'command.timed_out'
   // Policies
   | 'policy.created'
   | 'policy.updated'
@@ -46,6 +47,8 @@ export type AuditAction =
   // Admin
   | 'admin.login'
   | 'admin.logout'
+  | 'admin.login_failed'
+  | 'admin.password_changed'
   | 'token.created'
   | 'token.revoked'
   // Events
@@ -59,7 +62,8 @@ export type ResourceType =
   | 'app'
   | 'token'
   | 'file'
-  | 'event';
+  | 'event'
+  | 'session';
 
 export interface AuditLog {
   id: string;
@@ -237,6 +241,29 @@ class AuditStore {
 
     const rows = db.prepare(query).all(...params) as AuditRow[];
     return rows.map(row => this.rowToLog(row));
+  }
+
+  /** Number of audit entries matching the filters (no paging). */
+  countLogs(options?: {
+    actorType?: ActorType;
+    actorId?: string;
+    action?: AuditAction;
+    resourceType?: ResourceType;
+    resourceId?: string;
+    from?: number;
+    to?: number;
+  }): number {
+    this.initialize();
+    let query = 'SELECT COUNT(*) AS c FROM audit_logs WHERE 1=1';
+    const params: (string | number)[] = [];
+    if (options?.actorType) { query += ' AND actor_type = ?'; params.push(options.actorType); }
+    if (options?.actorId) { query += ' AND actor_id = ?'; params.push(options.actorId); }
+    if (options?.action) { query += ' AND action = ?'; params.push(options.action); }
+    if (options?.resourceType) { query += ' AND resource_type = ?'; params.push(options.resourceType); }
+    if (options?.resourceId) { query += ' AND resource_id = ?'; params.push(options.resourceId); }
+    if (options?.from) { query += ' AND timestamp >= ?'; params.push(options.from); }
+    if (options?.to) { query += ' AND timestamp <= ?'; params.push(options.to); }
+    return (this.getDb().prepare(query).get(...params) as { c: number }).c;
   }
 
   /**

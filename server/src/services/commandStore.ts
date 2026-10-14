@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 import type Database from 'better-sqlite3';
 import { getDatabase } from '../db/connection';
-import { initializeSchema, COMMAND_TYPES, commandTtlMs } from '../db/schema';
+import { initializeSchema, COMMAND_TYPES, commandTtlMs, executingTimeoutMs } from '../db/schema';
 
 export type CommandType = typeof COMMAND_TYPES[number];
 
@@ -26,6 +26,9 @@ export interface DeviceCommand {
   leaseExpiresAt?: number;
   expiresAt?: number;
 }
+
+/** Called after every command state change (queued, delivered, executing, completed, failed, expired, cancelled). */
+export type CommandListener = (command: DeviceCommand) => void;
 
 /** How a newly queued command replaces older pending ones of the same device (SR-18). */
 export interface QueueOptions {
@@ -64,6 +67,7 @@ interface CommandRow {
   error: string | null;
   lease_expires_at: number | null;
   expires_at: number | null;
+  executing_at: number | null;
 }
 
 /** Redelivery lease (C5). */
@@ -75,6 +79,20 @@ function leaseMs(): number {
 class CommandStore {
   private db: Database.Database | null = null;
   private initialized = false;
+  private listeners: CommandListener[] = [];
+
+  /** Subscribe to command state changes (the admin socket forwards them as `command-update`). */
+  subscribe(listener: CommandListener): () => void {
+    this.listeners.push(listener);
+    return () => { this.listeners = this.listeners.filter(l => l !== listener); };
+  }
+
+  private notify(command: DeviceCommand | null): void {
+    if (!command) return;
+    for (const l of this.listeners) {
+      try { l(command); } catch (err) { console.error('[commandStore] listener failed:', err); }
+    }
+  }
 
   private getDb(): Database.Database {
     if (!this.db) {
@@ -152,7 +170,7 @@ class CommandStore {
       `).run(id, deviceId, type, payloadJson, now, expiresAt);
     })();
 
-    return {
+    const queued: DeviceCommand = {
       id,
       deviceId,
       type,
@@ -161,6 +179,8 @@ class CommandStore {
       createdAt: now,
       expiresAt,
     };
+    this.notify(queued);
+    return queued;
   }
 
   /**
@@ -171,13 +191,44 @@ class CommandStore {
     this.initialize();
     const db = this.getDb();
     const now = Date.now();
-    const sql = `
-      UPDATE device_commands SET status = 'expired', completed_at = ?
-      WHERE status IN ('pending', 'delivered') AND expires_at IS NOT NULL AND expires_at <= ?
-    `;
-    return (deviceId
-      ? db.prepare(sql + ' AND device_id = ?').run(now, now, deviceId)
-      : db.prepare(sql).run(now, now)).changes;
+    const where = `status IN ('pending', 'delivered') AND expires_at IS NOT NULL AND expires_at <= ?`;
+    const scope = deviceId ? ' AND device_id = ?' : '';
+    const args = deviceId ? [now, deviceId] : [now];
+    const ids = (db.prepare(`SELECT id FROM device_commands WHERE ${where}${scope}`).all(...args) as Array<{ id: string }>)
+      .map(r => r.id);
+    if (ids.length === 0) return 0;
+    const changes = db.prepare(`
+      UPDATE device_commands SET status = 'expired', completed_at = ? WHERE ${where}${scope}
+    `).run(now, ...args).changes;
+    for (const id of ids) this.notify(this.getCommand(id));
+    return changes;
+  }
+
+  /**
+   * Fail commands that have been `executing` for longer than twice their per-type timeout: the device
+   * most likely died or lost the command mid-run. The start time is `executing_at`, falling back to
+   * `delivered_at` and `created_at` for rows from before that column existed. Returns the failed commands.
+   */
+  expireStuckExecuting(): DeviceCommand[] {
+    this.initialize();
+    const db = this.getDb();
+    const now = Date.now();
+    const rows = db.prepare(`SELECT * FROM device_commands WHERE status = 'executing'`).all() as CommandRow[];
+    const failed: DeviceCommand[] = [];
+    const mark = db.prepare(`
+      UPDATE device_commands SET status = 'failed', completed_at = ?, error = ?
+      WHERE id = ? AND status = 'executing'
+    `);
+    for (const row of rows) {
+      const since = row.executing_at ?? row.delivered_at ?? row.created_at;
+      if (now - since <= executingTimeoutMs(row.type)) continue;
+      const minutes = Math.round((now - since) / 60_000);
+      if (mark.run(now, `timed out while executing (no result after ${minutes} min)`, row.id).changes > 0) {
+        const cmd = this.getCommand(row.id);
+        if (cmd) { failed.push(cmd); this.notify(cmd); }
+      }
+    }
+    return failed;
   }
 
   /**
@@ -188,7 +239,7 @@ class CommandStore {
     this.initialize();
     const db = this.getDb();
 
-    return db.transaction(() => {
+    const delivered = db.transaction(() => {
       this.expireStale(deviceId);
 
       const now = Date.now();
@@ -197,7 +248,7 @@ class CommandStore {
         WHERE device_id = ?
           AND (status = 'pending'
                OR (status = 'delivered' AND (lease_expires_at IS NULL OR lease_expires_at <= ?)))
-        ORDER BY created_at ASC
+        ORDER BY created_at ASC, rowid ASC
       `).all(deviceId, now) as CommandRow[];
 
       if (rows.length === 0) {
@@ -219,6 +270,8 @@ class CommandStore {
         leaseExpiresAt: lease,
       }));
     })();
+    for (const cmd of delivered) this.notify(cmd);
+    return delivered;
   }
 
   /**
@@ -268,22 +321,22 @@ class CommandStore {
     const scope = deviceId !== undefined ? ' AND device_id = ?' : '';
     const scopeArgs = deviceId !== undefined ? [deviceId] : [];
 
+    let changed: boolean;
     if (status === 'executing') {
-      const result = db.prepare(`
+      changed = db.prepare(`
         UPDATE device_commands
-        SET status = 'executing'
+        SET status = 'executing', executing_at = ?
         WHERE id = ? AND status IN ('pending', 'delivered')${scope}
-      `).run(commandId, ...scopeArgs);
-      return result.changes > 0;
+      `).run(now, commandId, ...scopeArgs).changes > 0;
+    } else {
+      changed = db.prepare(`
+        UPDATE device_commands
+        SET status = ?, completed_at = ?, error = ?
+        WHERE id = ? AND status IN ('pending', 'delivered', 'executing')${scope}
+      `).run(status, now, error || null, commandId, ...scopeArgs).changes > 0;
     }
-
-    const result = db.prepare(`
-      UPDATE device_commands
-      SET status = ?, completed_at = ?, error = ?
-      WHERE id = ? AND status IN ('pending', 'delivered', 'executing')${scope}
-    `).run(status, now, error || null, commandId, ...scopeArgs);
-
-    return result.changes > 0;
+    if (changed) this.notify(this.getCommand(commandId));
+    return changed;
   }
 
   /**
@@ -359,11 +412,13 @@ class CommandStore {
     this.initialize();
     const db = this.getDb();
 
+    const before = this.getCommand(commandId);
     const result = db.prepare(`
       DELETE FROM device_commands
       WHERE id = ? AND status = 'pending'${deviceId !== undefined ? ' AND device_id = ?' : ''}
     `).run(commandId, ...(deviceId !== undefined ? [deviceId] : []));
 
+    if (result.changes > 0 && before) this.notify({ ...before, status: 'expired', error: 'cancelled' });
     return result.changes > 0;
   }
 

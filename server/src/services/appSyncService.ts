@@ -1,5 +1,6 @@
 import { policyStore, Policy, RequiredAppConfig } from './policyStore';
 import { commandStore } from './commandStore';
+import { settingsStore } from './settingsStore';
 import { getAppPackageByName, ensurePackageSha256, AppPackage } from './appPackageStore';
 
 /**
@@ -86,9 +87,14 @@ export function getRequiredAppsStatus(policyId: string): {
  * so a device that was offline during several edits receives one command (SR-18).
  */
 export function queueSyncPolicy(deviceId: string, policy: Policy) {
-  return commandStore.queueCommand(deviceId, 'SYNC_POLICY', {
+  const payload: Record<string, unknown> = {
     silentMode: policy.silentMode,
     kioskMode: policy.kioskMode,
     requiredApps: policy.requiredApps || [],
-  }, { supersede: 'type' });
+  };
+  // Optional maintenance window for app updates, "HH:mm" (AM-08). Absent means install immediately.
+  const start = settingsStore.get('updateWindowStart');
+  const end = settingsStore.get('updateWindowEnd');
+  if (start && end) payload.updateWindow = { start, end };
+  return commandStore.queueCommand(deviceId, 'SYNC_POLICY', payload, { supersede: 'type' });
 }

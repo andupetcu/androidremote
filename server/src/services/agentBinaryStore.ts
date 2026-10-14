@@ -6,6 +6,7 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import { moveFile } from './uploadStorage';
 
 export interface AgentBinaryInfo {
   os: string;           // "linux" | "windows"
@@ -21,22 +22,25 @@ interface Manifest {
   binaries: AgentBinaryInfo[];
 }
 
-const BINARIES_DIR = path.join(__dirname, '..', '..', 'agent-binaries');
-const MANIFEST_PATH = path.join(BINARIES_DIR, 'manifest.json');
+/** Where agent binaries live. AGENT_BINARIES_DIR overrides the default server/agent-binaries (read per call). */
+export function binariesDir(): string {
+  return process.env.AGENT_BINARIES_DIR || path.join(__dirname, '..', '..', 'agent-binaries');
+}
+const manifestPath = () => path.join(binariesDir(), 'manifest.json');
 
 function ensureDir(): void {
-  if (!fs.existsSync(BINARIES_DIR)) {
-    fs.mkdirSync(BINARIES_DIR, { recursive: true });
+  if (!fs.existsSync(binariesDir())) {
+    fs.mkdirSync(binariesDir(), { recursive: true });
   }
 }
 
 function loadManifest(): Manifest {
   ensureDir();
-  if (!fs.existsSync(MANIFEST_PATH)) {
+  if (!fs.existsSync(manifestPath())) {
     return { binaries: [] };
   }
   try {
-    const data = fs.readFileSync(MANIFEST_PATH, 'utf-8');
+    const data = fs.readFileSync(manifestPath(), 'utf-8');
     return JSON.parse(data);
   } catch {
     return { binaries: [] };
@@ -45,7 +49,7 @@ function loadManifest(): Manifest {
 
 function saveManifest(manifest: Manifest): void {
   ensureDir();
-  fs.writeFileSync(MANIFEST_PATH, JSON.stringify(manifest, null, 2));
+  fs.writeFileSync(manifestPath(), JSON.stringify(manifest, null, 2));
 }
 
 /**
@@ -65,7 +69,7 @@ export function getLatest(os: string, arch: string): AgentBinaryInfo | null {
  * Get the file path for a binary.
  */
 export function getBinaryPath(info: AgentBinaryInfo): string {
-  return path.join(BINARIES_DIR, info.filename);
+  return path.join(binariesDir(), info.filename);
 }
 
 /**
@@ -82,7 +86,7 @@ export function addBinary(
 
   const ext = os === 'windows' ? '.exe' : '';
   const filename = `android-remote-agent-${os}-${arch}-v${version}${ext}`;
-  const filePath = path.join(BINARIES_DIR, filename);
+  const filePath = path.join(binariesDir(), filename);
 
   // Compute SHA-256
   const hash = crypto.createHash('sha256').update(data).digest('hex');
@@ -112,6 +116,33 @@ export function addBinary(
 }
 
 /**
+ * Store a new agent binary from a file already on disk (streamed upload, hash computed while streaming).
+ * The file is moved into place; nothing is read into memory.
+ */
+export function addBinaryFromFile(
+  os: string,
+  arch: string,
+  version: string,
+  tmpPath: string,
+  sha256: string,
+  size: number,
+): AgentBinaryInfo {
+  ensureDir();
+  const ext = os === 'windows' ? '.exe' : '';
+  const filename = `android-remote-agent-${os}-${arch}-v${version}${ext}`;
+  moveFile(tmpPath, path.join(binariesDir(), filename));
+
+  const info: AgentBinaryInfo = { os, arch, version, filename, sha256, size, uploadedAt: new Date().toISOString() };
+  const manifest = loadManifest();
+  manifest.binaries = manifest.binaries.filter(
+    (b) => !(b.os === os && b.arch === arch && b.version === version),
+  );
+  manifest.binaries.push(info);
+  saveManifest(manifest);
+  return info;
+}
+
+/**
  * List all stored binaries.
  */
 export function listBinaries(): AgentBinaryInfo[] {
@@ -136,5 +167,6 @@ export const agentBinaryStore = {
   getLatest,
   getBinaryPath,
   addBinary,
+  addBinaryFromFile,
   listBinaries,
 };

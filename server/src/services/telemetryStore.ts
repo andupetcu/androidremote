@@ -41,26 +41,68 @@ export interface DeviceTelemetry {
   updatedAt: number;
 }
 
+/**
+ * A telemetry report. A key that is present with `null` clears the stored value; an absent key keeps it.
+ */
 export interface TelemetryInput {
   deviceId: string;
-  batteryLevel?: number;
-  batteryCharging?: boolean;
-  batteryHealth?: string;
-  networkType?: string;
-  networkSsid?: string;
-  ipAddress?: string;
-  signalStrength?: number;
-  storageUsedBytes?: number;
-  storageTotalBytes?: number;
-  memoryUsedBytes?: number;
-  memoryTotalBytes?: number;
-  screenOn?: boolean;
-  brightness?: number;
-  latitude?: number;
-  longitude?: number;
-  locationAccuracy?: number;
-  uptimeMs?: number;
-  androidSecurityPatch?: string;
+  batteryLevel?: number | null;
+  batteryCharging?: boolean | null;
+  batteryHealth?: string | null;
+  networkType?: string | null;
+  networkSsid?: string | null;
+  ipAddress?: string | null;
+  signalStrength?: number | null;
+  storageUsedBytes?: number | null;
+  storageTotalBytes?: number | null;
+  memoryUsedBytes?: number | null;
+  memoryTotalBytes?: number | null;
+  screenOn?: boolean | null;
+  brightness?: number | null;
+  latitude?: number | null;
+  longitude?: number | null;
+  locationAccuracy?: number | null;
+  uptimeMs?: number | null;
+  androidSecurityPatch?: string | null;
+  /** Epoch ms when the device took the sample (buffered samples). Used when plausible. */
+  collectedAt?: number;
+}
+
+export type BatteryAlertState = 'ok' | 'low' | 'critical';
+export type BatteryAlert = 'battery-low' | 'battery-critical';
+
+/** Thresholds with hysteresis (SR-08): low below 20 until 25 is reached; critical below 5 until 10 is reached. */
+export function nextBatteryState(prev: BatteryAlertState, level: number): { state: BatteryAlertState; alert: BatteryAlert | null } {
+  let state = prev;
+  if (level < 5) {
+    state = 'critical';
+  } else if (prev === 'critical') {
+    if (level >= 10) state = level >= 25 ? 'ok' : 'low';
+  } else if (level < 20) {
+    state = 'low';
+  } else if (prev === 'low' && level >= 25) {
+    state = 'ok';
+  }
+  let alert: BatteryAlert | null = null;
+  if (state === 'critical' && prev !== 'critical') alert = 'battery-critical';
+  else if (state === 'low' && prev === 'ok') alert = 'battery-low';
+  return { state, alert };
+}
+
+export const MAX_HISTORY_POINTS = 5000;
+const DEFAULT_HISTORY_POINTS = 1000;
+const MAX_SAMPLE_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+const MAX_CLOCK_SKEW_MS = 60 * 1000;
+
+/** Bucket width for history downsampling: minute|hour|day or `<n>m|h|d` (1 minute to 7 days). Null if invalid. */
+export function parseBucketMs(raw: string): number | null {
+  const named: Record<string, number> = { minute: 60_000, hour: 3_600_000, day: 86_400_000 };
+  if (raw in named) return named[raw];
+  const m = /^(\d{1,4})([mhd])$/.exec(raw);
+  if (!m) return null;
+  const unit = { m: 60_000, h: 3_600_000, d: 86_400_000 }[m[2] as 'm' | 'h' | 'd'];
+  const ms = parseInt(m[1], 10) * unit;
+  return ms >= 60_000 && ms <= 7 * 86_400_000 ? ms : null;
 }
 
 export interface TelemetryDataPoint {
@@ -104,6 +146,27 @@ interface HistoryRow {
   recorded_at: number;
 }
 
+const FIELDS: Array<[keyof TelemetryInput, string, 'num' | 'str' | 'bool']> = [
+  ['batteryLevel', 'battery_level', 'num'],
+  ['batteryCharging', 'battery_charging', 'bool'],
+  ['batteryHealth', 'battery_health', 'str'],
+  ['networkType', 'network_type', 'str'],
+  ['networkSsid', 'network_ssid', 'str'],
+  ['ipAddress', 'ip_address', 'str'],
+  ['signalStrength', 'signal_strength', 'num'],
+  ['storageUsedBytes', 'storage_used_bytes', 'num'],
+  ['storageTotalBytes', 'storage_total_bytes', 'num'],
+  ['memoryUsedBytes', 'memory_used_bytes', 'num'],
+  ['memoryTotalBytes', 'memory_total_bytes', 'num'],
+  ['screenOn', 'screen_on', 'bool'],
+  ['brightness', 'brightness', 'num'],
+  ['latitude', 'latitude', 'num'],
+  ['longitude', 'longitude', 'num'],
+  ['locationAccuracy', 'location_accuracy', 'num'],
+  ['uptimeMs', 'uptime_ms', 'num'],
+  ['androidSecurityPatch', 'android_security_patch', 'str'],
+];
+
 class TelemetryStore {
   private db: Database.Database | null = null;
   private initialized = false;
@@ -141,68 +204,84 @@ class TelemetryStore {
   }
 
   /**
-   * Update device telemetry (upsert)
+   * Update device telemetry (upsert). Keys present in the input are written, `null` clears a value,
+   * absent keys keep what is stored (SR-09).
    */
-  updateTelemetry(input: TelemetryInput): DeviceTelemetry {
+  updateTelemetry(input: TelemetryInput, updatedAt: number = Date.now()): DeviceTelemetry {
+    this.initialize();
+    this.writeLatest(input, updatedAt);
+    return this.getTelemetry(input.deviceId)!;
+  }
+
+  private writeLatest(input: TelemetryInput, updatedAt: number): void {
+    const db = this.getDb();
+    const cols: string[] = [];
+    const vals: Array<string | number | null> = [];
+    for (const [key, col, kind] of FIELDS) {
+      const v = (input as unknown as Record<string, unknown>)[key];
+      if (v === undefined) continue;
+      cols.push(col);
+      vals.push(v === null ? null : kind === 'bool' ? (v ? 1 : 0) : (v as string | number));
+    }
+    const names = ['device_id', ...cols, 'updated_at'];
+    const update = [...cols.map(c => `${c} = excluded.${c}`), 'updated_at = excluded.updated_at'].join(', ');
+    db.prepare(`
+      INSERT INTO device_telemetry (${names.join(', ')})
+      VALUES (${names.map(() => '?').join(', ')})
+      ON CONFLICT(device_id) DO UPDATE SET ${update}
+    `).run(input.deviceId, ...vals, updatedAt);
+  }
+
+  /**
+   * Apply one telemetry sample (live report or buffered batch sample): write the history row, update the
+   * latest state unless a newer one is already stored, and work out the battery alert transition (SR-08, SR-09).
+   * Samples must be applied oldest first.
+   */
+  recordSample(input: TelemetryInput): { telemetry: DeviceTelemetry; alert: BatteryAlert | null; batteryLevel: number | null } {
     this.initialize();
     const db = this.getDb();
     const now = Date.now();
+    const claimed = input.collectedAt;
+    const at = typeof claimed === 'number' && Number.isFinite(claimed) && claimed >= now - MAX_SAMPLE_AGE_MS && claimed <= now + MAX_CLOCK_SKEW_MS
+      ? Math.floor(claimed) : now;
 
-    db.prepare(`
-      INSERT INTO device_telemetry (
-        device_id, battery_level, battery_charging, battery_health,
-        network_type, network_ssid, ip_address, signal_strength,
-        storage_used_bytes, storage_total_bytes,
-        memory_used_bytes, memory_total_bytes,
-        screen_on, brightness,
-        latitude, longitude, location_accuracy,
-        uptime_ms, android_security_patch,
-        updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(device_id) DO UPDATE SET
-        battery_level = COALESCE(excluded.battery_level, battery_level),
-        battery_charging = COALESCE(excluded.battery_charging, battery_charging),
-        battery_health = COALESCE(excluded.battery_health, battery_health),
-        network_type = COALESCE(excluded.network_type, network_type),
-        network_ssid = COALESCE(excluded.network_ssid, network_ssid),
-        ip_address = COALESCE(excluded.ip_address, ip_address),
-        signal_strength = COALESCE(excluded.signal_strength, signal_strength),
-        storage_used_bytes = COALESCE(excluded.storage_used_bytes, storage_used_bytes),
-        storage_total_bytes = COALESCE(excluded.storage_total_bytes, storage_total_bytes),
-        memory_used_bytes = COALESCE(excluded.memory_used_bytes, memory_used_bytes),
-        memory_total_bytes = COALESCE(excluded.memory_total_bytes, memory_total_bytes),
-        screen_on = COALESCE(excluded.screen_on, screen_on),
-        brightness = COALESCE(excluded.brightness, brightness),
-        latitude = COALESCE(excluded.latitude, latitude),
-        longitude = COALESCE(excluded.longitude, longitude),
-        location_accuracy = COALESCE(excluded.location_accuracy, location_accuracy),
-        uptime_ms = COALESCE(excluded.uptime_ms, uptime_ms),
-        android_security_patch = COALESCE(excluded.android_security_patch, android_security_patch),
-        updated_at = excluded.updated_at
-    `).run(
-      input.deviceId,
-      input.batteryLevel ?? null,
-      input.batteryCharging !== undefined ? (input.batteryCharging ? 1 : 0) : null,
-      input.batteryHealth ?? null,
-      input.networkType ?? null,
-      input.networkSsid ?? null,
-      input.ipAddress ?? null,
-      input.signalStrength ?? null,
-      input.storageUsedBytes ?? null,
-      input.storageTotalBytes ?? null,
-      input.memoryUsedBytes ?? null,
-      input.memoryTotalBytes ?? null,
-      input.screenOn !== undefined ? (input.screenOn ? 1 : 0) : null,
-      input.brightness ?? null,
-      input.latitude ?? null,
-      input.longitude ?? null,
-      input.locationAccuracy ?? null,
-      input.uptimeMs ?? null,
-      input.androidSecurityPatch ?? null,
-      now
-    );
+    return db.transaction(() => {
+      const existing = db.prepare('SELECT updated_at, battery_alert_state FROM device_telemetry WHERE device_id = ?')
+        .get(input.deviceId) as { updated_at: number; battery_alert_state: string | null } | undefined;
+      const newest = !existing || at >= existing.updated_at;
+      let alert: BatteryAlert | null = null;
 
-    return this.getTelemetry(input.deviceId)!;
+      if (newest) {
+        this.writeLatest(input, at);
+        if (typeof input.batteryLevel === 'number') {
+          const prev = (existing?.battery_alert_state as BatteryAlertState | null) ?? 'ok';
+          const next = nextBatteryState(prev, input.batteryLevel);
+          alert = next.alert;
+          db.prepare('UPDATE device_telemetry SET battery_alert_state = ? WHERE device_id = ?').run(next.state, input.deviceId);
+        }
+      }
+
+      const merged = newest ? this.getTelemetry(input.deviceId) : null;
+      const pick = <T>(own: T | null | undefined, fallback: T | null | undefined): T | null => own ?? fallback ?? null;
+      db.prepare(`
+        INSERT OR IGNORE INTO telemetry_history (
+          device_id, battery_level, network_type, storage_used_bytes, memory_used_bytes, recorded_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+      `).run(
+        input.deviceId,
+        pick(input.batteryLevel, merged?.batteryLevel),
+        pick(input.networkType, merged?.networkType),
+        pick(input.storageUsedBytes, merged?.storageUsedBytes),
+        pick(input.memoryUsedBytes, merged?.memoryUsedBytes),
+        at
+      );
+
+      return {
+        telemetry: this.getTelemetry(input.deviceId)!,
+        alert,
+        batteryLevel: typeof input.batteryLevel === 'number' ? input.batteryLevel : null,
+      };
+    })();
   }
 
   /**
@@ -300,25 +379,53 @@ class TelemetryStore {
   }
 
   /**
-   * Get telemetry history for a device
+   * Get telemetry history for a device, oldest first. With `bucketMs` the rows are averaged per bucket in SQL
+   * (battery), network type, storage and memory take the last value of the bucket. When more points match
+   * than `limit`, the newest `limit` are returned.
    */
   getHistory(
     deviceId: string,
     from: number,
     to: number,
-    limit: number = 1000
+    options: number | { limit?: number; bucketMs?: number | null } = {}
   ): TelemetryDataPoint[] {
     this.initialize();
     const db = this.getDb();
+    const opts = typeof options === 'number' ? { limit: options } : options;
+    const limit = Number.isFinite(opts.limit) && (opts.limit as number) > 0
+      ? Math.min(Math.floor(opts.limit as number), MAX_HISTORY_POINTS) : DEFAULT_HISTORY_POINTS;
+
+    if (opts.bucketMs) {
+      const rows = db.prepare(`
+        SELECT (recorded_at / CAST(@b AS INTEGER)) * CAST(@b AS INTEGER) AS bucket_start,
+               ROUND(AVG(battery_level)) AS battery_level,
+               network_type, storage_used_bytes, memory_used_bytes, MAX(recorded_at) AS last_at
+        FROM telemetry_history
+        WHERE device_id = @d AND recorded_at >= @from AND recorded_at <= @to
+        GROUP BY bucket_start
+        ORDER BY bucket_start DESC
+        LIMIT @limit
+      `).all({ b: opts.bucketMs, d: deviceId, from, to, limit }) as Array<{
+        bucket_start: number; battery_level: number | null; network_type: string | null;
+        storage_used_bytes: number | null; memory_used_bytes: number | null;
+      }>;
+      return rows.reverse().map(r => ({
+        timestamp: r.bucket_start,
+        batteryLevel: r.battery_level,
+        networkType: r.network_type,
+        storageUsedBytes: r.storage_used_bytes,
+        memoryUsedBytes: r.memory_used_bytes,
+      }));
+    }
 
     const rows = db.prepare(`
       SELECT * FROM telemetry_history
       WHERE device_id = ? AND recorded_at >= ? AND recorded_at <= ?
-      ORDER BY recorded_at ASC
+      ORDER BY recorded_at DESC
       LIMIT ?
     `).all(deviceId, from, to, limit) as HistoryRow[];
 
-    return rows.map(row => ({
+    return rows.reverse().map(row => ({
       timestamp: row.recorded_at,
       batteryLevel: row.battery_level,
       networkType: row.network_type,

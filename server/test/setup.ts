@@ -12,6 +12,8 @@ import { fileTransferStore } from '../src/services/fileTransferStore';
 import { groupStore } from '../src/services/groupStore';
 import { policyStore } from '../src/services/policyStore';
 import { telemetryStore } from '../src/services/telemetryStore';
+import { settingsStore } from '../src/services/settingsStore';
+import { setAuthDatabase } from '../src/middleware/auth';
 import { initializeSchema } from '../src/db/schema';
 
 // Tables wiped between tests (settings is left alone; it holds no per-test data).
@@ -19,7 +21,7 @@ const DATA_TABLES = [
   'device_commands', 'device_events', 'device_apps', 'device_telemetry', 'telemetry_history',
   'file_transfers', 'device_group_members', 'device_groups', 'sessions', 'pairing_sessions',
   'enrollment_tokens', 'audit_logs', 'app_versions', 'app_catalog', 'app_packages',
-  'policies', 'devices',
+  'policies', 'devices', 'revoked_tokens',
 ];
 
 let testDb: Database.Database | undefined;
@@ -42,6 +44,8 @@ export function setupTestDatabase(): Database.Database {
   groupStore.setDatabase(testDb);
   policyStore.setDatabase(testDb);
   telemetryStore.setDatabase(testDb);
+  settingsStore.setDatabase(testDb);
+  setAuthDatabase(testDb);
 
   return testDb;
 }
@@ -58,6 +62,8 @@ export function cleanupTestDatabase(): void {
 
 export function closeTestDatabase(): void {
   if (testDb) {
+    setAuthDatabase(null);
+    settingsStore.setDatabase(null);
     testDb.close();
     testDb = undefined;
   }

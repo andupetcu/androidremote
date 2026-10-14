@@ -22,14 +22,23 @@ import { LocalStorageProvider, setStorageProvider, getStorageProvider } from './
 import * as appPackageStore from './services/appPackageStore';
 import { syncRequiredApps, syncPolicyRequiredApps, queueSyncPolicy } from './services/appSyncService';
 import { agentConnectionStore } from './services/agentConnectionStore';
-import { agentBinaryStore } from './services/agentBinaryStore';
+import { agentBinaryStore, binariesDir } from './services/agentBinaryStore';
 import { getDatabase } from './db/connection';
-import { authMiddleware, loginHandler, changePasswordHandler, adminSubject } from './middleware/auth';
+import { authMiddleware, adminSubject } from './middleware/auth';
+import { authRouter, loginRateLimitStore } from './routes/auth';
+import { telemetryRouter } from './routes/telemetry';
+import { eventsRouter } from './routes/events';
+import { auditRouter } from './routes/audit';
+import { provisioningPublicRouter, provisioningAdminRouter } from './routes/provisioning';
+import { getPublicBaseUrl } from './services/baseUrl';
+import { noteDeviceSeen } from './services/devicePresence';
+import { validateCommandPayload } from './services/commandPayloads';
+import { parsePagination } from './routes/pagination';
 import { apiGate } from './middleware/apiGate';
 import { wsTicketStore, TicketPurpose } from './services/wsTicketStore';
 import { settingsStore } from './services/settingsStore';
 import { validateBody } from './middleware/validate';
-import { HashingDiskStorage } from './services/uploadStorage';
+import { HashingDiskStorage, LazyHashingDiskStorage, moveFile } from './services/uploadStorage';
 import { inspectApk, isValidPackageName } from './services/apkValidator';
 import { buildIceServers } from './services/iceServers';
 
@@ -130,16 +139,6 @@ app.use((req: Request, _res: Response, next: NextFunction) => {
 // ============================================
 // Zod validation schemas
 // ============================================
-const loginSchema = z.object({
-  username: z.string().min(1).max(100),
-  password: z.string().min(1).max(200),
-});
-
-const changePasswordSchema = z.object({
-  currentPassword: z.string().min(1).max(200),
-  newPassword: z.string().min(8, 'Password must be at least 8 characters').max(200),
-});
-
 const commandTypeValues = COMMAND_TYPES as readonly [string, ...string[]];
 const commandSchema = z.object({
   type: z.enum(commandTypeValues),
@@ -158,46 +157,10 @@ const enrollDeviceSchema = z.object({
   agentVersion: z.string().max(50).optional(),
 });
 
-const telemetrySchema = z.object({
-  battery_level: z.number().int().min(0).max(100).optional(),
-  battery_charging: z.union([z.boolean(), z.number()]).optional(),
-  battery_health: z.string().max(50).optional(),
-  network_type: z.string().max(50).optional(),
-  network_ssid: z.string().max(100).optional(),
-  ip_address: z.string().max(100).optional(),
-  signal_strength: z.number().int().min(-200).max(0).optional(),
-  storage_used_bytes: z.number().int().min(0).optional(),
-  storage_total_bytes: z.number().int().min(0).optional(),
-  memory_used_bytes: z.number().int().min(0).optional(),
-  memory_total_bytes: z.number().int().min(0).optional(),
-  screen_on: z.union([z.boolean(), z.number()]).optional(),
-  brightness: z.number().int().min(0).max(255).optional(),
-  latitude: z.number().min(-90).max(90).optional(),
-  longitude: z.number().min(-180).max(180).optional(),
-  location_accuracy: z.number().min(0).optional(),
-  uptime_ms: z.number().int().min(0).optional(),
-  android_security_patch: z.string().max(50).optional(),
-}).passthrough();
-
-// Login rate limiter — 5 attempts per 15 minutes per IP
-const loginRateLimitStore = new MemoryStore();
-const loginRateLimit = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 5,
-  message: { error: 'Too many login attempts. Please try again in 15 minutes.' },
-  standardHeaders: true,
-  legacyHeaders: false,
-  store: loginRateLimitStore,
-});
-
 // ============================================
-// Authentication endpoints (public)
+// Authentication endpoints (public login; the rest check the admin token themselves)
 // ============================================
-app.post('/api/auth/login', loginRateLimit, validateBody(loginSchema), loginHandler);
-app.get('/api/auth/verify', authMiddleware, (_req: Request, res: Response) => {
-  res.json({ valid: true });
-});
-app.put('/api/auth/password', authMiddleware, validateBody(changePasswordSchema), changePasswordHandler);
+app.use('/api/auth', authRouter);
 
 // ============================================
 // Auth gate for /api (see middleware/apiGate.ts): explicit public routes,
@@ -224,11 +187,32 @@ app.post('/api/ws-ticket', (req: Request, res: Response) => {
   res.json(wsTicketStore.issue({ purpose: purpose as TicketPurpose, subject: adminSubject(req), deviceId }));
 });
 
+// Routers moved out of this file (SR-17): behaviour unchanged, paths relative to /api.
+app.use('/api', provisioningPublicRouter, provisioningAdminRouter, telemetryRouter, eventsRouter, auditRouter);
+
 /** Audit a command queued by an admin action (single, batch, policy-triggered). */
 function auditCommandQueued(req: Request, command: { id: string; deviceId: string; type: string; payload?: Record<string, unknown> }): void {
   const details: Record<string, unknown> = { deviceId: command.deviceId, type: command.type };
-  if (command.type === 'RUN_SHELL' && typeof command.payload?.command === 'string') {
-    details.command = command.payload.command.slice(0, 500);
+  const payload = command.payload ?? {};
+  if (command.type === 'RUN_SHELL' && typeof payload.command === 'string') {
+    details.command = payload.command.slice(0, 500);
+  }
+  if (typeof payload.packageName === 'string') details.packageName = payload.packageName.slice(0, 200);
+  if (command.type === 'WIPE') {
+    details.confirmed = true;
+    details.wipeExternalStorage = payload.wipeExternalStorage === true;
+    if (typeof payload.reason === 'string') details.reason = payload.reason.slice(0, 500);
+  }
+  if (command.type === 'GRANT_PERMISSION') {
+    if (typeof payload.permission === 'string') details.permission = payload.permission.slice(0, 200);
+    if (typeof payload.state === 'string') details.state = payload.state;
+  }
+  if (command.type === 'SET_KIOSK') {
+    details.enabled = payload.enabled;
+    details.lockTask = payload.lockTask;
+  }
+  if (command.type === 'SET_PROTECTED_PACKAGES' && Array.isArray(payload.packages)) {
+    details.packageCount = payload.packages.length;
   }
   try {
     auditStore.log({
@@ -266,11 +250,24 @@ app.put('/api/settings', (req: Request, res: Response) => {
       return;
     }
     // Only allow known setting keys
-    const allowedKeys = ['serverName', 'appsUpdateTime'];
+    const allowedKeys = ['serverName', 'appsUpdateTime', 'updateWindowStart', 'updateWindowEnd'];
     const filtered: Record<string, string> = {};
     for (const key of allowedKeys) {
       if (settings[key] !== undefined) {
         filtered[key] = String(settings[key]);
+      }
+    }
+    // Maintenance window for app updates (AM-08): both ends as HH:mm, or both empty to clear it.
+    const hasStart = filtered.updateWindowStart !== undefined;
+    const hasEnd = filtered.updateWindowEnd !== undefined;
+    if (hasStart || hasEnd) {
+      const clock = /^([01]\d|2[0-3]):[0-5]\d$/;
+      const start = filtered.updateWindowStart ?? '';
+      const end = filtered.updateWindowEnd ?? '';
+      const clearing = hasStart && hasEnd && start === '' && end === '';
+      if (!clearing && !(hasStart && hasEnd && clock.test(start) && clock.test(end))) {
+        res.status(400).json({ error: 'updateWindowStart and updateWindowEnd must both be set as HH:mm, or both empty' });
+        return;
       }
     }
     settingsStore.setMultiple(filtered);
@@ -288,9 +285,7 @@ app.put('/api/settings', (req: Request, res: Response) => {
  * Without either, the URL falls back to http://localhost:<PORT>, which is only right for local development.
  */
 function getBaseUrl(_req?: Request): string {
-  const configured = process.env.PUBLIC_BASE_URL || process.env.BASE_URL;
-  if (configured) return configured.replace(/\/+$/, '');
-  return `http://localhost:${process.env.PORT || 7899}`;
+  return getPublicBaseUrl();
 }
 
 /**
@@ -463,9 +458,25 @@ app.get('/api/pair/status/:deviceId', (req: Request, res: Response) => {
 /**
  * GET /api/devices - List all enrolled devices
  */
-app.get('/api/devices', (_req: Request, res: Response) => {
-  const devices = deviceStore.getAllDevices();
-  res.json({ devices });
+app.get('/api/devices', (req: Request, res: Response) => {
+  const all = deviceStore.getAllDevices();
+  const summary = {
+    online: all.filter(d => d.status === 'online').length,
+    offline: all.filter(d => d.status !== 'online').length,
+  };
+
+  const search = typeof req.query.search === 'string' ? req.query.search.trim().toLowerCase() : '';
+  const matching = search
+    ? all.filter(d => [d.id, d.name, d.model, d.hostname, d.manufacturer, d.serialNumber]
+        .some(v => typeof v === 'string' && v.toLowerCase().includes(search)))
+    : all;
+
+  // Without limit/offset the whole (filtered) list is returned, as before.
+  const paged = req.query.limit !== undefined || req.query.offset !== undefined;
+  const page = paged ? parsePagination(req.query, { defaultLimit: 100, maxLimit: 500 }) : null;
+  const devices = page ? matching.slice(page.offset, page.offset + page.limit) : matching;
+
+  res.json({ devices, total: matching.length, summary });
 });
 
 /**
@@ -572,20 +583,8 @@ app.get('/api/devices/:id/status', (req: Request, res: Response) => {
 app.post('/api/devices/:id/heartbeat', (req: Request, res: Response) => {
   const { id } = req.params;
 
-  // Check if device was previously offline to generate online event
-  const deviceBefore = deviceStore.getDevice(id);
-  if (deviceBefore && deviceBefore.status === 'offline') {
-    eventStore.recordEvent({
-      deviceId: id,
-      eventType: 'device-online',
-      severity: 'info',
-      data: { deviceName: deviceBefore.name, model: deviceBefore.model },
-    });
-  }
-
-  const updated = deviceStore.updateLastSeen(id);
-
-  if (!updated) {
+  // One device-online event when the device had counted as offline.
+  if (!noteDeviceSeen(id)) {
     res.status(404).json({ error: 'Device not found' });
     return;
   }
@@ -639,6 +638,18 @@ app.get('/api/enroll/tokens', (req: Request, res: Response) => {
     status as 'active' | 'exhausted' | 'revoked' | 'expired' | undefined
   );
   res.json({ tokens });
+});
+
+/**
+ * GET /api/enroll/tokens/:token - Look up one enrollment token by its value (admin)
+ */
+app.get('/api/enroll/tokens/:token', (req: Request, res: Response) => {
+  const record = enrollmentStore.getTokenByValue(req.params.token);
+  if (!record) {
+    res.status(404).json({ error: 'Token not found' });
+    return;
+  }
+  res.json(record);
 });
 
 /**
@@ -770,8 +781,9 @@ app.get('/api/agent/connections', authMiddleware, (_req: Request, res: Response)
 // ============================================
 
 // Configure multer for agent binary uploads
+// Streamed to disk with its SHA-256 computed on the way, never held in memory.
 const agentBinaryUpload = multer({
-  storage: multer.memoryStorage(),
+  storage: new LazyHashingDiskStorage(() => binariesDir()),
   limits: { fileSize: 200 * 1024 * 1024 }, // 200MB max
 });
 
@@ -834,34 +846,37 @@ app.get('/api/agent/download/:os/:arch', (req: Request, res: Response) => {
  */
 app.post('/api/agent/upload', authMiddleware, agentBinaryUpload.single('file'), (req: Request, res: Response) => {
   const { os, arch, version } = req.body;
-  const file = req.file;
+  const file = req.file as (Express.Multer.File & { sha256?: string }) | undefined;
+
+  // The upload is already on disk; drop it whenever the request is refused.
+  const refuse = (error: string) => {
+    if (file?.path) fs.unlink(file.path, () => undefined);
+    res.status(400).json({ error });
+  };
 
   if (!file) {
     res.status(400).json({ error: 'file is required' });
     return;
   }
-  if (!os || !arch || !version) {
-    res.status(400).json({ error: 'os, arch, and version are required' });
-    return;
-  }
+  if (!os || !arch || !version) return refuse('os, arch, and version are required');
 
   const validOs = ['linux', 'windows'];
   const validArch = ['x64', 'arm64', 'armv7l'];
-  if (!validOs.includes(os)) {
-    res.status(400).json({ error: `invalid os: ${os}. Must be one of: ${validOs.join(', ')}` });
-    return;
-  }
-  if (!validArch.includes(arch)) {
-    res.status(400).json({ error: `invalid arch: ${arch}. Must be one of: ${validArch.join(', ')}` });
-    return;
+  if (!validOs.includes(os)) return refuse(`invalid os: ${os}. Must be one of: ${validOs.join(', ')}`);
+  if (!validArch.includes(arch)) return refuse(`invalid arch: ${arch}. Must be one of: ${validArch.join(', ')}`);
+  // The version becomes part of a file name.
+  if (typeof version !== 'string' || !/^[0-9A-Za-z][0-9A-Za-z._+-]{0,49}$/.test(version)) {
+    return refuse('invalid version: use letters, digits, dots, dashes and plus signs only');
   }
 
-  const info = agentBinaryStore.addBinary(os, arch, version, file.buffer, file.originalname);
-
-  res.json({
-    success: true,
-    binary: info,
-  });
+  try {
+    const info = agentBinaryStore.addBinaryFromFile(os, arch, version, file.path, file.sha256 as string, file.size);
+    res.json({ success: true, binary: info });
+  } catch (err) {
+    console.error('Agent binary upload failed:', err);
+    fs.unlink(file.path, () => undefined);
+    res.status(500).json({ error: 'Failed to store the binary' });
+  }
 });
 
 /**
@@ -920,7 +935,7 @@ app.get('/api/downloads/agent/:platform', agentDownloadLimiter, (req: Request, r
  * Upload a base NSIS installer via POST /api/agent/upload-installer,
  * or place it manually at server/data/installers/windows-x64.exe
  */
-const INSTALLERS_DIR = path.join(__dirname, '..', 'data', 'installers');
+const INSTALLERS_DIR = process.env.INSTALLERS_DIR || path.join(__dirname, '..', 'data', 'installers');
 
 /**
  * GET /api/downloads/installer/:platform - Download a pre-configured installer
@@ -1001,7 +1016,7 @@ app.get('/api/downloads/installer/:platform', agentDownloadLimiter, (req: Reques
  * Body: multipart form with 'file' and 'platform' (e.g. "windows")
  */
 const installerUpload = multer({
-  storage: multer.memoryStorage(),
+  storage: new LazyHashingDiskStorage(() => INSTALLERS_DIR),
   limits: { fileSize: 200 * 1024 * 1024 }, // 200MB max
 });
 
@@ -1009,31 +1024,31 @@ app.post('/api/agent/upload-installer', authMiddleware, installerUpload.single('
   const { platform } = req.body;
   const file = req.file;
 
+  const refuse = (error: string) => {
+    if (file?.path) fs.unlink(file.path, () => undefined);
+    res.status(400).json({ error });
+  };
+
   if (!file) {
     res.status(400).json({ error: 'file is required' });
     return;
   }
-  if (!platform) {
-    res.status(400).json({ error: 'platform is required (e.g. "windows")' });
-    return;
-  }
+  if (!platform) return refuse('platform is required (e.g. "windows")');
 
   const platformMap: Record<string, string> = {
     windows: 'windows-x64.exe',
   };
   const filename = platformMap[platform];
-  if (!filename) {
-    res.status(400).json({ error: `unsupported platform: ${platform}` });
+  if (!filename) return refuse(`unsupported platform: ${platform}`);
+
+  try {
+    moveFile(file.path, path.join(INSTALLERS_DIR, filename));
+  } catch (err) {
+    console.error('Installer upload failed:', err);
+    fs.unlink(file.path, () => undefined);
+    res.status(500).json({ error: 'Failed to store the installer' });
     return;
   }
-
-  // Ensure directory exists
-  if (!require('fs').existsSync(INSTALLERS_DIR)) {
-    require('fs').mkdirSync(INSTALLERS_DIR, { recursive: true });
-  }
-
-  const destPath = path.join(INSTALLERS_DIR, filename);
-  require('fs').writeFileSync(destPath, file.buffer);
 
   res.json({
     success: true,
@@ -1060,7 +1075,9 @@ function finalizeCommandPayload(
   type: string,
   payload: Record<string, unknown> | undefined
 ): { payload: Record<string, unknown> } | { error: string } {
-  const out: Record<string, unknown> = { ...(payload || {}) };
+  const checked = validateCommandPayload(type, { ...(payload || {}) }, device.id);
+  if ('error' in checked) return { error: checked.error };
+  const out: Record<string, unknown> = checked.payload;
 
   if (type === 'START_REMOTE') {
     out.signalingUrl = getSignalingUrl(req);
@@ -1230,8 +1247,8 @@ app.post('/api/devices/:id/commands', (req: Request, res: Response) => {
 app.get('/api/devices/:id/commands/pending', (req: Request, res: Response) => {
   const { id } = req.params;
 
-  // Update last seen when device polls
-  deviceStore.updateLastSeen(id);
+  // Update last seen when device polls (and raise device-online if it had been offline)
+  noteDeviceSeen(id);
 
   const commands = commandStore.getPendingCommands(id);
 
@@ -1243,12 +1260,11 @@ app.get('/api/devices/:id/commands/pending', (req: Request, res: Response) => {
  */
 app.get('/api/devices/:id/commands', (req: Request, res: Response) => {
   const { id } = req.params;
-  const { status, limit, offset } = req.query;
+  const { status } = req.query;
 
   const commands = commandStore.getCommandHistory(id, {
     status: status as 'pending' | 'delivered' | 'executing' | 'completed' | 'failed' | 'expired' | undefined,
-    limit: limit ? parseInt(limit as string, 10) : undefined,
-    offset: offset ? parseInt(offset as string, 10) : undefined,
+    ...parsePagination(req.query),
   });
 
   res.json({ commands });
@@ -1351,111 +1367,6 @@ app.delete('/api/devices/:id/commands/:cmdId', (req: Request, res: Response) => 
   }
 
   res.json({ success: true, message: 'Command cancelled' });
-});
-
-// ============================================
-// Phase 1: Device Telemetry
-// ============================================
-
-/**
- * POST /api/devices/:id/telemetry - Device pushes telemetry
- */
-app.post('/api/devices/:id/telemetry', validateBody(telemetrySchema), (req: Request, res: Response) => {
-  const { id } = req.params;
-  const device = deviceStore.getDevice(id);
-
-  if (!device) {
-    res.status(404).json({ error: 'Device not found' });
-    return;
-  }
-
-  // Update device last seen
-  deviceStore.updateLastSeen(id);
-
-  // The device ID comes from the URL (contract C2); a deviceId in the body never wins.
-  const input: TelemetryInput = {
-    ...req.body,
-    deviceId: id,
-  };
-
-  const telemetry = telemetryStore.updateTelemetry(input);
-
-  // Check for alert conditions and create events
-  if (input.batteryLevel !== undefined && input.batteryLevel < 5) {
-    eventStore.recordEvent({
-      deviceId: id,
-      eventType: 'battery-critical',
-      severity: 'critical',
-      data: { batteryLevel: input.batteryLevel },
-    });
-  } else if (input.batteryLevel !== undefined && input.batteryLevel < 20) {
-    eventStore.recordEvent({
-      deviceId: id,
-      eventType: 'battery-low',
-      severity: 'warning',
-      data: { batteryLevel: input.batteryLevel },
-    });
-  }
-
-  res.json({
-    success: true,
-    nextReportIn: 60000, // 1 minute
-  });
-});
-
-/**
- * GET /api/devices/:id/telemetry - Get latest telemetry
- */
-app.get('/api/devices/:id/telemetry', (req: Request, res: Response) => {
-  const { id } = req.params;
-
-  const telemetry = telemetryStore.getTelemetry(id);
-  if (!telemetry) {
-    // Return empty telemetry object instead of 404 when no data exists yet
-    res.json({
-      deviceId: id,
-      timestamp: null,
-      batteryLevel: null,
-      batteryCharging: null,
-      networkType: null,
-      storageUsedBytes: null,
-      storageTotalBytes: null,
-      memoryUsedBytes: null,
-      memoryTotalBytes: null,
-    });
-    return;
-  }
-
-  res.json(telemetry);
-});
-
-/**
- * GET /api/devices/:id/telemetry/history - Get telemetry history
- */
-app.get('/api/devices/:id/telemetry/history', (req: Request, res: Response) => {
-  const { id } = req.params;
-  const { from, to } = req.query;
-
-  const now = Date.now();
-  const fromTs = from ? parseInt(from as string, 10) : now - 24 * 60 * 60 * 1000;
-  const toTs = to ? parseInt(to as string, 10) : now;
-
-  const history = telemetryStore.getHistory(id, fromTs, toTs);
-
-  res.json({
-    deviceId: id,
-    from: fromTs,
-    to: toTs,
-    dataPoints: history,
-  });
-});
-
-/**
- * GET /api/telemetry - Get telemetry for all devices (dashboard)
- */
-app.get('/api/telemetry', (_req: Request, res: Response) => {
-  const telemetry = telemetryStore.getAllTelemetry();
-  res.json({ telemetry });
 });
 
 // ============================================
@@ -2558,153 +2469,6 @@ app.put('/api/devices/:id/policy', (req: Request, res: Response) => {
 // Phase 5: Events
 // ============================================
 
-/**
- * GET /api/events - List all events
- */
-app.get('/api/events', (req: Request, res: Response) => {
-  const { deviceId, severity, acknowledged, limit, offset, from, to } = req.query;
-
-  // If deviceId is provided, use the device-specific query
-  if (deviceId) {
-    const events = eventStore.getDeviceEvents(deviceId as string, {
-      severity: severity as EventSeverity | undefined,
-      acknowledged: acknowledged !== undefined ? acknowledged === 'true' : undefined,
-      limit: limit ? parseInt(limit as string, 10) : 100,
-      offset: offset ? parseInt(offset as string, 10) : undefined,
-      from: from ? parseInt(from as string, 10) : undefined,
-      to: to ? parseInt(to as string, 10) : undefined,
-    });
-    res.json({ events, count: events.length });
-    return;
-  }
-
-  const events = eventStore.getAllEvents({
-    severity: severity as EventSeverity | undefined,
-    acknowledged: acknowledged !== undefined ? acknowledged === 'true' : undefined,
-    limit: limit ? parseInt(limit as string, 10) : 100,
-    offset: offset ? parseInt(offset as string, 10) : undefined,
-    from: from ? parseInt(from as string, 10) : undefined,
-    to: to ? parseInt(to as string, 10) : undefined,
-  });
-
-  res.json({ events, count: events.length });
-});
-
-/**
- * GET /api/events/unread - Get unread critical/warning events
- */
-app.get('/api/events/unread', (req: Request, res: Response) => {
-  const { minSeverity } = req.query;
-
-  const events = eventStore.getUnacknowledgedEvents(
-    (minSeverity as EventSeverity) || 'warning'
-  );
-  const count = eventStore.getUnacknowledgedCount(
-    (minSeverity as EventSeverity) || 'warning'
-  );
-
-  res.json({ events, count });
-});
-
-/**
- * GET /api/events/stats - Get event statistics
- */
-app.get('/api/events/stats', (_req: Request, res: Response) => {
-  const unreadCount = eventStore.getUnacknowledgedCount('info');
-  const criticalCount = eventStore.getUnacknowledgedCount('critical');
-  const warningCount = eventStore.getUnacknowledgedCount('warning');
-
-  res.json({
-    unread: unreadCount,
-    critical: criticalCount,
-    warning: warningCount,
-  });
-});
-
-/**
- * GET /api/devices/:id/events - Get events for device
- */
-app.get('/api/devices/:id/events', (req: Request, res: Response) => {
-  const { id } = req.params;
-  const { severity, acknowledged, limit, offset } = req.query;
-
-  const events = eventStore.getDeviceEvents(id, {
-    severity: severity as EventSeverity | undefined,
-    acknowledged: acknowledged !== undefined ? acknowledged === 'true' : undefined,
-    limit: limit ? parseInt(limit as string, 10) : 100,
-    offset: offset ? parseInt(offset as string, 10) : undefined,
-  });
-
-  res.json({ events, count: events.length });
-});
-
-/**
- * POST /api/devices/:id/events - Device reports an event
- */
-app.post('/api/devices/:id/events', (req: Request, res: Response) => {
-  const { id } = req.params;
-  const { eventType, severity, data } = req.body;
-
-  const device = deviceStore.getDevice(id);
-  if (!device) {
-    res.status(404).json({ error: 'Device not found' });
-    return;
-  }
-
-  const event = eventStore.recordEvent({
-    deviceId: id,
-    eventType: eventType as DeviceEventType,
-    severity: severity as EventSeverity,
-    data,
-  });
-
-  res.status(201).json(event);
-});
-
-/**
- * POST /api/events/:id/acknowledge - Acknowledge an event
- */
-app.post('/api/events/:id/acknowledge', (req: Request, res: Response) => {
-  const { id } = req.params;
-  const { acknowledgedBy } = req.body;
-
-  const acknowledged = eventStore.acknowledgeEvent(
-    parseInt(id, 10),
-    acknowledgedBy
-  );
-
-  if (!acknowledged) {
-    res.status(404).json({ error: 'Event not found or already acknowledged' });
-    return;
-  }
-
-  auditStore.log({
-    actorType: 'admin',
-    actorId: acknowledgedBy,
-    action: 'event.acknowledged',
-    resourceType: 'event',
-    resourceId: id,
-  });
-
-  res.json({ success: true });
-});
-
-/**
- * POST /api/events/acknowledge - Acknowledge multiple events
- */
-app.post('/api/events/acknowledge', (req: Request, res: Response) => {
-  const { eventIds, acknowledgedBy } = req.body;
-
-  if (!Array.isArray(eventIds)) {
-    res.status(400).json({ error: 'eventIds must be an array' });
-    return;
-  }
-
-  const count = eventStore.acknowledgeEvents(eventIds, acknowledgedBy);
-
-  res.json({ success: true, acknowledged: count });
-});
-
 // ============================================
 // Phase 6: File Transfers
 // ============================================
@@ -2886,59 +2650,6 @@ app.delete('/api/files/:id', (req: Request, res: Response) => {
 // ============================================
 // Phase 7: Audit Logs
 // ============================================
-
-/**
- * GET /api/audit - List audit logs
- */
-app.get('/api/audit', (req: Request, res: Response) => {
-  const { actorType, actorId, action, resourceType, resourceId, from, to, limit, offset } = req.query;
-
-  const logs = auditStore.getLogs({
-    actorType: actorType as 'admin' | 'device' | 'system' | undefined,
-    actorId: actorId as string | undefined,
-    action: action as any,
-    resourceType: resourceType as any,
-    resourceId: resourceId as string | undefined,
-    from: from ? parseInt(from as string, 10) : undefined,
-    to: to ? parseInt(to as string, 10) : undefined,
-    limit: limit ? parseInt(limit as string, 10) : 100,
-    offset: offset ? parseInt(offset as string, 10) : undefined,
-  });
-
-  res.json({ logs, count: logs.length });
-});
-
-/**
- * GET /api/audit/export - Export audit logs as CSV
- */
-app.get('/api/audit/export', (req: Request, res: Response) => {
-  const { from, to } = req.query;
-
-  const csv = auditStore.exportLogs({
-    from: from ? parseInt(from as string, 10) : undefined,
-    to: to ? parseInt(to as string, 10) : undefined,
-  });
-
-  res.setHeader('Content-Type', 'text/csv');
-  res.setHeader('Content-Disposition', `attachment; filename="audit-logs-${Date.now()}.csv"`);
-  res.send(csv);
-});
-
-/**
- * GET /api/devices/:id/audit - Get audit logs for device
- */
-app.get('/api/devices/:id/audit', (req: Request, res: Response) => {
-  const { id } = req.params;
-  const { limit } = req.query;
-
-  const logs = auditStore.getResourceLogs(
-    'device',
-    id,
-    limit ? parseInt(limit as string, 10) : 100
-  );
-
-  res.json({ logs, count: logs.length });
-});
 
 // Error handling middleware — sanitize error responses
 app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
