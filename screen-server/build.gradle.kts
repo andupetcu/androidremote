@@ -30,6 +30,10 @@ android {
         jvmTarget = "17"
     }
 
+    testOptions {
+        unitTests.all { it.useJUnitPlatform() }
+    }
+
     // No signing config needed - this APK is only used via app_process
     // and never installed normally
 }
@@ -37,4 +41,9 @@ android {
 dependencies {
     // No external dependencies - this module runs via app_process
     // and must be self-contained
+
+    // Test-only dependencies (not packaged in the APK)
+    testImplementation("org.junit.jupiter:junit-jupiter-api:5.11.3")
+    testRuntimeOnly("org.junit.jupiter:junit-jupiter-engine:5.11.3")
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }

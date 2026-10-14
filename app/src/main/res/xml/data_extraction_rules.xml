@@ -1,42 +1,23 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
     Data extraction rules for Android 12+ (API 31+).
-    Controls what data is available for cloud backup and device-to-device transfer.
-
-    Note: Encrypted SharedPreferences (session_prefs.xml) are excluded because
-    Android Keystore keys are not backed up - the data would be unreadable.
-    Enrollment data in enrollment_prefs.xml survives because it's unencrypted.
+    Nothing is included in cloud backup or device-to-device transfer (AM-15). Device id, server
+    URL and the session token identify this device to the MDM server; a restored copy on another
+    device would impersonate it. The manifest also sets allowBackup="false".
 -->
 <data-extraction-rules>
-    <!-- Cloud backup configuration -->
     <cloud-backup>
-        <!-- Include enrollment data (regular SharedPreferences) -->
-        <include domain="sharedpref" path="enrollment_prefs.xml" />
-
-        <!-- Include secure prefs fallback (used when Keystore unavailable) -->
-        <include domain="sharedpref" path="session_prefs_fallback.xml" />
-
-        <!-- Exclude encrypted prefs (Keystore keys won't restore) -->
-        <exclude domain="sharedpref" path="session_prefs.xml" />
-
-        <!-- Exclude cache and temporary files -->
-        <exclude domain="cache" path="." />
-        <exclude domain="no_backup" path="." />
+        <exclude domain="root" path="." />
+        <exclude domain="file" path="." />
+        <exclude domain="database" path="." />
+        <exclude domain="sharedpref" path="." />
+        <exclude domain="external" path="." />
     </cloud-backup>
-
-    <!-- Device-to-device transfer configuration -->
     <device-transfer>
-        <!-- Include enrollment data (regular SharedPreferences) -->
-        <include domain="sharedpref" path="enrollment_prefs.xml" />
-
-        <!-- Include secure prefs fallback -->
-        <include domain="sharedpref" path="session_prefs_fallback.xml" />
-
-        <!-- Exclude encrypted prefs (Keystore keys won't restore) -->
-        <exclude domain="sharedpref" path="session_prefs.xml" />
-
-        <!-- Exclude cache and temporary files -->
-        <exclude domain="cache" path="." />
-        <exclude domain="no_backup" path="." />
+        <exclude domain="root" path="." />
+        <exclude domain="file" path="." />
+        <exclude domain="database" path="." />
+        <exclude domain="sharedpref" path="." />
+        <exclude domain="external" path="." />
     </device-transfer>
 </data-extraction-rules>

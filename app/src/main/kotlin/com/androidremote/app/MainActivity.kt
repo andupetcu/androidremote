@@ -1,6 +1,7 @@
 package com.androidremote.app
 
 import android.Manifest
+import android.app.Activity
 import android.app.admin.DevicePolicyManager
 import android.content.ComponentName
 import android.content.Context
@@ -128,7 +129,7 @@ class MainActivity : AppCompatActivity() {
         val serverUrl = getServerUrl()
         pairingApiClient = PairingApiClient(serverUrl)
         enrollmentApiClient = EnrollmentApiClient(serverUrl)
-        Log.i(TAG, "Using server URL: $serverUrl")
+        Log.i(TAG, "Using server URL: ${LogRedactor.url(serverUrl)}")
 
         setupClickListeners()
 
@@ -155,18 +156,46 @@ class MainActivity : AppCompatActivity() {
 
     /**
      * Check for enrollment_token and server_url intent extras (from ADB launch).
-     * If both are present and the device is not already enrolled, auto-enroll silently.
+     *
+     * MainActivity is exported, so [EnrollmentIntentGuard] decides: ignored once enrolled,
+     * honoured when launched by adb shell / root / this app, and otherwise only after the
+     * user confirms the server on screen (AM-14).
      */
     private fun handleAdbEnrollmentExtras(intent: Intent?) {
         val token = intent?.getStringExtra("enrollment_token") ?: return
         val serverUrl = intent.getStringExtra("server_url")
 
-        if (sessionStorage.isEnrolled()) {
-            Log.i(TAG, "ADB enrollment extras ignored — device already enrolled")
-            return
+        val decision = EnrollmentIntentGuard.decide(
+            enrolled = sessionStorage.isEnrolled(),
+            callerUid = launchedFromUid(),
+            ownUid = android.os.Process.myUid(),
+            token = token,
+            serverUrl = serverUrl
+        )
+        when (decision) {
+            EnrollmentIntentGuard.Decision.IgnoreEnrolled ->
+                Log.i(TAG, "Enrollment extras ignored: device already enrolled")
+            EnrollmentIntentGuard.Decision.IgnoreInvalid ->
+                Log.w(TAG, "Enrollment extras ignored: missing token or invalid server URL")
+            EnrollmentIntentGuard.Decision.Accept -> applyEnrollmentExtras(token, serverUrl)
+            EnrollmentIntentGuard.Decision.RequireConfirmation -> {
+                Log.w(TAG, "Enrollment extras from untrusted caller; asking user to confirm")
+                AlertDialog.Builder(this)
+                    .setTitle("Enroll this device?")
+                    .setMessage(
+                        "Another app asked to enroll this device with the management server " +
+                            "${serverUrl ?: sessionStorage.getServerUrl() ?: BuildConfig.PAIRING_SERVER_URL}. " +
+                            "Only continue if you started this yourself."
+                    )
+                    .setNegativeButton(android.R.string.cancel, null)
+                    .setPositiveButton(android.R.string.ok) { _, _ -> applyEnrollmentExtras(token, serverUrl) }
+                    .show()
+            }
         }
+    }
 
-        Log.i(TAG, "ADB auto-enrollment: token=$token, serverUrl=$serverUrl")
+    private fun applyEnrollmentExtras(token: String, serverUrl: String?) {
+        Log.i(TAG, "Auto-enrollment: token=${LogRedactor.secret(token)}, serverUrl=${LogRedactor.url(serverUrl)}")
 
         // If a server URL was provided, save it and reinitialize API clients
         if (!serverUrl.isNullOrBlank()) {
@@ -175,7 +204,7 @@ class MainActivity : AppCompatActivity() {
             enrollmentApiClient.close()
             pairingApiClient = PairingApiClient(serverUrl)
             enrollmentApiClient = EnrollmentApiClient(serverUrl)
-            Log.i(TAG, "Server URL set from ADB extra: $serverUrl")
+            Log.i(TAG, "Server URL set from intent extra: ${LogRedactor.url(serverUrl)}")
         }
 
         // Mark initial setup as complete (ADB provisioning skips the permission wizard)
@@ -183,6 +212,14 @@ class MainActivity : AppCompatActivity() {
 
         // Start enrollment with the provided token
         startEnrollment(token.uppercase())
+    }
+
+    /** uid of the app/process that started this activity, or null when it can't be determined. */
+    private fun launchedFromUid(): Int? = try {
+        val uid = Activity::class.java.getMethod("getLaunchedFromUid").invoke(this) as Int
+        uid.takeIf { it >= 0 }
+    } catch (e: Throwable) {
+        null
     }
 
     /**
@@ -247,7 +284,7 @@ class MainActivity : AppCompatActivity() {
                 pairingApiClient = PairingApiClient(newUrl)
                 enrollmentApiClient = EnrollmentApiClient(newUrl)
 
-                Log.i(TAG, "Server URL updated to: $newUrl")
+                Log.i(TAG, "Server URL updated to: ${LogRedactor.url(newUrl)}")
                 Toast.makeText(this, R.string.settings_saved, Toast.LENGTH_SHORT).show()
                 dialog.dismiss()
             }
@@ -290,7 +327,7 @@ class MainActivity : AppCompatActivity() {
         enrollmentApiClient.close()
         pairingApiClient = PairingApiClient(defaultUrl)
         enrollmentApiClient = EnrollmentApiClient(defaultUrl)
-        Log.i(TAG, "API clients reinitialized with URL: $defaultUrl")
+        Log.i(TAG, "API clients reinitialized with URL: ${LogRedactor.url(defaultUrl)}")
 
         Log.i(TAG, "Configuration reset - enrollment data cleared, Device Owner preserved")
         Toast.makeText(this, R.string.config_reset_success, Toast.LENGTH_SHORT).show()

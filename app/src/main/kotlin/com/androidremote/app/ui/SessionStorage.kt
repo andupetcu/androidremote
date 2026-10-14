@@ -19,7 +19,9 @@ import androidx.security.crypto.MasterKey
  */
 class SessionStorage private constructor(
     private val enrollmentPrefs: SharedPreferences,
-    private val securePrefs: SharedPreferences
+    private val securePrefs: SharedPreferences,
+    /** False when the Keystore failed and the session token is held in memory only. */
+    val isSecureStoragePersistent: Boolean = true
 ) {
 
     companion object {
@@ -50,26 +52,33 @@ class SessionStorage private constructor(
             // Migrate data from old encrypted prefs if needed
             migrateFromOldStorage(context, enrollmentPrefs)
 
-            // Secure prefs for session token only
-            val securePrefs = try {
-                val masterKey = MasterKey.Builder(context)
-                    .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-                    .build()
+            // The old plaintext fallback file may still hold a token from earlier builds: remove it.
+            try { context.deleteSharedPreferences(PREFS_NAME_SECURE_FALLBACK) } catch (_: Exception) {}
 
-                EncryptedSharedPreferences.create(
-                    context,
-                    PREFS_NAME_SECURE,
-                    masterKey,
-                    EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-                    EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-                )
-            } catch (e: Exception) {
-                // Keystore unavailable or corrupted - fall back to regular prefs
-                Log.w(TAG, "EncryptedSharedPreferences unavailable, using fallback", e)
-                context.getSharedPreferences(PREFS_NAME_SECURE_FALLBACK, Context.MODE_PRIVATE)
+            // Secure prefs for session token only. Never falls back to a plaintext file (AM-15):
+            // if the Keystore is unusable the token is kept in memory only.
+            val resolved = SecurePrefsResolver.resolve(
+                create = {
+                    val masterKey = MasterKey.Builder(context)
+                        .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+                        .build()
+                    EncryptedSharedPreferences.create(
+                        context,
+                        PREFS_NAME_SECURE,
+                        masterKey,
+                        EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                        EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+                    )
+                },
+                reset = { context.deleteSharedPreferences(PREFS_NAME_SECURE) },
+                onError = { Log.e(TAG, "Secure storage unavailable: ${it.javaClass.simpleName}") }
+            )
+            val securePrefs = resolved.prefs
+            if (!resolved.persistent) {
+                Log.e(TAG, "Session token will be kept in memory only; secure storage failed")
             }
 
-            return SessionStorage(enrollmentPrefs, securePrefs)
+            return SessionStorage(enrollmentPrefs, securePrefs, resolved.persistent)
         }
 
         /**
@@ -141,23 +150,19 @@ class SessionStorage private constructor(
 
     fun saveDeviceId(deviceId: String) {
         enrollmentPrefs.edit().putString(KEY_DEVICE_ID, deviceId).apply()
-        Log.d(TAG, "Saved device ID: $deviceId")
     }
 
     fun getDeviceId(): String? {
         val deviceId = enrollmentPrefs.getString(KEY_DEVICE_ID, null)
-        Log.d(TAG, "Retrieved device ID: $deviceId")
         return deviceId
     }
 
     fun saveServerUrl(url: String) {
         enrollmentPrefs.edit().putString(KEY_SERVER_URL, url).apply()
-        Log.d(TAG, "Saved server URL: $url")
     }
 
     fun getServerUrl(): String? {
         val url = enrollmentPrefs.getString(KEY_SERVER_URL, null)
-        Log.d(TAG, "Retrieved server URL: $url")
         return url
     }
 
@@ -178,7 +183,6 @@ class SessionStorage private constructor(
      */
     fun isEnrolled(): Boolean {
         val enrolled = enrollmentPrefs.getBoolean(KEY_ENROLLED, false)
-        Log.d(TAG, "isEnrolled() returning: $enrolled")
         return enrolled
     }
 

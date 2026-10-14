@@ -90,6 +90,16 @@ class ScreenServerClient(
                 val newSocket = LocalSocket()
                 newSocket.connect(LocalSocketAddress(socketName, LocalSocketAddress.Namespace.ABSTRACT))
 
+                // AR-08: abstract sockets are world-connectable, so another app could have
+                // bound the name first. Only talk to a server running as shell/root/us.
+                val serverUid = try { newSocket.peerCredentials?.uid } catch (e: IOException) { null }
+                if (!ScreenServerPeer.isTrustedServerUid(serverUid, android.os.Process.myUid())) {
+                    Log.e(TAG, "Refusing screen server with unexpected uid=$serverUid")
+                    try { newSocket.close() } catch (_: IOException) {}
+                    _isConnected = false
+                    return@withContext false
+                }
+
                 // Set a timeout for the initial header read to prevent hanging
                 // when the server process is stuck in an old capture session
                 newSocket.soTimeout = CONNECT_TIMEOUT_MS

@@ -24,17 +24,20 @@ class InputHandler {
     }
 
     private var coordinateMapper: CoordinateMapper? = null
-    private var shellInjector: InputInjector? = null
+    private var shellCandidate: InputInjector? = null
+
+    /**
+     * The shell injector, if currently usable. Re-evaluated on every use: the availability
+     * probe runs off the Main thread and a failed probe is retried later (AR-16), so the
+     * answer can change after construction.
+     */
+    private val shellInjector: InputInjector?
+        get() = shellCandidate?.takeIf { it.isAvailable() }
 
     init {
-        // Try to initialize shell-based input injection (works on rooted devices)
-        val injector = InputInjectorFactory.create()
-        if (injector != null && injector.isAvailable()) {
-            shellInjector = injector
-            Log.i(TAG, "Using shell input injector: ${injector.getName()}")
-        } else {
-            Log.i(TAG, "Shell input not available, using AccessibilityService gestures")
-        }
+        // Creating the injector starts its availability probe on a background thread.
+        shellCandidate = InputInjectorFactory.create()
+        Log.i(TAG, "Shell input injector ${if (shellInjector != null) "available" else "not (yet) available, using AccessibilityService gestures"}")
     }
 
     /**

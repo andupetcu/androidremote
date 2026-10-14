@@ -20,6 +20,8 @@ import kotlin.system.exitProcess
  *   -m <size>     Max video dimension (default: 1920)
  *   -b <rate>     Bitrate in bps (default: 8000000)
  *   -f <fps>      Max FPS (default: 60)
+ *   -u <uid>      REQUIRED: uid of the app allowed to connect (peer credentials are checked;
+ *                 without it every connection is dropped)
  *   -h            Show help
  */
 object Server {
@@ -53,6 +55,10 @@ object Server {
     }
 
     private fun startServer(params: Params) {
+        val expectedUid = PeerAuth.parseExpectedUid(params.rawArgs)
+        if (expectedUid == null) {
+            System.err.println("WARNING: no -u <uid> given; all connections will be rejected (fail closed)")
+        }
         val serverSocket = LocalServerSocket(params.socketName)
         System.err.println("Listening on socket: ${params.socketName}")
 
@@ -60,6 +66,14 @@ object Server {
         // When one client disconnects, the server waits for the next.
         while (true) {
             val clientSocket = serverSocket.accept()
+
+            // AR-08: abstract sockets are open to every app; authenticate the peer by uid.
+            val peerUid = try { clientSocket.peerCredentials?.uid } catch (e: Exception) { null }
+            if (!PeerAuth.isAllowed(peerUid, expectedUid)) {
+                System.err.println("Rejected connection from uid=$peerUid")
+                try { clientSocket.close() } catch (_: Exception) {}
+                continue
+            }
             System.err.println("Client connected")
 
             try {
@@ -130,7 +144,7 @@ object Server {
             i++
         }
 
-        return Params(socketName, displayId, maxSize, captureSize, bitRate, maxFps, showHelp)
+        return Params(socketName, displayId, maxSize, captureSize, bitRate, maxFps, showHelp, args)
     }
 
     private fun printHelp() {
@@ -146,6 +160,7 @@ object Server {
               -c <size>     Capture rect size override (default: auto-detect)
               -b <rate>     Bitrate in bps (default: 8000000)
               -f <fps>      Max FPS (default: 60)
+              -u <uid>      REQUIRED: uid of the app allowed to connect
               -h            Show this help
 
             Example:
@@ -161,6 +176,7 @@ object Server {
         val captureSize: Int,
         val bitRate: Int,
         val maxFps: Float,
-        val showHelp: Boolean
+        val showHelp: Boolean,
+        val rawArgs: Array<String> = emptyArray()
     )
 }

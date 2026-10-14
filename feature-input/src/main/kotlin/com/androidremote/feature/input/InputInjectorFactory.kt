@@ -62,6 +62,13 @@ object InputInjectorFactory {
                 Log.i(TAG, "Selected input injector: ${injector.getName()}")
                 return injector
             }
+            // The shell injector probes off the calling thread and retries failed probes
+            // (AR-16), so "not available yet" is not final. Hand it back and let the
+            // caller check isAvailable() at use time.
+            if (type == InjectorType.ADB_SHELL && injector != null) {
+                Log.i(TAG, "Shell input injector probing in background")
+                return injector
+            }
         }
 
         Log.w(TAG, "No input injector available")
