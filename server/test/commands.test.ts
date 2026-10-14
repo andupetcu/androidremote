@@ -2,7 +2,7 @@ import request from 'supertest';
 import { app, resetRateLimiters } from '../src/app';
 import { deviceStore } from '../src/services/deviceStore';
 import { commandStore } from '../src/services/commandStore';
-import { setupTestDatabase, cleanupTestDatabase, closeTestDatabase } from './setup';
+import { setupTestDatabase, cleanupTestDatabase, closeTestDatabase, adminAuthHeader } from './setup';
 
 describe('Device Commands API', () => {
   beforeAll(() => {
@@ -28,7 +28,7 @@ describe('Device Commands API', () => {
   describe('POST /api/devices/:id/commands', () => {
     it('queues a LOCK command', async () => {
       const response = await request(app)
-        .post('/api/devices/test-device/commands')
+        .post('/api/devices/test-device/commands').set('Authorization', adminAuthHeader())
         .send({ type: 'LOCK' });
 
       expect(response.status).toBe(201);
@@ -41,7 +41,7 @@ describe('Device Commands API', () => {
 
     it('queues an INSTALL_APK command with payload', async () => {
       const response = await request(app)
-        .post('/api/devices/test-device/commands')
+        .post('/api/devices/test-device/commands').set('Authorization', adminAuthHeader())
         .send({
           type: 'INSTALL_APK',
           payload: {
@@ -58,7 +58,7 @@ describe('Device Commands API', () => {
 
     it('queues an UNINSTALL_APP command', async () => {
       const response = await request(app)
-        .post('/api/devices/test-device/commands')
+        .post('/api/devices/test-device/commands').set('Authorization', adminAuthHeader())
         .send({
           type: 'UNINSTALL_APP',
           payload: { packageName: 'com.example.app' },
@@ -70,7 +70,7 @@ describe('Device Commands API', () => {
 
     it('queues a REBOOT command', async () => {
       const response = await request(app)
-        .post('/api/devices/test-device/commands')
+        .post('/api/devices/test-device/commands').set('Authorization', adminAuthHeader())
         .send({ type: 'REBOOT' });
 
       expect(response.status).toBe(201);
@@ -79,7 +79,7 @@ describe('Device Commands API', () => {
 
     it('queues a WIPE command', async () => {
       const response = await request(app)
-        .post('/api/devices/test-device/commands')
+        .post('/api/devices/test-device/commands').set('Authorization', adminAuthHeader())
         .send({
           type: 'WIPE',
           payload: { keepData: false },
@@ -91,7 +91,7 @@ describe('Device Commands API', () => {
 
     it('queues a START_REMOTE command', async () => {
       const response = await request(app)
-        .post('/api/devices/test-device/commands')
+        .post('/api/devices/test-device/commands').set('Authorization', adminAuthHeader())
         .send({
           type: 'START_REMOTE',
           payload: { signalingUrl: 'wss://server.example.com/ws' },
@@ -103,7 +103,7 @@ describe('Device Commands API', () => {
 
     it('returns 404 for unknown device', async () => {
       const response = await request(app)
-        .post('/api/devices/unknown-device/commands')
+        .post('/api/devices/unknown-device/commands').set('Authorization', adminAuthHeader())
         .send({ type: 'LOCK' });
 
       expect(response.status).toBe(404);
@@ -112,7 +112,7 @@ describe('Device Commands API', () => {
 
     it('returns 400 for invalid command type', async () => {
       const response = await request(app)
-        .post('/api/devices/test-device/commands')
+        .post('/api/devices/test-device/commands').set('Authorization', adminAuthHeader())
         .send({ type: 'INVALID_TYPE' });
 
       expect(response.status).toBe(400);
@@ -121,7 +121,7 @@ describe('Device Commands API', () => {
 
     it('returns 400 for INSTALL_APK without url', async () => {
       const response = await request(app)
-        .post('/api/devices/test-device/commands')
+        .post('/api/devices/test-device/commands').set('Authorization', adminAuthHeader())
         .send({
           type: 'INSTALL_APK',
           payload: { packageName: 'com.example.app' },
@@ -133,7 +133,7 @@ describe('Device Commands API', () => {
 
     it('returns 400 for INSTALL_APK without packageName', async () => {
       const response = await request(app)
-        .post('/api/devices/test-device/commands')
+        .post('/api/devices/test-device/commands').set('Authorization', adminAuthHeader())
         .send({
           type: 'INSTALL_APK',
           payload: { url: 'https://example.com/app.apk' },
@@ -145,7 +145,7 @@ describe('Device Commands API', () => {
 
     it('returns 400 for UNINSTALL_APP without packageName', async () => {
       const response = await request(app)
-        .post('/api/devices/test-device/commands')
+        .post('/api/devices/test-device/commands').set('Authorization', adminAuthHeader())
         .send({
           type: 'UNINSTALL_APP',
           payload: {},
@@ -168,10 +168,10 @@ describe('Device Commands API', () => {
     it('returns pending commands and marks them as delivered', async () => {
       // Queue some commands
       await request(app)
-        .post('/api/devices/test-device/commands')
+        .post('/api/devices/test-device/commands').set('Authorization', adminAuthHeader())
         .send({ type: 'LOCK' });
       await request(app)
-        .post('/api/devices/test-device/commands')
+        .post('/api/devices/test-device/commands').set('Authorization', adminAuthHeader())
         .send({ type: 'REBOOT' });
 
       // Poll for commands
@@ -193,7 +193,7 @@ describe('Device Commands API', () => {
     it('updates device last seen when polling', async () => {
       // Initial status should be offline with no lastSeenAt
       const initialStatus = await request(app)
-        .get('/api/devices/test-device/status');
+        .get('/api/devices/test-device/status').set('Authorization', adminAuthHeader());
       expect(initialStatus.body.status).toBe('offline');
 
       // Poll for commands
@@ -201,7 +201,7 @@ describe('Device Commands API', () => {
 
       // Status should now be online
       const afterPoll = await request(app)
-        .get('/api/devices/test-device/status');
+        .get('/api/devices/test-device/status').set('Authorization', adminAuthHeader());
       expect(afterPoll.body.status).toBe('online');
       expect(afterPoll.body.lastSeenAt).toBeDefined();
     });
@@ -211,15 +211,15 @@ describe('Device Commands API', () => {
     it('returns command history', async () => {
       // Queue and complete some commands
       const cmd1 = await request(app)
-        .post('/api/devices/test-device/commands')
+        .post('/api/devices/test-device/commands').set('Authorization', adminAuthHeader())
         .send({ type: 'LOCK' });
 
       await request(app)
-        .patch(`/api/devices/test-device/commands/${cmd1.body.id}`)
+        .patch(`/api/devices/test-device/commands/${cmd1.body.id}`).set('Authorization', adminAuthHeader())
         .send({ status: 'completed' });
 
       const response = await request(app)
-        .get('/api/devices/test-device/commands');
+        .get('/api/devices/test-device/commands').set('Authorization', adminAuthHeader());
 
       expect(response.status).toBe(200);
       expect(response.body.commands).toHaveLength(1);
@@ -229,26 +229,26 @@ describe('Device Commands API', () => {
     it('filters by status', async () => {
       // Create commands with different statuses
       await request(app)
-        .post('/api/devices/test-device/commands')
+        .post('/api/devices/test-device/commands').set('Authorization', adminAuthHeader())
         .send({ type: 'LOCK' });
 
       const cmd2 = await request(app)
-        .post('/api/devices/test-device/commands')
+        .post('/api/devices/test-device/commands').set('Authorization', adminAuthHeader())
         .send({ type: 'REBOOT' });
 
       await request(app)
-        .patch(`/api/devices/test-device/commands/${cmd2.body.id}`)
+        .patch(`/api/devices/test-device/commands/${cmd2.body.id}`).set('Authorization', adminAuthHeader())
         .send({ status: 'completed' });
 
       // Filter by pending
       const pending = await request(app)
-        .get('/api/devices/test-device/commands?status=pending');
+        .get('/api/devices/test-device/commands?status=pending').set('Authorization', adminAuthHeader());
       expect(pending.body.commands).toHaveLength(1);
       expect(pending.body.commands[0].type).toBe('LOCK');
 
       // Filter by completed
       const completed = await request(app)
-        .get('/api/devices/test-device/commands?status=completed');
+        .get('/api/devices/test-device/commands?status=completed').set('Authorization', adminAuthHeader());
       expect(completed.body.commands).toHaveLength(1);
       expect(completed.body.commands[0].type).toBe('REBOOT');
     });
@@ -257,18 +257,18 @@ describe('Device Commands API', () => {
       // Create 5 commands
       for (let i = 0; i < 5; i++) {
         await request(app)
-          .post('/api/devices/test-device/commands')
+          .post('/api/devices/test-device/commands').set('Authorization', adminAuthHeader())
           .send({ type: 'LOCK' });
       }
 
       // Get first 2
       const first = await request(app)
-        .get('/api/devices/test-device/commands?limit=2');
+        .get('/api/devices/test-device/commands?limit=2').set('Authorization', adminAuthHeader());
       expect(first.body.commands).toHaveLength(2);
 
       // Get next 2
       const second = await request(app)
-        .get('/api/devices/test-device/commands?limit=2&offset=2');
+        .get('/api/devices/test-device/commands?limit=2&offset=2').set('Authorization', adminAuthHeader());
       expect(second.body.commands).toHaveLength(2);
     });
   });
@@ -276,11 +276,11 @@ describe('Device Commands API', () => {
   describe('PATCH /api/devices/:id/commands/:cmdId', () => {
     it('acknowledges command as executing', async () => {
       const cmd = await request(app)
-        .post('/api/devices/test-device/commands')
+        .post('/api/devices/test-device/commands').set('Authorization', adminAuthHeader())
         .send({ type: 'INSTALL_APK', payload: { url: 'http://x.com/a.apk', packageName: 'x' } });
 
       const response = await request(app)
-        .patch(`/api/devices/test-device/commands/${cmd.body.id}`)
+        .patch(`/api/devices/test-device/commands/${cmd.body.id}`).set('Authorization', adminAuthHeader())
         .send({ status: 'executing' });
 
       expect(response.status).toBe(200);
@@ -290,11 +290,11 @@ describe('Device Commands API', () => {
 
     it('acknowledges command as completed', async () => {
       const cmd = await request(app)
-        .post('/api/devices/test-device/commands')
+        .post('/api/devices/test-device/commands').set('Authorization', adminAuthHeader())
         .send({ type: 'LOCK' });
 
       const response = await request(app)
-        .patch(`/api/devices/test-device/commands/${cmd.body.id}`)
+        .patch(`/api/devices/test-device/commands/${cmd.body.id}`).set('Authorization', adminAuthHeader())
         .send({ status: 'completed' });
 
       expect(response.status).toBe(200);
@@ -302,17 +302,17 @@ describe('Device Commands API', () => {
 
       // Verify in history
       const history = await request(app)
-        .get('/api/devices/test-device/commands?status=completed');
+        .get('/api/devices/test-device/commands?status=completed').set('Authorization', adminAuthHeader());
       expect(history.body.commands[0].completedAt).toBeDefined();
     });
 
     it('acknowledges command as failed with error', async () => {
       const cmd = await request(app)
-        .post('/api/devices/test-device/commands')
+        .post('/api/devices/test-device/commands').set('Authorization', adminAuthHeader())
         .send({ type: 'INSTALL_APK', payload: { url: 'http://x.com/a.apk', packageName: 'x' } });
 
       const response = await request(app)
-        .patch(`/api/devices/test-device/commands/${cmd.body.id}`)
+        .patch(`/api/devices/test-device/commands/${cmd.body.id}`).set('Authorization', adminAuthHeader())
         .send({ status: 'failed', error: 'APK download failed' });
 
       expect(response.status).toBe(200);
@@ -320,17 +320,17 @@ describe('Device Commands API', () => {
 
       // Verify error is stored
       const history = await request(app)
-        .get('/api/devices/test-device/commands?status=failed');
+        .get('/api/devices/test-device/commands?status=failed').set('Authorization', adminAuthHeader());
       expect(history.body.commands[0].error).toBe('APK download failed');
     });
 
     it('returns 400 for invalid status', async () => {
       const cmd = await request(app)
-        .post('/api/devices/test-device/commands')
+        .post('/api/devices/test-device/commands').set('Authorization', adminAuthHeader())
         .send({ type: 'LOCK' });
 
       const response = await request(app)
-        .patch(`/api/devices/test-device/commands/${cmd.body.id}`)
+        .patch(`/api/devices/test-device/commands/${cmd.body.id}`).set('Authorization', adminAuthHeader())
         .send({ status: 'pending' });
 
       expect(response.status).toBe(400);
@@ -338,7 +338,7 @@ describe('Device Commands API', () => {
 
     it('returns 404 for unknown command', async () => {
       const response = await request(app)
-        .patch('/api/devices/test-device/commands/unknown-cmd')
+        .patch('/api/devices/test-device/commands/unknown-cmd').set('Authorization', adminAuthHeader())
         .send({ status: 'completed' });
 
       expect(response.status).toBe(404);
@@ -346,17 +346,17 @@ describe('Device Commands API', () => {
 
     it('returns 404 when acknowledging already completed command', async () => {
       const cmd = await request(app)
-        .post('/api/devices/test-device/commands')
+        .post('/api/devices/test-device/commands').set('Authorization', adminAuthHeader())
         .send({ type: 'LOCK' });
 
       // Complete it
       await request(app)
-        .patch(`/api/devices/test-device/commands/${cmd.body.id}`)
+        .patch(`/api/devices/test-device/commands/${cmd.body.id}`).set('Authorization', adminAuthHeader())
         .send({ status: 'completed' });
 
       // Try to complete again
       const response = await request(app)
-        .patch(`/api/devices/test-device/commands/${cmd.body.id}`)
+        .patch(`/api/devices/test-device/commands/${cmd.body.id}`).set('Authorization', adminAuthHeader())
         .send({ status: 'completed' });
 
       expect(response.status).toBe(404);
@@ -366,24 +366,24 @@ describe('Device Commands API', () => {
   describe('DELETE /api/devices/:id/commands/:cmdId', () => {
     it('cancels a pending command', async () => {
       const cmd = await request(app)
-        .post('/api/devices/test-device/commands')
+        .post('/api/devices/test-device/commands').set('Authorization', adminAuthHeader())
         .send({ type: 'LOCK' });
 
       const response = await request(app)
-        .delete(`/api/devices/test-device/commands/${cmd.body.id}`);
+        .delete(`/api/devices/test-device/commands/${cmd.body.id}`).set('Authorization', adminAuthHeader());
 
       expect(response.status).toBe(200);
       expect(response.body.success).toBe(true);
 
       // Verify command is gone
       const history = await request(app)
-        .get('/api/devices/test-device/commands');
+        .get('/api/devices/test-device/commands').set('Authorization', adminAuthHeader());
       expect(history.body.commands).toHaveLength(0);
     });
 
     it('returns 404 when cancelling non-pending command', async () => {
       const cmd = await request(app)
-        .post('/api/devices/test-device/commands')
+        .post('/api/devices/test-device/commands').set('Authorization', adminAuthHeader())
         .send({ type: 'LOCK' });
 
       // Mark as delivered by polling
@@ -391,14 +391,14 @@ describe('Device Commands API', () => {
 
       // Try to cancel
       const response = await request(app)
-        .delete(`/api/devices/test-device/commands/${cmd.body.id}`);
+        .delete(`/api/devices/test-device/commands/${cmd.body.id}`).set('Authorization', adminAuthHeader());
 
       expect(response.status).toBe(404);
     });
 
     it('returns 404 for unknown command', async () => {
       const response = await request(app)
-        .delete('/api/devices/test-device/commands/unknown-cmd');
+        .delete('/api/devices/test-device/commands/unknown-cmd').set('Authorization', adminAuthHeader());
 
       expect(response.status).toBe(404);
     });

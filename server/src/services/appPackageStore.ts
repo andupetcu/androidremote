@@ -4,7 +4,7 @@ function getDb() {
   return getDatabase();
 }
 import { getStorageProvider } from './storageProvider';
-import { v4 as uuidv4 } from 'uuid';
+import { randomUUID } from 'crypto';
 
 export interface AppPackage {
   id: string;
@@ -45,7 +45,7 @@ export interface AppVersion {
  */
 export function createAppPackage(input: AppPackageInput): AppPackage {
   const db = getDb();
-  const id = uuidv4();
+  const id = randomUUID();
   const now = Date.now();
 
   db.prepare(`
@@ -207,7 +207,7 @@ export function createVersion(packageId: string, input: {
   fileSize?: number;
 }): AppVersion {
   const db = getDb();
-  const id = uuidv4();
+  const id = randomUUID();
   const now = Date.now();
 
   db.prepare(`

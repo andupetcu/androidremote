@@ -1,7 +1,7 @@
 import request from 'supertest';
 import { app, resetRateLimiters } from '../src/app';
 import { deviceStore } from '../src/services/deviceStore';
-import { setupTestDatabase, cleanupTestDatabase, closeTestDatabase } from './setup';
+import { setupTestDatabase, cleanupTestDatabase, closeTestDatabase, adminAuthHeader } from './setup';
 
 describe('Device Management API', () => {
   beforeAll(() => {
@@ -19,7 +19,7 @@ describe('Device Management API', () => {
 
   describe('GET /api/devices', () => {
     it('returns empty list when no devices enrolled', async () => {
-      const response = await request(app).get('/api/devices');
+      const response = await request(app).get('/api/devices').set('Authorization', adminAuthHeader());
 
       expect(response.status).toBe(200);
       expect(response.body.devices).toEqual([]);
@@ -38,7 +38,7 @@ describe('Device Management API', () => {
         model: 'Galaxy S23',
       });
 
-      const response = await request(app).get('/api/devices');
+      const response = await request(app).get('/api/devices').set('Authorization', adminAuthHeader());
 
       expect(response.status).toBe(200);
       expect(response.body.devices).toHaveLength(2);
@@ -59,7 +59,7 @@ describe('Device Management API', () => {
         androidVersion: '14',
       });
 
-      const response = await request(app).get('/api/devices/device-123');
+      const response = await request(app).get('/api/devices/device-123').set('Authorization', adminAuthHeader());
 
       expect(response.status).toBe(200);
       expect(response.body.id).toBe('device-123');
@@ -70,7 +70,7 @@ describe('Device Management API', () => {
     });
 
     it('returns 404 for unknown device', async () => {
-      const response = await request(app).get('/api/devices/unknown-device');
+      const response = await request(app).get('/api/devices/unknown-device').set('Authorization', adminAuthHeader());
 
       expect(response.status).toBe(404);
       expect(response.body.error).toBe('Device not found');
@@ -84,18 +84,18 @@ describe('Device Management API', () => {
         name: 'Temporary Device',
       });
 
-      const response = await request(app).delete('/api/devices/device-to-delete');
+      const response = await request(app).delete('/api/devices/device-to-delete').set('Authorization', adminAuthHeader());
 
       expect(response.status).toBe(200);
       expect(response.body.success).toBe(true);
 
       // Verify device is gone
-      const getResponse = await request(app).get('/api/devices/device-to-delete');
+      const getResponse = await request(app).get('/api/devices/device-to-delete').set('Authorization', adminAuthHeader());
       expect(getResponse.status).toBe(404);
     });
 
     it('returns 404 when deleting unknown device', async () => {
-      const response = await request(app).delete('/api/devices/unknown-device');
+      const response = await request(app).delete('/api/devices/unknown-device').set('Authorization', adminAuthHeader());
 
       expect(response.status).toBe(404);
       expect(response.body.error).toBe('Device not found');
@@ -109,7 +109,7 @@ describe('Device Management API', () => {
         name: 'Status Test Device',
       });
 
-      const response = await request(app).get('/api/devices/device-status-test/status');
+      const response = await request(app).get('/api/devices/device-status-test/status').set('Authorization', adminAuthHeader());
 
       expect(response.status).toBe(200);
       expect(response.body.deviceId).toBe('device-status-test');
@@ -118,7 +118,7 @@ describe('Device Management API', () => {
     });
 
     it('returns 404 for unknown device', async () => {
-      const response = await request(app).get('/api/devices/unknown/status');
+      const response = await request(app).get('/api/devices/unknown/status').set('Authorization', adminAuthHeader());
 
       expect(response.status).toBe(404);
     });
@@ -138,7 +138,7 @@ describe('Device Management API', () => {
       expect(response.body.timestamp).toBeDefined();
 
       // Verify device is now online
-      const statusResponse = await request(app).get('/api/devices/device-heartbeat-test/status');
+      const statusResponse = await request(app).get('/api/devices/device-heartbeat-test/status').set('Authorization', adminAuthHeader());
       expect(statusResponse.body.status).toBe('online');
       expect(statusResponse.body.lastSeenAt).toBeDefined();
     });
@@ -154,19 +154,19 @@ describe('Device Management API', () => {
     it('auto-enrolls device when pairing completes', async () => {
       // Initiate pairing
       const initResponse = await request(app)
-        .post('/api/pair/initiate')
+        .post('/api/pair/initiate').set('Authorization', adminAuthHeader())
         .send({ devicePublicKey: 'test-public-key' });
 
       expect(initResponse.status).toBe(201);
       const { deviceId, pairingCode } = initResponse.body;
 
       // Device should not be enrolled yet
-      const beforeEnroll = await request(app).get(`/api/devices/${deviceId}`);
+      const beforeEnroll = await request(app).get(`/api/devices/${deviceId}`).set('Authorization', adminAuthHeader());
       expect(beforeEnroll.status).toBe(404);
 
       // Complete pairing
       const completeResponse = await request(app)
-        .post('/api/pair/complete')
+        .post('/api/pair/complete').set('Authorization', adminAuthHeader())
         .send({
           pairingCode,
           controllerPublicKey: 'controller-key',
@@ -175,7 +175,7 @@ describe('Device Management API', () => {
       expect(completeResponse.status).toBe(200);
 
       // Device should now be enrolled
-      const afterEnroll = await request(app).get(`/api/devices/${deviceId}`);
+      const afterEnroll = await request(app).get(`/api/devices/${deviceId}`).set('Authorization', adminAuthHeader());
       expect(afterEnroll.status).toBe(200);
       expect(afterEnroll.body.id).toBe(deviceId);
     });

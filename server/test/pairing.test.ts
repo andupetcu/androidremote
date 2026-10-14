@@ -1,7 +1,7 @@
 import request from 'supertest';
 import { app, resetRateLimiters } from '../src/app';
 import { pairingStore } from '../src/services/pairingStore';
-import { setupTestDatabase, cleanupTestDatabase, closeTestDatabase } from './setup';
+import { setupTestDatabase, cleanupTestDatabase, closeTestDatabase, adminAuthHeader } from './setup';
 
 // Mock public keys for testing
 const mockDevicePublicKey = 'device-public-key-base64-encoded-32bytes';
