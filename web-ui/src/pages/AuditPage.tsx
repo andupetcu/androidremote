@@ -1,6 +1,8 @@
 import { useState, useMemo } from 'react';
 import { makeStyles } from '@fluentui/react-components';
 import { useAudit } from '../hooks/useAudit';
+import { usePager } from '../hooks/usePager';
+import { Pager } from '../components/ui/Pager';
 import { Button } from '../components/ui/Button';
 import { Badge } from '../components/ui/Badge';
 import { Spinner } from '../components/ui/Spinner';
@@ -152,20 +154,24 @@ const useStyles = makeStyles({
   },
 });
 
+const PAGE_SIZE = 50;
+
 export function AuditPage() {
   const styles = useStyles();
   const [actionFilter, setActionFilter] = useState<string>('all');
   const [actorFilter, setActorFilter] = useState<string>('all');
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
+  const { offset, limit, setOffset } = usePager(PAGE_SIZE, `${actionFilter}|${actorFilter}`);
+
   const filters = useMemo(() => {
-    const f: { action?: AuditAction; actorType?: ActorType } = {};
+    const f: { action?: AuditAction; actorType?: ActorType; limit: number; offset: number } = { limit: PAGE_SIZE, offset };
     if (actionFilter !== 'all') f.action = actionFilter as AuditAction;
     if (actorFilter !== 'all') f.actorType = actorFilter as ActorType;
-    return Object.keys(f).length > 0 ? f : undefined;
-  }, [actionFilter, actorFilter]);
+    return f;
+  }, [actionFilter, actorFilter, offset]);
 
-  const { logs, loading, error, refresh, exportCsv } = useAudit(filters);
+  const { logs, total, loading, error, refresh, exportCsv } = useAudit(filters);
 
   const handleExport = async () => {
     try {
@@ -310,6 +316,7 @@ export function AuditPage() {
           ))}
         </div>
       )}
+      <Pager offset={offset} limit={limit} count={logs.length} total={total} onPage={setOffset} />
     </div>
   );
 }

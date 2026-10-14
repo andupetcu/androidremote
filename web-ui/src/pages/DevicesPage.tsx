@@ -1,8 +1,10 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useConfirm } from '../hooks/useConfirm';
 import { Link } from 'react-router-dom';
 import { makeStyles, mergeClasses } from '@fluentui/react-components';
-import { useDevices } from '../hooks/useDevices';
+import { useDevicePage } from '../hooks/useDevices';
+import { usePager } from '../hooks/usePager';
+import { Pager } from '../components/ui/Pager';
 import { Button } from '../components/ui/Button';
 import { API_BASE, apiFetch } from '../utils/api';
 
@@ -147,22 +149,33 @@ const useStyles = makeStyles({
   },
 });
 
+const PAGE_SIZE = 50;
+
 export function DevicesPage() {
   const styles = useStyles();
-  const { devices, loading, error, unenrollDevice } = useDevices();
+  const [searchInput, setSearchInput] = useState('');
+  const [search, setSearch] = useState('');
+  useEffect(() => {
+    const t = setTimeout(() => setSearch(searchInput), 300);
+    return () => clearTimeout(t);
+  }, [searchInput]);
+  const { offset, limit, setOffset } = usePager(PAGE_SIZE, search);
+  const { devices, total, online, offline, summaryIsPageOnly, loading, error, unenrollDevice, listAllIds } =
+    useDevicePage({ limit: PAGE_SIZE, offset, search });
   const [syncing, setSyncing] = useState(false);
   const { confirm, dialog } = useConfirm();
 
   const handleReapplyAll = async () => {
-    if (!(await confirm({ title: 'Reapply policies?', body: `Queue a policy sync on all ${devices.length} devices.`, confirmLabel: 'Reapply', danger: false }))) return;
+    if (!(await confirm({ title: 'Reapply policies?', body: `Queue a policy sync on all ${total} devices.`, confirmLabel: 'Reapply', danger: false }))) return;
     setSyncing(true);
     try {
+      const ids = await listAllIds(); // the whole fleet, not just the visible page
       await Promise.all(
-        devices.map((d) =>
+        ids.map((id) =>
           apiFetch(`${API_BASE}/api/commands`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ deviceId: d.id, type: 'SYNC_POLICY', payload: {} }),
+            body: JSON.stringify({ deviceId: id, type: 'SYNC_POLICY', payload: {} }),
           })
         )
       );
@@ -196,7 +209,7 @@ export function DevicesPage() {
       <div className={styles.header}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
           <h1 className={styles.headerTitle}>Devices</h1>
-          {devices.length > 0 && (
+          {total > 0 && (
             <Button variant="secondary" size="sm" loading={syncing} onClick={handleReapplyAll}>
               Reapply All Policies
             </Button>
@@ -204,23 +217,32 @@ export function DevicesPage() {
         </div>
         <div className={styles.stats}>
           <span className={styles.stat}>
-            <span className={styles.statValue}>{devices.length}</span>
+            <span className={styles.statValue}>{total}</span>
             <span className={styles.statLabel}>Total</span>
           </span>
           <span className={styles.stat}>
             <span className={mergeClasses(styles.statValue, styles.statValueOnline)}>
-              {devices.filter(d => d.status === 'online').length}
+              {online}
             </span>
-            <span className={styles.statLabel}>Online</span>
+            <span className={styles.statLabel}>Online{summaryIsPageOnly ? ' (this page)' : ''}</span>
           </span>
           <span className={styles.stat}>
             <span className={mergeClasses(styles.statValue, styles.statValueOffline)}>
-              {devices.filter(d => d.status === 'offline').length}
+              {offline}
             </span>
-            <span className={styles.statLabel}>Offline</span>
+            <span className={styles.statLabel}>Offline{summaryIsPageOnly ? ' (this page)' : ''}</span>
           </span>
         </div>
       </div>
+
+      <input
+        type="search"
+        aria-label="Search devices"
+        placeholder="Search by name, model or ID"
+        value={searchInput}
+        onChange={(e) => setSearchInput(e.target.value)}
+        style={{ margin: '0 0 1rem', padding: '6px 10px', width: '100%', maxWidth: 360, boxSizing: 'border-box' }}
+      />
 
       <div className={styles.tableWrapper}>
       <table className={styles.table}>
@@ -274,9 +296,11 @@ export function DevicesPage() {
 
       {devices.length === 0 && (
         <div className={styles.empty}>
-          No devices enrolled yet.
+          {search ? 'No devices match this search.' : 'No devices enrolled yet.'}
         </div>
       )}
+
+      <Pager offset={offset} limit={limit} count={devices.length} total={total} onPage={setOffset} />
     </div>
   );
 }

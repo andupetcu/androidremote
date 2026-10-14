@@ -22,3 +22,6 @@ export type { EmptyStateProps } from './EmptyState';
 
 export { ConfirmDialog } from './ConfirmDialog';
 export type { ConfirmDialogProps } from './ConfirmDialog';
+
+export { Pager } from './Pager';
+export type { PagerProps } from './Pager';

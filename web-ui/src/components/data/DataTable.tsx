@@ -35,6 +35,11 @@ export interface DataTableProps<T> {
   selectedKeys?: Set<string>;
   onSelectionChange?: (keys: Set<string>) => void;
   onRowClick?: (row: T) => void;
+  /**
+   * Render only the rows in view (fixed row height, scroll container of `height` px).
+   * For long lists (hundreds of rows or more). Selection and keys work as usual.
+   */
+  virtualRows?: { rowHeight: number; height: number; overscan?: number };
 }
 
 const useStyles = makeStyles({
@@ -123,8 +128,10 @@ export function DataTable<T>({
   selectedKeys = new Set(),
   onSelectionChange,
   onRowClick,
+  virtualRows,
 }: DataTableProps<T>) {
   const styles = useStyles();
+  const [scrollTop, setScrollTop] = useState(0);
   const [sortKey, setSortKey] = useState<string | null>(null);
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
 
@@ -168,8 +175,26 @@ export function DataTable<T>({
     return <EmptyState icon={emptyIcon} title={emptyMessage} />;
   }
 
+  let rows = data;
+  let padTop = 0;
+  let padBottom = 0;
+  if (virtualRows) {
+    const { rowHeight, height, overscan = 6 } = virtualRows;
+    const start = Math.max(0, Math.floor(scrollTop / rowHeight) - overscan);
+    const end = Math.min(data.length, Math.ceil((scrollTop + height) / rowHeight) + overscan);
+    rows = data.slice(start, end);
+    padTop = start * rowHeight;
+    padBottom = (data.length - end) * rowHeight;
+  }
+  const colCount = columns.length + (selectable ? 1 : 0);
+
   return (
-    <div className={styles.wrapper}>
+    <div
+      className={styles.wrapper}
+      data-testid={virtualRows ? 'virtual-scroller' : undefined}
+      style={virtualRows ? { maxHeight: virtualRows.height, overflowY: 'auto' } : undefined}
+      onScroll={virtualRows ? (e) => setScrollTop(e.currentTarget.scrollTop) : undefined}
+    >
       <Table className={styles.table}>
         <TableHeader>
           <TableRow>
@@ -202,7 +227,12 @@ export function DataTable<T>({
           </TableRow>
         </TableHeader>
         <TableBody>
-          {data.map((row) => {
+          {padTop > 0 && (
+            <TableRow role="presentation" aria-hidden style={{ height: padTop }}>
+              <TableCell colSpan={colCount} style={{ padding: 0 }} />
+            </TableRow>
+          )}
+          {rows.map((row) => {
             const key = keyExtractor(row);
             const isSelected = selectedKeys.has(key);
 
@@ -214,6 +244,7 @@ export function DataTable<T>({
                   onRowClick && styles.rowClickable,
                   isSelected && styles.rowSelected
                 )}
+                style={virtualRows ? { height: virtualRows.rowHeight } : undefined}
                 onClick={() => onRowClick?.(row)}
               >
                 {selectable && (
@@ -232,6 +263,11 @@ export function DataTable<T>({
               </TableRow>
             );
           })}
+          {padBottom > 0 && (
+            <TableRow role="presentation" aria-hidden style={{ height: padBottom }}>
+              <TableCell colSpan={colCount} style={{ padding: 0 }} />
+            </TableRow>
+          )}
         </TableBody>
       </Table>
     </div>

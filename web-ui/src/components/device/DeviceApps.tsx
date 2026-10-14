@@ -87,7 +87,12 @@ export function DeviceApps({ deviceId }: DeviceAppsProps) {
           Refresh
         </Button>
       </div>
-      <DataTable columns={columns} data={apps} keyExtractor={(app) => app.packageName} />
+      <DataTable
+        columns={columns}
+        data={apps}
+        keyExtractor={(app) => app.packageName}
+        virtualRows={apps.length > 100 ? { rowHeight: 56, height: 560 } : undefined}
+      />
     </div>
   );
 }

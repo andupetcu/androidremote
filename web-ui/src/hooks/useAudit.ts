@@ -16,7 +16,8 @@ interface AuditFilters {
 
 interface UseAuditResult {
   logs: AuditLog[];
-  total: number;
+  /** Total matching records when the server reports it. */
+  total: number | null;
   loading: boolean;
   error: string | null;
   refresh: () => Promise<void>;
@@ -25,7 +26,7 @@ interface UseAuditResult {
 
 export function useAudit(filters?: AuditFilters): UseAuditResult {
   const [logs, setLogs] = useState<AuditLog[]>([]);
-  const [total, setTotal] = useState(0);
+  const [total, setTotal] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -52,7 +53,7 @@ export function useAudit(filters?: AuditFilters): UseAuditResult {
       if (!res.ok) throw new Error('Failed to fetch audit logs');
       const data = await res.json();
       setLogs(data.logs);
-      setTotal(data.total ?? data.logs.length);
+      setTotal(typeof data.total === 'number' ? data.total : null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error');
     } finally {

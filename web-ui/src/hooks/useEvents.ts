@@ -9,10 +9,14 @@ interface EventFilters {
   acknowledged?: boolean;
   from?: number;
   to?: number;
+  limit?: number;
+  offset?: number;
 }
 
 interface UseEventsResult {
   events: DeviceEvent[];
+  /** Total matching events when the server reports it. */
+  total: number | null;
   loading: boolean;
   error: string | null;
   refresh: () => Promise<void>;
@@ -22,6 +26,7 @@ interface UseEventsResult {
 
 export function useEvents(filters?: EventFilters): UseEventsResult {
   const [events, setEvents] = useState<DeviceEvent[]>([]);
+  const [total, setTotal] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -29,6 +34,8 @@ export function useEvents(filters?: EventFilters): UseEventsResult {
     try {
       setError(null);
       const params = new URLSearchParams();
+      if (filters?.limit) params.set('limit', String(filters.limit));
+      if (filters?.offset) params.set('offset', String(filters.offset));
       if (filters?.deviceId) params.set('deviceId', filters.deviceId);
       if (filters?.eventType) params.set('eventType', filters.eventType);
       if (filters?.severity) params.set('severity', filters.severity);
@@ -41,12 +48,13 @@ export function useEvents(filters?: EventFilters): UseEventsResult {
       if (!res.ok) throw new Error('Failed to fetch events');
       const data = await res.json();
       setEvents(data.events);
+      setTotal(typeof data.total === 'number' ? data.total : null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error');
     } finally {
       setLoading(false);
     }
-  }, [filters?.deviceId, filters?.eventType, filters?.severity, filters?.acknowledged, filters?.from, filters?.to]);
+  }, [filters?.deviceId, filters?.eventType, filters?.severity, filters?.acknowledged, filters?.from, filters?.to, filters?.limit, filters?.offset]);
 
   useEffect(() => {
     refresh();
@@ -69,7 +77,7 @@ export function useEvents(filters?: EventFilters): UseEventsResult {
     await refresh();
   };
 
-  return { events, loading, error, refresh, acknowledge, acknowledgeMultiple };
+  return { events, total, loading, error, refresh, acknowledge, acknowledgeMultiple };
 }
 
 interface UseDeviceEventsResult {

@@ -2,6 +2,8 @@ import { useState, useCallback, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { makeStyles, mergeClasses } from '@fluentui/react-components';
 import { useEvents } from '../hooks/useEvents';
+import { usePager } from '../hooks/usePager';
+import { Pager } from '../components/ui/Pager';
 import { useRealtimeEvents } from '../hooks/useAdminWebSocket';
 import { Button } from '../components/ui/Button';
 import { Badge } from '../components/ui/Badge';
@@ -188,6 +190,8 @@ const useStyles = makeStyles({
   },
 });
 
+const PAGE_SIZE = 50;
+
 export function EventsPage() {
   const styles = useStyles();
   const [filter, setFilter] = useState<FilterType>('all');
@@ -195,13 +199,14 @@ export function EventsPage() {
   const [actionError, setActionError] = useState<string | null>(null);
   const [selectedEvents, setSelectedEvents] = useState<Set<string>>(new Set());
 
-  const filters = useMemo(() => {
-    if (filter === 'all') return undefined;
-    if (filter === 'unread') return { acknowledged: false };
-    return { severity: filter };
-  }, [filter]);
+  const { offset, limit, setOffset } = usePager(PAGE_SIZE, filter);
 
-  const { events, loading, error, refresh, acknowledge, acknowledgeMultiple } = useEvents(filters);
+  const filters = useMemo(() => {
+    const base = filter === 'all' ? {} : filter === 'unread' ? { acknowledged: false } : { severity: filter };
+    return { ...base, limit: PAGE_SIZE, offset };
+  }, [filter, offset]);
+
+  const { events, total, loading, error, refresh, acknowledge, acknowledgeMultiple } = useEvents(filters);
 
   // Handle real-time events
   const handleNewEvent = useCallback((event: DeviceEvent) => {
@@ -216,11 +221,12 @@ export function EventsPage() {
 
   // Merge realtime events with fetched events
   const displayEvents = useMemo(() => {
-    const combined = [...realtimeEvents, ...(events || [])];
+    // Live events belong to the newest page only
+    const combined = [...(offset === 0 && filter === 'all' ? realtimeEvents : []), ...(events || [])];
     // Remove duplicates and sort by createdAt
     const unique = Array.from(new Map(combined.map((e) => [e.id, e])).values());
     return unique.sort((a, b) => b.createdAt - a.createdAt);
-  }, [realtimeEvents, events]);
+  }, [realtimeEvents, events, offset, filter]);
 
   const handleAcknowledge = async (eventId: string) => {
     try {
@@ -395,6 +401,7 @@ export function EventsPage() {
           ))}
         </div>
       )}
+      <Pager offset={offset} limit={limit} count={events.length} total={total} onPage={setOffset} />
     </div>
   );
 }
