@@ -21,7 +21,7 @@ export type RemoteCommand =
   | { type: 'GET_DEVICE_INFO' }
   | { type: 'LOCK_DEVICE' }
   | { type: 'REBOOT_DEVICE' }
-  | { type: 'WIPE_DEVICE'; wipeExternalStorage?: boolean }
+  | { type: 'WIPE_DEVICE'; confirm: string; wipeExternalStorage?: boolean }
   | { type: 'LIST_APPS'; includeSystemApps?: boolean }
   | { type: 'INSTALL_APP'; packageName: string; apkUrl: string }
   | { type: 'UNINSTALL_APP'; packageName: string };
