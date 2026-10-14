@@ -9,3 +9,5 @@
 - [T8a] `DeviceCommandChannel.kt:75` (core-transport) logs raw message text, which may include typed passwords (AR-18). (from T4)
 - [T8a] `RemoteSessionService.kt:286` uses `takeIf { it.isAvailable() }` on Main, so the text handler never gets the shell injector. Drop the `takeIf`; TextInputHandler checks at use time. (from T4)
 - [user] The release default `PAIRING_SERVER_URL` in app/build.gradle.kts is `http://192.168.68.209:7899`. Release builds are now HTTPS-only (or listed host names), so deployments need HTTPS. (from T4)
+- [T11] `POST /api/devices/:id/telemetry/batch` body `{"samples":[{...telemetry, collectedAt:<epoch ms>}]}`; respond with `nextReportIn` (seconds) on the telemetry endpoints. (from T10)
+- [T9] Replace the 6th-poll telemetry counter with `telemetryCollector.reportIfDue(serverUrl, deviceId)` (sent to T9 by message). (from T10)
