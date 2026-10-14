@@ -5,3 +5,7 @@
 - [T11] `POST /api/auth/logout` (the UI calls it best-effort) and server-side revocation. (from T5)
 - [T12] Remaining `window.confirm` in DeviceCard, DevicesPage, group and policy deletes; PairingFlow uses raw fetch; command status by live events instead of 5 s polling. (from T5)
 - [T7] The relay screens still pass `token` to the relay hook as a "signed in" gate only. (from T5)
+- [T8b] BLOCKING: ScreenServerManager.kt (around lines 250 and 302) and the RemoteSessionService hint strings must pass `-u <Process.myUid()>` to the screen-server `app_process` command. Until then the server rejects every client. (from T4)
+- [T8a] `DeviceCommandChannel.kt:75` (core-transport) logs raw message text, which may include typed passwords (AR-18). (from T4)
+- [T8a] `RemoteSessionService.kt:286` uses `takeIf { it.isAvailable() }` on Main, so the text handler never gets the shell injector. Drop the `takeIf`; TextInputHandler checks at use time. (from T4)
+- [user] The release default `PAIRING_SERVER_URL` in app/build.gradle.kts is `http://192.168.68.209:7899`. Release builds are now HTTPS-only (or listed host names), so deployments need HTTPS. (from T4)
