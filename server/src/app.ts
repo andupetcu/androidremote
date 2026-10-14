@@ -780,6 +780,11 @@ app.get('/api/agent/connections', authMiddleware, (_req: Request, res: Response)
 // Agent Binary Distribution
 // ============================================
 
+/** Delete a rejected upload before the response goes out, so a caller that sees the 4xx/5xx never finds the temp file. */
+function removeUpload(p: string): void {
+  try { fs.unlinkSync(p); } catch { /* already gone */ }
+}
+
 // Configure multer for agent binary uploads
 // Streamed to disk with its SHA-256 computed on the way, never held in memory.
 const agentBinaryUpload = multer({
@@ -850,7 +855,7 @@ app.post('/api/agent/upload', authMiddleware, agentBinaryUpload.single('file'), 
 
   // The upload is already on disk; drop it whenever the request is refused.
   const refuse = (error: string) => {
-    if (file?.path) fs.unlink(file.path, () => undefined);
+    if (file?.path) removeUpload(file.path);
     res.status(400).json({ error });
   };
 
@@ -874,7 +879,7 @@ app.post('/api/agent/upload', authMiddleware, agentBinaryUpload.single('file'), 
     res.json({ success: true, binary: info });
   } catch (err) {
     console.error('Agent binary upload failed:', err);
-    fs.unlink(file.path, () => undefined);
+    removeUpload(file.path);
     res.status(500).json({ error: 'Failed to store the binary' });
   }
 });
@@ -1025,7 +1030,7 @@ app.post('/api/agent/upload-installer', authMiddleware, installerUpload.single('
   const file = req.file;
 
   const refuse = (error: string) => {
-    if (file?.path) fs.unlink(file.path, () => undefined);
+    if (file?.path) removeUpload(file.path);
     res.status(400).json({ error });
   };
 
@@ -1045,7 +1050,7 @@ app.post('/api/agent/upload-installer', authMiddleware, installerUpload.single('
     moveFile(file.path, path.join(INSTALLERS_DIR, filename));
   } catch (err) {
     console.error('Installer upload failed:', err);
-    fs.unlink(file.path, () => undefined);
+    removeUpload(file.path);
     res.status(500).json({ error: 'Failed to store the installer' });
     return;
   }

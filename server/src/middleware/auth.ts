@@ -15,6 +15,12 @@ declare global {
   }
 }
 
+/** bcrypt cost for new password hashes: 12 unless BCRYPT_ROUNDS (4-15) says otherwise. Tests set a low value. */
+export function bcryptRounds(): number {
+  const n = Number(process.env.BCRYPT_ROUNDS);
+  return Number.isInteger(n) && n >= 4 && n <= 15 ? n : 12;
+}
+
 let jwtSecret: string;
 
 export function getJwtSecret(): string {
@@ -60,7 +66,7 @@ export async function ensureInitialAdminPassword(): Promise<boolean> {
     console.error('ADMIN_INITIAL_PASSWORD is shorter than 8 characters and was ignored.');
     return false;
   }
-  await storePasswordHash(await bcrypt.hash(initial, 12));
+  await storePasswordHash(await bcrypt.hash(initial, bcryptRounds()));
   console.warn('Admin password initialised from ADMIN_INITIAL_PASSWORD. Remove the variable from the environment.');
   return true;
 }
@@ -261,8 +267,7 @@ export async function changePasswordHandler(req: Request, res: Response): Promis
   }
 
   // Hash and store the new password in the settings table
-  const saltRounds = 12;
-  const newHash = await bcrypt.hash(newPassword, saltRounds);
+  const newHash = await bcrypt.hash(newPassword, bcryptRounds());
 
   try {
     await storePasswordHash(newHash);

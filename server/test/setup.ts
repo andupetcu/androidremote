@@ -56,6 +56,8 @@ export function cleanupTestDatabase(): void {
     for (const table of DATA_TABLES) {
       testDb.exec(`DELETE FROM ${table}`);
     }
+    // A password change in one test must not invalidate the admin tokens minted by the next one.
+    testDb.exec("DELETE FROM settings WHERE key = 'adminSessionsValidAfter'");
     testDb.pragma('foreign_keys = ON');
   }
 }
@@ -72,7 +74,7 @@ export function closeTestDatabase(): void {
 // Admin JWT for supertest calls against admin-only /api routes.
 // Device-facing routes authenticate with X-Session-Token instead and must use plain request(app).
 export function adminAuthHeader(): string {
-  return `Bearer ${jwt.sign({ username: 'admin' }, getJwtSecret(), { expiresIn: '1h' })}`;
+  return `Bearer ${jwt.sign({ username: 'admin', iatMs: Date.now() }, getJwtSecret(), { expiresIn: '1h' })}`;
 }
 
 // Session token for an already-enrolled device, for device-facing routes (contract C1: X-Session-Token).

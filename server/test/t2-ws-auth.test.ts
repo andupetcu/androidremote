@@ -100,6 +100,9 @@ describe('T2 WebSocket authentication', () => {
     sockets = [];
     shutdownRelay();
     await new Promise<void>((r) => server.close(() => r()));
+    // ws emits 'close' (and the server logs it) one tick after net reports the connection gone: let that finish
+    // inside the test, not after jest has torn the environment down.
+    await new Promise<void>((r) => setImmediate(() => setImmediate(r)));
     agentConnectionStore.getConnectedDeviceIds().forEach((id) => agentConnectionStore.removeAgent(id));
     envKeys.forEach((k) => delete process.env[k]);
     cleanupTestDatabase();
