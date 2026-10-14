@@ -52,7 +52,7 @@ Apps and kiosk:
 
 Remote desktop:
 10. Rooted device: the session starts, rotate the device and the picture and taps follow, tap in the letterbox area is ignored. Close the browser tab and the device stops capture within about 30 s.
-11. Non-rooted device: the viewer shows "consent required", and tapping "Start now" on the device starts capture.
+11. Non-rooted device: Connect is disabled with "Remote desktop requires a rooted device" (from telemetry `rooted:false`). A forced START_REMOTE fails with the same message.
 12. Toggle Wi-Fi briefly during a session. Video recovers without restarting the session.
 13. Over mobile data or behind NAT (TURN configured): the session connects.
 
@@ -61,6 +61,6 @@ Analytics:
 15. Provisioning: Settings, then QR. Factory-reset a device and scan it. The agent downloads from `/api/provisioning/agent.apk` and the checksum matches.
 
 ## 5. Known limits and decisions left to you
-- Silent remote desktop without root isn't possible on stock Android. Options: root (current), an OEM platform-signed build, or the MediaProjection "Start now" tap (now wired).
-- Commands the Android agent doesn't implement (UNLOCK, SEND_MESSAGE, PLAY_SOUND, SET_BRIGHTNESS, RUN_SHELL, file commands…) are marked unsupported in the UI for Android devices. Implement or remove them as you prefer.
+- Remote desktop is supported on rooted devices only (owner decision, 2026-10-14). The MediaProjection consent path was removed, and the root check runs `su -c id` and expects uid 0.
+- Commands the Android agent doesn't implement (UNLOCK, SEND_MESSAGE, PLAY_SOUND, SET_BRIGHTNESS, RUN_SHELL, file commands…) are hidden in the UI for Android devices (owner decision). The server still accepts them for other agents.
 - Kiosk foreground detection needs usage-stats access. The Device Owner self-grants it where the OEM allows; otherwise the watchdog relaunches more often than needed.
