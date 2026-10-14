@@ -14,3 +14,5 @@
 - [T12] DeviceRemote.tsx: remove the fixed 6 s sleep, wait on `devicePresent` from useWebRTC, show a failed START_REMOTE (rest of WU-09). Add a default MSW handler for `/api/ice-servers` in tests/mocks. (from T7)
 - [T8b] DONE: ScreenServerManager passes `-u <myUid>` (ScreenServerCommand). Still open for T8a: replace the RemoteSessionService hint strings with `ScreenServerManager.adbStartHint()` and adopt ScreenCaptureController (see evidence/T8b.md "Interface for T8a").
 - [boot/update receivers owner] Call `ScreenServerManager(context).prestart(restart=false)` on BOOT_COMPLETED and `prestart(restart=true)` on MY_PACKAGE_REPLACED, off Main (AR-07 pre-start). (from T8b)
+- [T11] Server: the six C10 command types; WIPE `{confirm: deviceId, wipeExternalStorage?}` with an audit reason; optional `updateWindow {start,end}` ("HH:mm") in SYNC_POLICY. Per-package backoff/staged rollout for auto-updates is optional. (from T9)
+- [user] Silent mode: Do-Not-Disturb access needs a one-time `adb shell cmd notification allow_dnd com.androidremote.app` per device. Kiosk foreground detection needs PACKAGE_USAGE_STATS (the Device Owner self-grants it where allowed). (from T9)
