@@ -5,7 +5,7 @@ import type { DeviceInfo, AppList, UseWebRTCResult } from './useWebRTC';
  * Hook for MDM (Mobile Device Management) commands.
  * Provides typed methods for interacting with device management features.
  */
-export function useMdmCommands(webrtc: Pick<UseWebRTCResult, 'sendCommand' | 'sendCommandWithResponse'>) {
+export function useMdmCommands(webrtc: Pick<UseWebRTCResult, 'sendCommand' | 'sendCommandWithResponse'>, deviceId?: string | null) {
   const { sendCommand, sendCommandWithResponse } = webrtc;
 
   /**
@@ -36,10 +36,13 @@ export function useMdmCommands(webrtc: Pick<UseWebRTCResult, 'sendCommand' | 'se
    * Requires Device Owner privileges.
    *
    * @param wipeExternalStorage Also wipe external storage (SD card)
+   *
+   * The device refuses the wipe unless `confirm` equals its own device ID (C10).
    */
   const wipeDevice = useCallback(async (wipeExternalStorage = false): Promise<void> => {
-    await sendCommandWithResponse({ type: 'WIPE_DEVICE', wipeExternalStorage });
-  }, [sendCommandWithResponse]);
+    if (!deviceId) throw new Error('A device id is required to confirm a wipe');
+    await sendCommandWithResponse({ type: 'WIPE_DEVICE', confirm: deviceId, wipeExternalStorage });
+  }, [sendCommandWithResponse, deviceId]);
 
   /**
    * List installed applications on the device.

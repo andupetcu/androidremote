@@ -12,6 +12,15 @@ interface EnrollmentToken {
   isActive: boolean;
 }
 
+interface ProvisioningInfo {
+  available: boolean;
+  packageName: string;
+  downloadUrl: string;
+  sha256: string | null;
+  checksum: string | null;
+  qrPayload: Record<string, unknown> | null;
+}
+
 const ADB_INSTRUCTIONS = `# ══════════════════════════════════════════════════
 # OPTION A: ADB Install (existing devices with USB access)
 # ══════════════════════════════════════════════════
@@ -134,9 +143,9 @@ adb shell settings put secure enabled_accessibility_services \\
 #   "android.app.extra.PROVISIONING_DEVICE_ADMIN_COMPONENT_NAME":
 #     "com.androidremote.app/.admin.DeviceOwnerReceiver",
 #   "android.app.extra.PROVISIONING_DEVICE_ADMIN_PACKAGE_DOWNLOAD_LOCATION":
-#     "https://YOUR-SERVER/api/uploads/apks/com.androidremote.app-latest.apk",
+#     "https://YOUR-SERVER/api/provisioning/agent.apk",
 #   "android.app.extra.PROVISIONING_DEVICE_ADMIN_PACKAGE_CHECKSUM":
-#     "SHA-256_CHECKSUM_OF_APK",
+#     "BASE64URL_SHA256_OF_APK",  (Settings fills this in for you)
 #   "android.app.extra.PROVISIONING_SKIP_EDUCATION_SCREENS": true,
 #   "android.app.extra.PROVISIONING_WIFI_SSID": "YourWiFi",
 #   "android.app.extra.PROVISIONING_WIFI_PASSWORD": "YourPassword",
@@ -289,8 +298,8 @@ adb shell am start -n com.androidremote.app/.MainActivity \\
 # - Root and Device Owner can be used together for full capability
 # - The screen server binary persists across app updates
 # - App self-updates via INSTALL_APK preserve Device Owner status
-# - For QR provisioning, the APK checksum can be generated with:
-#     sha256sum android-remote.apk | awk '{print $1}'
+# - For QR provisioning, the checksum is base64url (unpadded) of the raw SHA-256; Settings computes it. By hand:
+#     openssl dgst -sha256 -binary android-remote.apk | basenc --base64url | tr -d '='
 # - AccessibilityService can be enabled via ADB (no UI needed):
 #     adb shell settings put secure enabled_accessibility_services \\
 #       com.androidremote.app/.service.InputInjectionService
@@ -525,8 +534,11 @@ export function SettingsPage() {
   // QR provisioning state
   const [qrWifiSsid, setQrWifiSsid] = useState('');
   const [qrWifiPassword, setQrWifiPassword] = useState('');
-  const [qrApkUrl, setQrApkUrl] = useState('');
-  const [qrApkChecksum, setQrApkChecksum] = useState('');
+  // From GET /api/provisioning/info (admin): public download URL, base64url checksum and the base QR payload.
+  const [qrInfo, setQrInfo] = useState<ProvisioningInfo | null>(null);
+  const [qrInfoLoaded, setQrInfoLoaded] = useState(false);
+  const qrApkUrl = qrInfo?.available ? qrInfo.downloadUrl : '';
+  const qrApkChecksum = qrInfo?.available ? qrInfo.checksum ?? '' : '';
   const [qrLocale, setQrLocale] = useState('en_US');
   const [qrTimezone, setQrTimezone] = useState('UTC');
   const [qrGenerated, setQrGenerated] = useState(false);
@@ -628,27 +640,23 @@ export function SettingsPage() {
     setTimeout(() => setCopiedAdb(false), 2000);
   };
 
-  // Pre-fill APK URL from server base
+  // The server owns the QR contents: the public agent.apk URL and the checksum Android expects.
   useEffect(() => {
-    if (!qrApkUrl) {
-      const base = API_BASE || window.location.origin;
-      setQrApkUrl(`${base}/api/uploads/apks/com.androidremote.app-latest.apk`);
-    }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    let cancelled = false;
+    apiFetch(`${API_BASE}/api/provisioning/info`)
+      .then(res => (res.ok ? res.json() : null))
+      .then((data: ProvisioningInfo | null) => { if (!cancelled) setQrInfo(data); })
+      .catch(() => { if (!cancelled) setQrInfo(null); })
+      .finally(() => { if (!cancelled) setQrInfoLoaded(true); });
+    return () => { cancelled = true; };
+  }, []);
 
   const getProvisioningJson = () => {
     const payload: Record<string, unknown> = {
-      'android.app.extra.PROVISIONING_DEVICE_ADMIN_COMPONENT_NAME':
-        'com.androidremote.app/.admin.DeviceOwnerReceiver',
-      'android.app.extra.PROVISIONING_DEVICE_ADMIN_PACKAGE_DOWNLOAD_LOCATION': qrApkUrl,
-      'android.app.extra.PROVISIONING_SKIP_EDUCATION_SCREENS': true,
-      'android.app.extra.PROVISIONING_LEAVE_ALL_SYSTEM_APPS_ENABLED': true,
+      ...(qrInfo?.qrPayload ?? {}),
       'android.app.extra.PROVISIONING_LOCALE': qrLocale,
       'android.app.extra.PROVISIONING_TIME_ZONE': qrTimezone,
     };
-    if (qrApkChecksum) {
-      payload['android.app.extra.PROVISIONING_DEVICE_ADMIN_PACKAGE_CHECKSUM'] = qrApkChecksum;
-    }
     if (qrWifiSsid) {
       payload['android.app.extra.PROVISIONING_WIFI_SSID'] = qrWifiSsid;
       if (qrWifiPassword) {
@@ -810,30 +818,29 @@ export function SettingsPage() {
           Generate a QR code for zero-touch Device Owner provisioning on phones and tablets with cameras.
           After a factory reset, tap the welcome screen 6 times to open the QR scanner (Android 7+).
           The device auto-downloads the APK and sets it as Device Owner (MDM features: silent install,
-          lock, wipe, kiosk). For full remote control, a one-time ADB session or root is still needed
+          lock, wipe, kiosk). The download link and checksum come from the server (the uploaded agent APK). For full remote control, a one-time ADB session or root is still needed
           to deploy the screen-server. For camera-less devices (Android boxes), see Option C in the guide below.
         </p>
 
         <div className={styles.formGroup} style={{ marginTop: '1rem' }}>
-          <label>APK Download URL *</label>
+          <label>APK Download URL (public, served by this server)</label>
           <input
             className={styles.input}
             type="text"
             value={qrApkUrl}
-            onChange={(e) => { setQrApkUrl(e.target.value); setQrGenerated(false); }}
-            placeholder="https://your-server.com/api/uploads/apks/com.androidremote.app-latest.apk"
+            readOnly
+            placeholder="https://your-server.com/api/provisioning/agent.apk"
           />
         </div>
         <div className={styles.formGroup}>
-          <label>APK SHA-256 Checksum (optional but recommended)</label>
-          <input
-            className={styles.input}
-            type="text"
-            value={qrApkChecksum}
-            onChange={(e) => { setQrApkChecksum(e.target.value); setQrGenerated(false); }}
-            placeholder="sha256sum android-remote.apk | awk '{print $1}'"
-          />
+          <label>APK checksum (SHA-256, base64url, computed by the server)</label>
+          <input className={styles.input} type="text" value={qrApkChecksum} readOnly placeholder="Computed when the agent APK is uploaded" />
         </div>
+        {qrInfoLoaded && !qrInfo?.available && (
+          <p style={{ color: '#d97706', fontSize: '0.8125rem' }}>
+            No agent APK has been uploaded yet. Upload {qrInfo?.packageName ?? 'com.androidremote.app'} under Apps first.
+          </p>
+        )}
         <div style={{ display: 'flex', gap: '1rem' }}>
           <div className={styles.formGroup} style={{ flex: 1 }}>
             <label>WiFi SSID (optional)</label>
