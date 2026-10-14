@@ -20,7 +20,8 @@ import { auditStore, AuditInput } from './services/auditStore';
 import { COMMAND_TYPES } from './db/schema';
 import { LocalStorageProvider, setStorageProvider, getStorageProvider } from './services/storageProvider';
 import * as appPackageStore from './services/appPackageStore';
-import { syncRequiredApps, syncPolicyRequiredApps, queueSyncPolicy } from './services/appSyncService';
+import { disconnectDevice } from './signaling';
+import { syncRequiredApps, syncPolicyRequiredApps, queueSyncPolicy, queueKioskCommand } from './services/appSyncService';
 import { agentConnectionStore } from './services/agentConnectionStore';
 import { agentBinaryStore, binariesDir } from './services/agentBinaryStore';
 import { getDatabase } from './db/connection';
@@ -545,6 +546,9 @@ app.delete('/api/devices/:id', (req: Request, res: Response) => {
     res.status(404).json({ error: 'Device not found' });
     return;
   }
+
+  // Revoke live authority now: sessions are gone with the row, open sockets would otherwise stay trusted
+  disconnectDevice(id, 'device unenrolled');
 
   auditStore.log({
     actorType: 'admin',
@@ -2312,6 +2316,7 @@ app.put('/api/policies/:id', (req: Request, res: Response) => {
     // Sound/Notifications
     if (body.silentMode !== undefined) input.silentMode = body.silentMode;
 
+    const previousKioskPackage = policyStore.getPolicy(id)?.kioskPackage ?? null;
     const policy = policyStore.updatePolicy(id, input);
     if (!policy) {
       res.status(404).json({ error: 'Policy not found' });
@@ -2326,10 +2331,17 @@ app.put('/api/policies/:id', (req: Request, res: Response) => {
 
     // Sync policy settings to all devices with this policy
     // Always send full policy when relevant settings change
-    if (input.silentMode !== undefined || input.requiredApps !== undefined || input.kioskMode !== undefined) {
+    if (input.silentMode !== undefined || input.requiredApps !== undefined || input.kioskMode !== undefined || input.kioskPackage !== undefined) {
       for (const deviceId of policyStore.getDeviceIdsForPolicy(id)) {
         auditCommandQueued(req, queueSyncPolicy(deviceId, policy));
         commandsQueued++;
+        if (input.kioskMode !== undefined || input.kioskPackage !== undefined) {
+          const kiosk = queueKioskCommand(deviceId, policy, previousKioskPackage);
+          if (kiosk) {
+            auditCommandQueued(req, kiosk);
+            commandsQueued++;
+          }
+        }
       }
     }
 
@@ -2434,6 +2446,7 @@ app.put('/api/devices/:id/policy', (req: Request, res: Response) => {
     }
   }
 
+  const previousPolicy = device.policyId ? policyStore.getPolicy(device.policyId) : null;
   deviceStore.updateDevicePolicy(id, policyId || null);
 
   // Record policy-assigned event
@@ -2455,6 +2468,18 @@ app.put('/api/devices/:id/policy', (req: Request, res: Response) => {
       // Also send SYNC_POLICY with full settings so device can apply
       // boot preferences for already-installed apps
       auditCommandQueued(req, queueSyncPolicy(id, policy));
+      commandsQueued++;
+      const kiosk = queueKioskCommand(id, policy, previousPolicy?.kioskMode ? previousPolicy.kioskPackage : null);
+      if (kiosk) {
+        auditCommandQueued(req, kiosk);
+        commandsQueued++;
+      }
+    }
+  } else if (previousPolicy?.kioskMode) {
+    // Unassigned from a kiosk policy: release the kiosk
+    const kiosk = queueKioskCommand(id, null, previousPolicy.kioskPackage);
+    if (kiosk) {
+      auditCommandQueued(req, kiosk);
       commandsQueued++;
     }
   }

@@ -99,3 +99,17 @@ export function queueSyncPolicy(deviceId: string, policy: Policy) {
   payload.updateWindow = start && end ? { start, end } : null;
   return commandStore.queueCommand(deviceId, 'SYNC_POLICY', payload, { supersede: 'type' });
 }
+
+/**
+ * Turn the policy's kiosk setting into a SET_KIOSK command (the device never acts on kioskMode inside SYNC_POLICY).
+ * An older SET_KIOSK still waiting for the device is superseded. Policies have no lock-task field, so lockTask is
+ * always true. Returns null when there is nothing to send: no package to target (kiosk needs one), or kiosk off
+ * with no package known (nothing was ever started from this policy).
+ * `fallbackPackage` names the kiosk app to release when the device moves off a kiosk policy.
+ */
+export function queueKioskCommand(deviceId: string, policy: Policy | null, fallbackPackage?: string | null) {
+  const enabled = !!policy?.kioskMode;
+  const packageName = enabled ? policy!.kioskPackage : (policy?.kioskPackage || fallbackPackage || null);
+  if (!packageName) return null;
+  return commandStore.queueCommand(deviceId, 'SET_KIOSK', { packageName, enabled, lockTask: true }, { supersede: 'type' });
+}

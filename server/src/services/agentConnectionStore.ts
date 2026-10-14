@@ -88,6 +88,22 @@ class AgentConnectionStore {
   }
 
   /**
+   * Revoke a device's relay presence now (unenroll): close the agent socket and every viewer, drop the state.
+   * Returns true when an agent was registered.
+   */
+  disconnectDevice(deviceId: string, reason: string): boolean {
+    const conn = this.connections.get(deviceId);
+    if (!conn) return false;
+    this.connections.delete(deviceId);
+    for (const [, session] of conn.activeSessions) {
+      try { session.ws.close(4004, reason); } catch { /* ignore */ }
+    }
+    conn.activeSessions.clear();
+    try { conn.ws.close(4004, reason); } catch { /* ignore */ }
+    return true;
+  }
+
+  /**
    * Remove the agent registration only when `ws` is the socket that owns it. A replaced socket
    * closes late; it must not tear down its successor (SR-05). Returns true when it removed.
    */

@@ -13,6 +13,7 @@ import {
   rejectUpgrade,
   startPingSweep,
   envInt,
+  disconnectRelayDevice,
 } from './relay';
 
 // ICE candidate as received from WebRTC (browser-agnostic definition)
@@ -487,6 +488,24 @@ function send(ws: WebSocket, message: object): void {
 
 function sendError(ws: WebSocket, message: string): void {
   send(ws, { type: 'error', message });
+}
+
+/**
+ * Revoke a device's live connections now: its signaling peers (device and controller), the relay agent and
+ * relay viewers. The caller has already removed the device's sessions. Returns the number of sockets closed.
+ */
+export function disconnectDevice(deviceId: string, reason: string): number {
+  let closed = 0;
+  const room = rooms.get(deviceId);
+  rooms.delete(deviceId);
+  if (room) {
+    for (const peer of [room.device, room.controller]) {
+      if (!peer) continue;
+      try { peer.ws.close(4004, reason); closed++; } catch { /* ignore */ }
+    }
+  }
+  if (disconnectRelayDevice(deviceId, reason)) closed++;
+  return closed;
 }
 
 // For testing

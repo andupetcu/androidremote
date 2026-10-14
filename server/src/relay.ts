@@ -251,6 +251,11 @@ export function shutdownRelay(): void {
   }
 }
 
+/** Close the relay agent of a device and all its viewers (unenroll / revoke). */
+export function disconnectRelayDevice(deviceId: string, reason: string): boolean {
+  return agentConnectionStore.disconnectDevice(deviceId, reason);
+}
+
 // --- Agent Connection Handling ---
 
 function handleAgentConnection(ws: WebSocket): void {
