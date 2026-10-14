@@ -1,5 +1,4 @@
 import { render, screen, waitFor, cleanup, within } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, afterEach, beforeEach } from 'vitest';
 import { http, HttpResponse } from 'msw';
