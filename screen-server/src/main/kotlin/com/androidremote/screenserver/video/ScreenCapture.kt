@@ -5,6 +5,7 @@ import android.hardware.display.VirtualDisplay
 import android.os.Build
 import android.os.IBinder
 import android.view.Surface
+import com.androidremote.screenserver.protocol.DisplayState
 import com.androidremote.screenserver.wrappers.DisplayInfo
 import com.androidremote.screenserver.wrappers.DisplayManager
 import com.androidremote.screenserver.wrappers.SurfaceControl
@@ -30,6 +31,18 @@ class ScreenCapture(
      * Get the video output size.
      */
     fun getSize(): Size = videoSize ?: throw IllegalStateException("Not prepared")
+
+    /** Display state (size + surface rotation) as seen by the last [prepare]. */
+    fun preparedState(): DisplayState {
+        val info = displayInfo ?: throw IllegalStateException("Not prepared")
+        return DisplayState(info.width, info.height, info.rotation)
+    }
+
+    /** Quiet re-read of the live display state, for rotation / `wm size` change detection (AR-14). */
+    fun currentState(): DisplayState {
+        val info = DisplayInfo.getDisplayInfo(displayId, verbose = false)
+        return DisplayState(info.width, info.height, info.rotation)
+    }
 
     /**
      * Prepare the capture by reading display info and calculating video size.

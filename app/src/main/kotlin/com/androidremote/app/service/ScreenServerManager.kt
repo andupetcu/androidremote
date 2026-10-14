@@ -247,9 +247,11 @@ class ScreenServerManager(private val context: Context) {
      * - "su -c <cmd>" (Magisk, SuperSU)
      */
     private suspend fun startViaRoot(): Boolean = withContext(Dispatchers.IO) {
-        val serverCmd = "CLASSPATH=$SCREEN_SERVER_PATH " +
-                "app_process / $SCREEN_SERVER_CLASS " +
-                "2>/data/local/tmp/screen-server.log &"
+        // AR-08: the server only accepts the uid given with -u, so pass this app's uid.
+        val serverCmd = ScreenServerCommand.build(
+            SCREEN_SERVER_PATH, SCREEN_SERVER_CLASS, android.os.Process.myUid(),
+            "/data/local/tmp/screen-server.log"
+        )
 
         // Try shell UID (2000) first — scrcpy uses shell permissions for SurfaceControl.
         // On some SoCs (e.g. Rockchip), root UID (0) may not get proper SurfaceFlinger access.
@@ -299,7 +301,9 @@ class ScreenServerManager(private val context: Context) {
      */
     private suspend fun startViaShell(): Boolean = withContext(Dispatchers.IO) {
         try {
-            val command = "CLASSPATH=$SCREEN_SERVER_PATH app_process / $SCREEN_SERVER_CLASS &"
+            val command = ScreenServerCommand.build(
+                SCREEN_SERVER_PATH, SCREEN_SERVER_CLASS, android.os.Process.myUid(), null
+            )
             val process = Runtime.getRuntime().exec(arrayOf("sh", "-c", command))
 
             // Wait a bit for the process to start
@@ -333,6 +337,20 @@ class ScreenServerManager(private val context: Context) {
         }
     }
 
+    /** The adb command a human can use to start the server by hand (includes the required -u). */
+    fun adbStartHint(): String =
+        ScreenServerCommand.adbHint(SCREEN_SERVER_PATH, SCREEN_SERVER_CLASS, android.os.Process.myUid())
+
+    /**
+     * Start the server ahead of any session so the first viewer does not wait ~4 s (AR-07).
+     * Call with restart=false at boot and restart=true after an app update (new server APK).
+     * No-op without root.
+     */
+    suspend fun prestart(restart: Boolean): Boolean {
+        if (!isRooted()) return false
+        return if (restart) restartScreenServer() else startScreenServer()
+    }
+
     /**
      * Get instructions for manual screen server setup.
      */
@@ -342,9 +360,17 @@ class ScreenServerManager(private val context: Context) {
 
             1. Connect device via USB with ADB enabled
             2. Push screen-server: adb push screen-server.apk /data/local/tmp/
-            3. Start screen-server: adb shell CLASSPATH=/data/local/tmp/screen-server.apk app_process / com.androidremote.screenserver.Server
+            3. Start screen-server: ${adbStartHint()}
 
             The screen server will run in background and enable consent-free screen capture.
         """.trimIndent()
     }
+}
+
+/** [CaptureBackend] over the real device: root, `su`, local socket. */
+class ScreenServerBackend(private val manager: ScreenServerManager) : CaptureBackend {
+    override fun isRooted(): Boolean = manager.isRooted()
+    override suspend fun isServerRunning(): Boolean = manager.isScreenServerRunning()
+    override suspend fun restartServer(): Boolean = manager.restartScreenServer()
+    override fun newStream(): ScreenStream = ScreenServerClient()
 }

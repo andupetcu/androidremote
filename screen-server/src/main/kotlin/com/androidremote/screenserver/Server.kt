@@ -3,6 +3,8 @@ package com.androidremote.screenserver
 import android.net.LocalServerSocket
 import android.net.LocalSocket
 import android.os.Looper
+import com.androidremote.screenserver.protocol.ScreenProtocol
+import com.androidremote.screenserver.protocol.StopHook
 import com.androidremote.screenserver.video.ScreenCapture
 import com.androidremote.screenserver.video.SurfaceEncoder
 import kotlin.system.exitProcess
@@ -25,6 +27,14 @@ import kotlin.system.exitProcess
  *   -h            Show help
  */
 object Server {
+
+    /** One JVM shutdown hook for the whole process, not one per client (AR-19). */
+    private val stopHook = StopHook { hook ->
+        Runtime.getRuntime().addShutdownHook(Thread {
+            System.err.println("Shutting down...")
+            hook.run()
+        })
+    }
 
     @JvmStatic
     fun main(args: Array<String>) {
@@ -97,13 +107,32 @@ object Server {
             maxFps = params.maxFps
         )
 
-        // Handle SIGTERM/SIGINT
-        Runtime.getRuntime().addShutdownHook(Thread {
-            System.err.println("Shutting down...")
-            encoder.stop()
-        })
+        // Handle SIGTERM/SIGINT (single hook, stops the current encoder)
+        stopHook.track { encoder.stop() }
 
-        encoder.encode()
+        // Control channel (app -> server): single bytes. Ends when the socket closes.
+        val controlThread = Thread {
+            try {
+                val input = socket.inputStream
+                while (true) {
+                    val b = input.read()
+                    if (b < 0) break
+                    if (ScreenProtocol.isRequestSyncFrame(b)) encoder.requestKeyFrame()
+                }
+            } catch (_: Exception) {
+                // socket closed
+            }
+            // Client went away: make the encode loop end so the next client can connect.
+            encoder.stop()
+        }.apply { isDaemon = true; name = "control-reader"; start() }
+
+        try {
+            encoder.encode()
+        } finally {
+            encoder.stop()
+            try { socket.shutdownInput() } catch (_: Exception) {}
+            controlThread.interrupt()
+        }
         System.err.println("Encoding finished")
     }
 

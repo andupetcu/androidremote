@@ -4,7 +4,11 @@ import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import android.os.Build
+import android.os.Bundle
 import android.view.Surface
+import com.androidremote.screenserver.protocol.DisplayChangeDetector
+import com.androidremote.screenserver.protocol.DisplayState
+import com.androidremote.screenserver.protocol.ScreenProtocol
 import java.io.IOException
 import java.io.OutputStream
 import java.nio.ByteBuffer
@@ -28,6 +32,9 @@ class SurfaceEncoder(
         private const val REPEAT_FRAME_DELAY_US = 100_000L // 100ms
         private const val MAX_CONSECUTIVE_ERRORS = 3
 
+        /** How often the encode loop checks for rotation / resolution changes. */
+        private const val DISPLAY_POLL_INTERVAL_MS = 500L
+
         /**
          * Maximum time to wait for the first real (non-config) frame.
          * If SurfaceControl fails to render content to the encoder surface,
@@ -43,6 +50,22 @@ class SurfaceEncoder(
     private var firstFrameSent = false
     private var consecutiveErrors = 0
     private var triedPhysicalSize = false
+    @Volatile private var activeCodec: MediaCodec? = null
+
+    /**
+     * Ask the encoder for an IDR as soon as possible (keyframe on demand, C9).
+     * Safe to call from another thread; a no-op when no codec is running.
+     */
+    fun requestKeyFrame() {
+        val codec = activeCodec ?: return
+        try {
+            val params = Bundle()
+            params.putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0)
+            codec.setParameters(params)
+        } catch (e: Exception) {
+            System.err.println("requestKeyFrame failed: ${e.message}")
+        }
+    }
 
     /**
      * Start encoding. This blocks until stopped or error.
@@ -64,6 +87,15 @@ class SurfaceEncoder(
                     headerWritten = true
                 }
 
+                // Tell the app the current size and rotation at start and after every change.
+                val state = capture.preparedState()
+                output.write(
+                    ScreenProtocol.encodeScreenInfo(
+                        size.width, size.height, ScreenProtocol.rotationDegrees(state.rotation)
+                    )
+                )
+                output.flush()
+
                 format.setInteger(MediaFormat.KEY_WIDTH, size.width)
                 format.setInteger(MediaFormat.KEY_HEIGHT, size.height)
 
@@ -80,11 +112,12 @@ class SurfaceEncoder(
 
                     codec.start()
                     codecStarted = true
+                    activeCodec = codec
 
                     if (stopped.get()) {
                         alive = false
                     } else {
-                        encodeLoop(codec)
+                        encodeLoop(codec, capture.preparedState())
                         alive = !stopped.get()
                     }
                 } catch (e: Exception) {
@@ -98,6 +131,7 @@ class SurfaceEncoder(
                     }
                     alive = true
                 } finally {
+                    activeCodec = null
                     if (captureStarted) {
                         // Don't call capture.stop() - just release resources at end
                     }
@@ -125,11 +159,24 @@ class SurfaceEncoder(
         stopped.set(true)
     }
 
-    private fun encodeLoop(codec: MediaCodec) {
+    private fun encodeLoop(codec: MediaCodec, startedWith: DisplayState) {
         val bufferInfo = MediaCodec.BufferInfo()
         val loopStartTime = System.currentTimeMillis()
+        var lastPoll = loopStartTime
 
         while (!stopped.get()) {
+            // AR-14: a rotation or `wm size` change ends this loop; the caller re-prepares
+            // the capture, reconfigures the encoder and announces the new size.
+            val now = System.currentTimeMillis()
+            if (now - lastPoll >= DISPLAY_POLL_INTERVAL_MS) {
+                lastPoll = now
+                val live = try { capture.currentState() } catch (e: Exception) { null }
+                if (live != null && DisplayChangeDetector.hasChanged(startedWith, live)) {
+                    System.err.println("Display changed $startedWith -> $live, restarting encoder")
+                    return
+                }
+            }
+
             val outputBufferId = codec.dequeueOutputBuffer(bufferInfo, 10_000) // 10ms timeout
 
             if (outputBufferId >= 0) {
@@ -261,17 +308,11 @@ class SurfaceEncoder(
      * Format: 4 bytes size + 1 byte flags + data
      */
     private fun writePacket(buffer: ByteBuffer, info: MediaCodec.BufferInfo) {
-        val size = info.size
-        val data = ByteArray(size)
+        val data = ByteArray(info.size)
         buffer.get(data)
 
         // Packet format: [size:4][flags:1][data:size]
-        val packet = ByteBuffer.allocate(5 + size)
-        packet.putInt(size)
-        packet.put(getFlags(info).toByte())
-        packet.put(data)
-
-        output.write(packet.array())
+        output.write(ScreenProtocol.encodePacket(getFlags(info), data))
 
         // Flush config and keyframes immediately to ensure the client receives
         // them promptly. Regular frames batch for efficiency.
@@ -285,10 +326,10 @@ class SurfaceEncoder(
     private fun getFlags(info: MediaCodec.BufferInfo): Int {
         var flags = 0
         if ((info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0) {
-            flags = flags or 0x01 // Key frame flag
+            flags = flags or ScreenProtocol.FLAG_KEY_FRAME
         }
         if ((info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0) {
-            flags = flags or 0x02 // Config flag
+            flags = flags or ScreenProtocol.FLAG_CONFIG
         }
         return flags
     }

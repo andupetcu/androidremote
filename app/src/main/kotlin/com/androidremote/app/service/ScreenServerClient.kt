@@ -29,7 +29,7 @@ import java.nio.ByteBuffer
 class ScreenServerClient(
     private val socketName: String = "android-remote-video",
     private val scope: CoroutineScope = CoroutineScope(Dispatchers.IO)
-) {
+) : ScreenStream {
     companion object {
         private const val TAG = "ScreenServerClient"
         private const val MAX_RECONNECT_ATTEMPTS = 5
@@ -43,9 +43,6 @@ class ScreenServerClient(
          */
         private const val CONNECT_TIMEOUT_MS = 5_000
 
-        // Frame flags
-        private const val FLAG_KEY_FRAME = 0x01
-        private const val FLAG_CONFIG = 0x02
     }
 
     private var socket: LocalSocket? = null
@@ -59,6 +56,15 @@ class ScreenServerClient(
      */
     var onEarlyDeath: (() -> Unit)? = null
 
+    /** Rotation / size announcements from the server (also sent once at start). */
+    override var onScreenInfo: ((Int, Int, Int) -> Unit)? = null
+
+    /**
+     * When set, the client does NOT reconnect by itself: it reports the end of the stream here
+     * and the owner (ScreenCaptureController) decides how to retry.
+     */
+    override var onEnded: ((early: Boolean) -> Unit)? = null
+
     private val _frames = MutableSharedFlow<FrameData>(
         replay = 0,
         extraBufferCapacity = 2
@@ -67,7 +73,7 @@ class ScreenServerClient(
     /**
      * Flow of decoded frames from the screen server.
      */
-    val frames: SharedFlow<FrameData> = _frames.asSharedFlow()
+    override val frames: SharedFlow<FrameData> = _frames.asSharedFlow()
 
     private var _videoWidth = 0
     private var _videoHeight = 0
@@ -84,7 +90,7 @@ class ScreenServerClient(
     /**
      * Connect to the screen server and start receiving frames.
      */
-    suspend fun connect(): Boolean {
+    override suspend fun connect(): Boolean {
         return withContext(Dispatchers.IO) {
             try {
                 val newSocket = LocalSocket()
@@ -115,6 +121,7 @@ class ScreenServerClient(
                 newSocket.soTimeout = 0
 
                 socket = newSocket
+                firstFrameReceived = false
                 _isConnected = true
                 reconnectAttempts = 0
 
@@ -135,7 +142,7 @@ class ScreenServerClient(
     /**
      * Disconnect from the screen server.
      */
-    fun disconnect() {
+    override fun disconnect() {
         readJob?.cancel()
         readJob = null
 
@@ -165,52 +172,66 @@ class ScreenServerClient(
         return connect()
     }
 
+    /**
+     * Ask the screen-server's encoder for a sync frame (keyframe on demand).
+     * Fire-and-forget; failures only mean the connection is already going away.
+     */
+    override fun requestKeyFrame() {
+        val out = try { socket?.outputStream } catch (e: IOException) { null } ?: return
+        scope.launch(Dispatchers.IO) {
+            try {
+                synchronized(out) {
+                    out.write(ScreenControl.requestSyncFrame())
+                    out.flush()
+                }
+            } catch (e: IOException) {
+                Log.w(TAG, "requestKeyFrame failed: ${e.message}")
+            }
+        }
+    }
+
     private suspend fun readFrames(input: DataInputStream) {
-        val buffer = ByteArray(1024 * 1024) // 1MB buffer for frames
+        val reader = FrameReader(input)
 
         try {
             while (scope.isActive && _isConnected) {
-                // Read packet header: [size:4][flags:1]
-                val size = input.readInt()
-                val flags = input.readByte().toInt() and 0xFF
-
-                if (size <= 0 || size > buffer.size) {
-                    Log.e(TAG, "Invalid frame size: $size")
-                    break
+                when (val packet = reader.next()) {
+                    is ScreenPacket.Info -> {
+                        _videoWidth = packet.width
+                        _videoHeight = packet.height
+                        Log.i(TAG, "Screen info: ${packet.width}x${packet.height} rot=${packet.rotation}")
+                        onScreenInfo?.invoke(packet.width, packet.height, packet.rotation)
+                    }
+                    is ScreenPacket.Skipped -> {
+                        // AR-11: never end the stream for one big frame; ask for a fresh keyframe.
+                        Log.w(TAG, "Skipped oversized frame (${packet.size} bytes)")
+                        requestKeyFrame()
+                    }
+                    is ScreenPacket.Frame -> {
+                        if (!firstFrameReceived) {
+                            firstFrameReceived = true
+                            Log.i(TAG, "First frame received (${packet.data.size} bytes, config=${packet.isConfig}, keyFrame=${packet.isKeyFrame})")
+                        }
+                        _frames.emit(
+                            FrameData(
+                                data = packet.data,
+                                presentationTimeUs = System.nanoTime() / 1000,
+                                isKeyFrame = packet.isKeyFrame || packet.isConfig
+                            )
+                        )
+                    }
                 }
-
-                // Read frame data
-                input.readFully(buffer, 0, size)
-
-                val isKeyFrame = (flags and FLAG_KEY_FRAME) != 0
-                val isConfig = (flags and FLAG_CONFIG) != 0
-
-                if (!firstFrameReceived) {
-                    firstFrameReceived = true
-                    Log.i(TAG, "First frame received ($size bytes, config=$isConfig, keyFrame=$isKeyFrame)")
-                }
-
-                if (isConfig) {
-                    Log.d(TAG, "Received codec config ($size bytes)")
-                } else {
-                    Log.v(TAG, "Received frame ($size bytes, keyFrame=$isKeyFrame)")
-                }
-
-                // Emit frame
-                val frameData = FrameData(
-                    data = buffer.copyOf(size),
-                    presentationTimeUs = System.nanoTime() / 1000,
-                    isKeyFrame = isKeyFrame || isConfig
-                )
-
-                _frames.emit(frameData)
             }
         } catch (e: IOException) {
             if (_isConnected) {
                 Log.e(TAG, "Error reading frames: ${e.message}")
                 _isConnected = false
+                val early = !firstFrameReceived
 
-                if (!firstFrameReceived) {
+                val ended = onEnded
+                if (ended != null) {
+                    ended(early)
+                } else if (early) {
                     // Server died before sending any frames — likely a permission/capture issue
                     Log.e(TAG, "Screen server died before sending any frames (capture setup failed)")
                     onEarlyDeath?.invoke()

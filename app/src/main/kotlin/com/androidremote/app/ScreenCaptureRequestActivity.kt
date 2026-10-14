@@ -63,6 +63,11 @@ class ScreenCaptureRequestActivity : Activity() {
                 Log.i(TAG, "Screen capture permission granted")
             } else {
                 Log.w(TAG, "Screen capture permission denied")
+                // Tell the service so it can report consent_denied instead of waiting forever.
+                sendBroadcast(Intent(ACTION_SCREEN_CAPTURE_RESULT).apply {
+                    setPackage(packageName)
+                    putExtra(EXTRA_RESULT_CODE, resultCode)
+                })
             }
 
             // Delay finish to allow MediaProjection to be processed by the service

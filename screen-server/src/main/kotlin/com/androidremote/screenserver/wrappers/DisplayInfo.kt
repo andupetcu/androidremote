@@ -20,7 +20,7 @@ data class DisplayInfo(
         const val FLAG_SUPPORTS_PROTECTED_BUFFERS = 1 shl 0
 
         @SuppressLint("PrivateApi", "DiscouragedPrivateApi")
-        fun getDisplayInfo(displayId: Int): DisplayInfo {
+        fun getDisplayInfo(displayId: Int, verbose: Boolean = true): DisplayInfo {
             try {
                 // Get DisplayManagerGlobal instance
                 val dmgClass = Class.forName("android.hardware.display.DisplayManagerGlobal")
@@ -60,14 +60,14 @@ data class DisplayInfo(
                 }
 
                 // Log all display info for diagnostics
-                System.err.println("DisplayInfo[$displayId]: logical=${logicalWidth}x${logicalHeight}" +
+                if (verbose) System.err.println("DisplayInfo[$displayId]: logical=${logicalWidth}x${logicalHeight}" +
                         ", physical=${physWidth}x${physHeight}" +
                         ", rotation=$rotation, layerStack=$layerStack" +
                         ", densityDpi=$logicalDensityDpi" +
                         ", flags=$flags")
 
                 // Also dump all available fields for debugging
-                try {
+                if (verbose) try {
                     for (field in infoClass.fields) {
                         try {
                             val value = field.get(info)
