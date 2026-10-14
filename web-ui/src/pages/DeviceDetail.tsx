@@ -11,6 +11,7 @@ import {
   DeviceEvents,
   DeviceFiles,
   DeviceRemote,
+  DeviceKiosk,
 } from '../components/device';
 import { RelayTerminal } from '../components/RelayTerminal';
 import { RelayFileBrowser } from '../components/RelayFileBrowser';
@@ -240,6 +241,11 @@ export function DeviceDetail() {
         label: 'Apps',
         content: <DeviceApps deviceId={device.id} />,
       },
+      ...(isNonAndroid ? [] : [{
+        id: 'kiosk',
+        label: 'Kiosk',
+        content: <DeviceKiosk device={device} />,
+      }]),
       {
         id: 'commands',
         label: 'Commands',
@@ -264,7 +270,7 @@ export function DeviceDetail() {
       },
     ];
     if (isNonAndroid) {
-      allTabs.splice(5, 0, {
+      allTabs.splice(allTabs.findIndex((t) => t.id === 'remote'), 0, {
         id: 'terminal',
         label: 'Terminal',
         content: <RelayTerminal deviceId={device.id} />,

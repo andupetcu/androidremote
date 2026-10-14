@@ -196,6 +196,26 @@ export const CommandHelpers = {
   uninstallApp: (sendCommand: UseDeviceCommandsResult['sendCommand'], packageName: string) =>
     sendCommand('UNINSTALL_APP', { packageName }),
 
+  setKiosk: (sendCommand: UseDeviceCommandsResult['sendCommand'], packageName: string, enabled: boolean, lockTask: boolean) =>
+    sendCommand('SET_KIOSK', { packageName, enabled, lockTask }),
+
+  disableApp: (sendCommand: UseDeviceCommandsResult['sendCommand'], packageName: string) =>
+    sendCommand('DISABLE_APP', { packageName }),
+
+  enableApp: (sendCommand: UseDeviceCommandsResult['sendCommand'], packageName: string) =>
+    sendCommand('ENABLE_APP', { packageName }),
+
+  grantPermission: (
+    sendCommand: UseDeviceCommandsResult['sendCommand'],
+    packageName: string,
+    permission: string,
+    state: 'granted' | 'denied' | 'default'
+  ) => sendCommand('GRANT_PERMISSION', { packageName, permission, state }),
+
+  // The device refuses UNINSTALL/DISABLE for these packages and for itself (C10).
+  setProtectedPackages: (sendCommand: UseDeviceCommandsResult['sendCommand'], packages: string[]) =>
+    sendCommand('SET_PROTECTED_PACKAGES', { packages }),
+
   launchApp: (sendCommand: UseDeviceCommandsResult['sendCommand'], packageName: string) =>
     sendCommand('LAUNCH_APP', { packageName }),
 

@@ -13,6 +13,29 @@ beforeAll(() => {
     },
   });
 
+  // Components that open the shared admin socket must not make a real connection in tests
+  // (a live socket at worker exit crashes libuv on recent Node). Set AFTER listen(), because
+  // MSW wraps the global WebSocket. Tests that need a socket stub FakeWebSocket over this.
+  class InertWebSocket {
+    static CONNECTING = 0;
+    static OPEN = 1;
+    static CLOSING = 2;
+    static CLOSED = 3;
+    readyState = 0;
+    binaryType = 'blob';
+    onopen: unknown = null;
+    onclose: unknown = null;
+    onerror: unknown = null;
+    onmessage: unknown = null;
+    url: string;
+    constructor(url: string) { this.url = url; }
+    send() {}
+    close() { this.readyState = 3; }
+    addEventListener() {}
+    removeEventListener() {}
+  }
+  Object.defineProperty(globalThis, 'WebSocket', { value: InertWebSocket, configurable: true, writable: true });
+
   // Node's fetch cannot resolve relative URLs ('/api/files'), unlike a browser.
   // Resolve them against the jsdom origin so MSW's relative handlers match.
   const msFetch = globalThis.fetch;

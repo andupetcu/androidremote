@@ -4,3 +4,4 @@ export { DeviceCommands } from './DeviceCommands';
 export { DeviceEvents } from './DeviceEvents';
 export { DeviceFiles } from './DeviceFiles';
 export { DeviceRemote } from './DeviceRemote';
+export { DeviceKiosk } from './DeviceKiosk';
