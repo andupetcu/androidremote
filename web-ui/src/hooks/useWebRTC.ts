@@ -1,3 +1,4 @@
+import { fetchWsTicket, buildWsUrl } from '../lib/wsTicket';
 import { useState, useEffect, useRef, useCallback } from 'react';
 
 export type ConnectionState = 'connecting' | 'connected' | 'disconnected' | 'failed';
@@ -213,8 +214,29 @@ export function useWebRTC(deviceId: string | null, signalingUrl: string): UseWeb
     setConnectionState('connecting');
     setError(null);
 
+    // C3: the WebSocket authenticates with a single-use ticket, never the JWT.
+    // A fresh ticket is fetched every time this effect (re)connects.
+    let cancelled = false;
+    let teardown: (() => void) | null = null;
+    fetchWsTicket('signaling', deviceId).then(
+      (ticket) => {
+        if (cancelled) return;
+        teardown = start(buildWsUrl(signalingUrl, ticket));
+      },
+      (err) => {
+        if (cancelled) return;
+        setError(err instanceof Error ? err.message : 'Could not get a signaling ticket');
+        setConnectionState('failed');
+      }
+    );
+    return () => {
+      cancelled = true;
+      teardown?.();
+    };
+
+    function start(url: string): () => void {
     // Create WebSocket connection
-    const ws = new WebSocket(signalingUrl);
+    const ws = new WebSocket(url);
     wsRef.current = ws;
 
     // Create peer connection
@@ -380,6 +402,7 @@ export function useWebRTC(deviceId: string | null, signalingUrl: string): UseWeb
       pcRef.current = null;
       dataChannelRef.current = null;
     };
+    }
   }, [deviceId, signalingUrl]);
 
   return { connectionState, dataChannel, error, sendCommand, sendCommandWithResponse, lastAck, disconnect };

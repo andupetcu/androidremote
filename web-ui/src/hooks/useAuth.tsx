@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useEffect } from 'react';
 import type { ReactNode } from 'react';
+import { closeAdminSocket } from '../lib/adminSocket';
 
 const API_BASE = import.meta.env.DEV ? 'http://localhost:7899' : '';
 
@@ -44,11 +45,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const logout = () => {
-    localStorage.removeItem('auth_token');
-    localStorage.removeItem('auth_username');
+    const oldToken = localStorage.getItem('auth_token');
+    // Close live sockets first so nothing reconnects with the dead session.
+    closeAdminSocket();
+    // Wipe every cached bit of client state, not only the two auth keys.
+    try {
+      localStorage.clear();
+      sessionStorage.clear();
+    } catch {
+      localStorage.removeItem('auth_token');
+      localStorage.removeItem('auth_username');
+    }
     setToken(null);
     setUsername(null);
     setMustChangePassword(false);
+    // Tell the server (best effort; the endpoint may not revoke yet).
+    if (oldToken) {
+      fetch(`${API_BASE}/api/auth/logout`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${oldToken}` },
+      }).catch(() => {});
+    }
   };
 
   const clearMustChangePassword = () => {

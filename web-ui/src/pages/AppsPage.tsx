@@ -9,6 +9,7 @@ import { DataTable } from '../components/data/DataTable';
 import type { Column } from '../components/data/DataTable';
 import { Spinner } from '../components/ui/Spinner';
 import { EmptyState } from '../components/ui/EmptyState';
+import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { UploadApkModal } from '../components/apps/UploadApkModal';
 import { InstallApkModal } from '../components/apps/InstallApkModal';
 import type { AppCatalogEntry } from '../types/api';
@@ -205,6 +206,10 @@ export function AppsPage() {
   const { packages, loading: packagesLoading, error: packagesError, refresh: refreshPackages, uploadPackage, deletePackage, installOnDevices, deployToAll } = useAppPackages();
 
   const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionNotice, setActionNotice] = useState<string | null>(null);
+  const [confirmAction, setConfirmAction] = useState<{ kind: 'deploy' | 'delete'; packageName: string } | null>(null);
+  const describe = (what: string, err: unknown) => `${what}: ${err instanceof Error ? err.message : 'unknown error'}`;
   const [showUploadModal, setShowUploadModal] = useState(false);
   const [installPkg, setInstallPkg] = useState<AppPackage | null>(null);
   const [versionsPkg, setVersionsPkg] = useState<string | null>(null);
@@ -215,29 +220,32 @@ export function AppsPage() {
     : apps.filter((app) => app.status === statusFilter);
 
   const handleStatusChange = async (packageName: string, status: 'approved' | 'blocked' | 'pending') => {
+    setActionError(null);
     try {
       await setAppStatus(packageName, status);
     } catch (err) {
-      console.error('Failed to update app status:', err);
+      setActionError(describe('Failed to update app status', err));
     }
   };
 
-  const handleDeploy = async (packageName: string) => {
-    if (!confirm(`Deploy ${packageName} to ALL devices?`)) return;
-    try {
-      const result = await deployToAll(packageName);
-      alert(`Queued install on ${result.queued} device(s)`);
-    } catch (err) {
-      console.error('Failed to deploy:', err);
-    }
-  };
+  const handleDeploy = (packageName: string) => setConfirmAction({ kind: 'deploy', packageName });
+  const handleDelete = (packageName: string) => setConfirmAction({ kind: 'delete', packageName });
 
-  const handleDelete = async (packageName: string) => {
-    if (!confirm(`Delete ${packageName}? This will remove the APK file.`)) return;
+  const runConfirmed = async () => {
+    if (!confirmAction) return;
+    const { kind, packageName } = confirmAction;
+    setConfirmAction(null);
+    setActionError(null);
+    setActionNotice(null);
     try {
-      await deletePackage(packageName);
+      if (kind === 'deploy') {
+        const result = await deployToAll(packageName);
+        setActionNotice(`Queued install on ${result.queued} device(s)`);
+      } else {
+        await deletePackage(packageName);
+      }
     } catch (err) {
-      console.error('Failed to delete package:', err);
+      setActionError(describe(kind === 'deploy' ? 'Failed to deploy' : 'Failed to delete package', err));
     }
   };
 
@@ -443,6 +451,28 @@ export function AppsPage() {
 
   return (
     <div className={styles.root}>
+      {actionError && (
+        <div role="alert" style={{ background: 'rgba(244,67,54,0.15)', color: '#ff8a80', padding: '0.75rem 1rem', borderRadius: 8, margin: '0 0 1rem' }}>
+          {actionError}
+        </div>
+      )}
+      {actionNotice && <div role="status" style={{ padding: '0.5rem 1rem' }}>{actionNotice}</div>}
+      {confirmAction && (
+        <ConfirmDialog
+          open
+          title={confirmAction.kind === 'deploy' ? 'Deploy to all devices?' : 'Delete package?'}
+          confirmLabel={confirmAction.kind === 'deploy' ? 'Deploy' : 'Delete'}
+          danger={confirmAction.kind === 'delete'}
+          onCancel={() => setConfirmAction(null)}
+          onConfirm={runConfirmed}
+        >
+          <p>
+            {confirmAction.kind === 'deploy'
+              ? `Deploy ${confirmAction.packageName} to ALL devices?`
+              : `Delete ${confirmAction.packageName}? This will remove the APK file.`}
+          </p>
+        </ConfirmDialog>
+      )}
       <div className={styles.header}>
         <div>
           <h1 className={styles.headerTitle}>Applications</h1>

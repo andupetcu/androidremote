@@ -4,6 +4,7 @@ import { Button } from '../ui/Button';
 import { Badge } from '../ui/Badge';
 import { Spinner } from '../ui/Spinner';
 import { EmptyState } from '../ui/EmptyState';
+import { ConfirmDialog } from '../ui/ConfirmDialog';
 import type { CommandStatus } from '../../types/api';
 import './DeviceComponents.css';
 
@@ -16,12 +17,22 @@ export function DeviceCommands({ deviceId }: DeviceCommandsProps) {
   const [sending, setSending] = useState<string | null>(null);
   const [volumeLevel, setVolumeLevel] = useState(50);
 
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [pendingConfirm, setPendingConfirm] = useState<'lock' | 'reboot' | 'wipe' | null>(null);
+
+  const CONFIRMS = {
+    lock: { title: 'Lock device?', label: 'Lock device', body: 'The device screen will be locked immediately.', run: () => CommandHelpers.lock(sendCommand) },
+    reboot: { title: 'Reboot device?', label: 'Reboot', body: 'The device will restart and be unavailable for a minute or two. Anyone using it will be interrupted.', run: () => CommandHelpers.reboot(sendCommand) },
+    wipe: { title: 'Wipe device?', label: 'Wipe device', body: 'This factory-resets the device and ERASES ALL DATA. It cannot be undone.', run: () => CommandHelpers.wipe(sendCommand, deviceId) },
+  } as const;
+
   const handleCommand = async (action: () => Promise<unknown>, name: string) => {
     setSending(name);
+    setActionError(null);
     try {
       await action();
     } catch (err) {
-      console.error(`Failed to send ${name} command:`, err);
+      setActionError(`Could not send ${name} command: ${err instanceof Error ? err.message : 'unknown error'}`);
     } finally {
       setSending(null);
     }
@@ -34,6 +45,7 @@ export function DeviceCommands({ deviceId }: DeviceCommandsProps) {
       case 'executing': return 'info';
       case 'completed': return 'success';
       case 'failed': return 'error';
+      case 'expired': return 'warning';
       default: return 'info';
     }
   };
@@ -59,6 +71,27 @@ export function DeviceCommands({ deviceId }: DeviceCommandsProps) {
 
   return (
     <div className="device-commands">
+      {actionError && (
+        <div role="alert" className="device-commands__result device-commands__result--error">
+          {actionError}
+        </div>
+      )}
+      {pendingConfirm && (
+        <ConfirmDialog
+          open
+          title={CONFIRMS[pendingConfirm].title}
+          confirmLabel={CONFIRMS[pendingConfirm].label}
+          onCancel={() => setPendingConfirm(null)}
+          onConfirm={() => {
+            const c = CONFIRMS[pendingConfirm];
+            const name = pendingConfirm;
+            setPendingConfirm(null);
+            void handleCommand(c.run, name);
+          }}
+        >
+          <p>{CONFIRMS[pendingConfirm].body}</p>
+        </ConfirmDialog>
+      )}
       <div className="device-commands__actions">
         <h3>Quick Actions</h3>
         <div className="device-commands__buttons">
@@ -66,7 +99,7 @@ export function DeviceCommands({ deviceId }: DeviceCommandsProps) {
             variant="secondary"
             size="sm"
             loading={sending === 'lock'}
-            onClick={() => handleCommand(() => CommandHelpers.lock(sendCommand), 'lock')}
+            onClick={() => setPendingConfirm('lock')}
           >
             Lock Device
           </Button>
@@ -74,7 +107,7 @@ export function DeviceCommands({ deviceId }: DeviceCommandsProps) {
             variant="secondary"
             size="sm"
             loading={sending === 'reboot'}
-            onClick={() => handleCommand(() => CommandHelpers.reboot(sendCommand), 'reboot')}
+            onClick={() => setPendingConfirm('reboot')}
           >
             Reboot
           </Button>
@@ -117,6 +150,14 @@ export function DeviceCommands({ deviceId }: DeviceCommandsProps) {
             onClick={() => handleCommand(() => CommandHelpers.syncPolicy(sendCommand), 'syncPolicy')}
           >
             Reapply Policy
+          </Button>
+          <Button
+            variant="danger"
+            size="sm"
+            loading={sending === 'wipe'}
+            onClick={() => setPendingConfirm('wipe')}
+          >
+            Wipe Device
           </Button>
         </div>
       </div>

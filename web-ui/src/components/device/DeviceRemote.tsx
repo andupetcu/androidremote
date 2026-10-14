@@ -16,14 +16,6 @@ function getSignalingUrl(): string {
   return `${protocol}//${window.location.host}/ws`;
 }
 
-/**
- * Derive the relay WebSocket URL for cross-platform agents.
- */
-function getRelayUrl(deviceId: string, session: string, token: string): string {
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${protocol}//${window.location.host}/relay?deviceId=${encodeURIComponent(deviceId)}&session=${session}&token=${encodeURIComponent(token)}`;
-}
-
 interface DeviceRemoteProps {
   deviceId: string;
   osType?: string;
@@ -247,6 +239,3 @@ function RelayDeviceRemote({ deviceId, osType }: { deviceId: string; osType: str
     </div>
   );
 }
-
-// Export for use in other components
-export { getRelayUrl };

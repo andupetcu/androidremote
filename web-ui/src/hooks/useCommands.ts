@@ -2,6 +2,17 @@ import { useState, useEffect, useCallback } from 'react';
 import type { DeviceCommand, CommandType, CommandStatus } from '../types/api';
 import { API_BASE, apiFetch } from '../utils/api';
 
+/** Pull the server's error text out of a failed response. */
+export async function errorMessage(res: Response, fallback: string): Promise<string> {
+  try {
+    const data = await res.json();
+    if (data && typeof data.error === 'string') return data.error;
+  } catch {
+    // not JSON
+  }
+  return `${fallback} (${res.status})`;
+}
+
 interface CommandPayload {
   [key: string]: unknown;
 }
@@ -53,7 +64,7 @@ export function useCommands(deviceId?: string, status?: CommandStatus): UseComma
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ deviceId: targetDeviceId, type, payload }),
     });
-    if (!res.ok) throw new Error('Failed to send command');
+    if (!res.ok) throw new Error(await errorMessage(res, 'Failed to send command'));
     const data = await res.json();
     await refresh();
     return data.command;
@@ -122,7 +133,7 @@ export function useDeviceCommands(deviceId: string): UseDeviceCommandsResult {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ deviceId, type, payload }),
     });
-    if (!res.ok) throw new Error('Failed to send command');
+    if (!res.ok) throw new Error(await errorMessage(res, 'Failed to send command'));
     const data = await res.json();
     await refresh();
     return data.command;
@@ -142,8 +153,9 @@ export const CommandHelpers = {
   reboot: (sendCommand: UseDeviceCommandsResult['sendCommand']) =>
     sendCommand('REBOOT'),
 
-  wipe: (sendCommand: UseDeviceCommandsResult['sendCommand'], preserveFactoryReset = false) =>
-    sendCommand('WIPE', { preserveFactoryReset }),
+  // The device refuses WIPE unless confirm equals its own id (contract C10).
+  wipe: (sendCommand: UseDeviceCommandsResult['sendCommand'], deviceId: string, preserveFactoryReset = false) =>
+    sendCommand('WIPE', { confirm: deviceId, preserveFactoryReset }),
 
   installApk: (sendCommand: UseDeviceCommandsResult['sendCommand'], url: string) =>
     sendCommand('INSTALL_APK', { url }),

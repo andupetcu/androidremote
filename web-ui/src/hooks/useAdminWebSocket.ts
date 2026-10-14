@@ -1,27 +1,16 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import type { DeviceEvent, Device } from '../types/api';
+import {
+  acquireAdminSocket,
+  addAdminHandler,
+  onAdminStatus,
+  isAdminConnected,
+  type AdminMessage,
+  type AdminMessageType,
+} from '../lib/adminSocket';
 
-const WS_PROTOCOL = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-const WS_BASE = import.meta.env.DEV ? 'ws://localhost:7899' : `${WS_PROTOCOL}//${window.location.host}`;
-
-type AdminEventType =
-  | 'device-online'
-  | 'device-offline'
-  | 'device-enrolled'
-  | 'device-unenrolled'
-  | 'event-created'
-  | 'command-status'
-  | 'telemetry-updated';
-
-interface AdminMessage {
-  type: AdminEventType;
-  deviceId?: string;
-  device?: Device;
-  event?: DeviceEvent;
-  data?: Record<string, unknown>;
-  timestamp: number;
-}
-
+export type { AdminMessage };
+type AdminEventType = AdminMessageType;
 type MessageHandler = (message: AdminMessage) => void;
 
 interface UseAdminWebSocketResult {
@@ -31,94 +20,32 @@ interface UseAdminWebSocketResult {
   subscribeAll: (handler: MessageHandler) => () => void;
 }
 
+/** All hooks share ONE socket (lib/adminSocket); it closes when the last user unmounts. */
 export function useAdminWebSocket(): UseAdminWebSocketResult {
-  const [connected, setConnected] = useState(false);
+  const [connected, setConnected] = useState(isAdminConnected());
   const [lastMessage, setLastMessage] = useState<AdminMessage | null>(null);
-  const wsRef = useRef<WebSocket | null>(null);
-  const handlersRef = useRef<Map<AdminEventType | '*', Set<MessageHandler>>>(new Map());
-  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const connect = useCallback(() => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) return;
-
-    const ws = new WebSocket(`${WS_BASE}/admin`);
-    wsRef.current = ws;
-
-    ws.onopen = () => {
-      setConnected(true);
-      console.log('[AdminWS] Connected');
-    };
-
-    ws.onclose = () => {
-      setConnected(false);
-      console.log('[AdminWS] Disconnected, reconnecting in 5s...');
-      reconnectTimeoutRef.current = setTimeout(connect, 5000);
-    };
-
-    ws.onerror = (error) => {
-      console.error('[AdminWS] Error:', error);
-    };
-
-    ws.onmessage = (event) => {
-      try {
-        const message: AdminMessage = JSON.parse(event.data);
-        setLastMessage(message);
-
-        // Notify type-specific handlers
-        const typeHandlers = handlersRef.current.get(message.type);
-        if (typeHandlers) {
-          typeHandlers.forEach((handler) => handler(message));
-        }
-
-        // Notify wildcard handlers
-        const allHandlers = handlersRef.current.get('*');
-        if (allHandlers) {
-          allHandlers.forEach((handler) => handler(message));
-        }
-      } catch (err) {
-        console.error('[AdminWS] Failed to parse message:', err);
-      }
-    };
-  }, []);
 
   useEffect(() => {
-    connect();
-
+    const release = acquireAdminSocket();
+    const offStatus = onAdminStatus(setConnected);
+    const offMessages = addAdminHandler('*', setLastMessage);
     return () => {
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current);
-      }
-      wsRef.current?.close();
-    };
-  }, [connect]);
-
-  const subscribe = useCallback((eventType: AdminEventType, handler: MessageHandler) => {
-    if (!handlersRef.current.has(eventType)) {
-      handlersRef.current.set(eventType, new Set());
-    }
-    handlersRef.current.get(eventType)!.add(handler);
-
-    // Return unsubscribe function
-    return () => {
-      handlersRef.current.get(eventType)?.delete(handler);
+      offMessages();
+      offStatus();
+      release();
     };
   }, []);
 
-  const subscribeAll = useCallback((handler: MessageHandler) => {
-    if (!handlersRef.current.has('*')) {
-      handlersRef.current.set('*', new Set());
-    }
-    handlersRef.current.get('*')!.add(handler);
-
-    return () => {
-      handlersRef.current.get('*')?.delete(handler);
-    };
-  }, []);
+  const subscribe = useCallback(
+    (eventType: AdminEventType, handler: MessageHandler) => addAdminHandler(eventType, handler),
+    []
+  );
+  const subscribeAll = useCallback((handler: MessageHandler) => addAdminHandler('*', handler), []);
 
   return { connected, lastMessage, subscribe, subscribeAll };
 }
 
-// Hook for subscribing to specific event types with automatic cleanup
+// Hook for subscribing to specific message types with automatic cleanup
 export function useAdminEvent(
   eventType: AdminEventType,
   handler: MessageHandler,
@@ -127,15 +54,14 @@ export function useAdminEvent(
   const { connected, subscribe } = useAdminWebSocket();
 
   useEffect(() => {
-    const unsubscribe = subscribe(eventType, handler);
-    return unsubscribe;
+    return subscribe(eventType, handler);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [subscribe, eventType, ...deps]);
 
   return { connected };
 }
 
-// Hook for real-time device status updates
+// Real-time device status: derived from 'device-event' messages by eventType.
 export function useRealtimeDeviceStatus(
   onDeviceOnline?: (deviceId: string, device?: Device) => void,
   onDeviceOffline?: (deviceId: string) => void
@@ -143,41 +69,25 @@ export function useRealtimeDeviceStatus(
   const { connected, subscribe } = useAdminWebSocket();
 
   useEffect(() => {
-    const unsubOnline = subscribe('device-online', (msg) => {
-      if (msg.deviceId && onDeviceOnline) {
-        onDeviceOnline(msg.deviceId, msg.device);
-      }
+    return subscribe('device-event', (msg) => {
+      const event = msg.event;
+      if (!event) return;
+      if (event.eventType === 'device-online') onDeviceOnline?.(event.deviceId, msg.device);
+      else if (event.eventType === 'device-offline') onDeviceOffline?.(event.deviceId);
     });
-
-    const unsubOffline = subscribe('device-offline', (msg) => {
-      if (msg.deviceId && onDeviceOffline) {
-        onDeviceOffline(msg.deviceId);
-      }
-    });
-
-    return () => {
-      unsubOnline();
-      unsubOffline();
-    };
   }, [subscribe, onDeviceOnline, onDeviceOffline]);
 
   return { connected };
 }
 
-// Hook for real-time events feed
-export function useRealtimeEvents(
-  onEvent: (event: DeviceEvent) => void
-): { connected: boolean } {
+// Real-time events feed
+export function useRealtimeEvents(onEvent: (event: DeviceEvent) => void): { connected: boolean } {
   const { connected, subscribe } = useAdminWebSocket();
 
   useEffect(() => {
-    const unsub = subscribe('event-created', (msg) => {
-      if (msg.event) {
-        onEvent(msg.event);
-      }
+    return subscribe('device-event', (msg) => {
+      if (msg.event) onEvent(msg.event);
     });
-
-    return unsub;
   }, [subscribe, onEvent]);
 
   return { connected };

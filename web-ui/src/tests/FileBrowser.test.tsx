@@ -230,8 +230,7 @@ describe('FileBrowser', () => {
       });
     });
 
-    // KNOWN-BUG: WU-20 FileBrowser upload uses bare fetch() and sends no Authorization header
-    it.skip('sends the auth token with the upload request', async () => {
+    it('sends the auth token with the upload request', async () => {
       const user = userEvent.setup();
       const file = new File(['hello'], 'hello.txt', { type: 'text/plain' });
       localStorage.setItem('auth_token', 'jwt-123');

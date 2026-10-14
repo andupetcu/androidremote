@@ -274,7 +274,7 @@ export type CommandType =
   | 'SEND_MESSAGE'
   | 'PLAY_SOUND';
 
-export type CommandStatus = 'pending' | 'delivered' | 'executing' | 'completed' | 'failed';
+export type CommandStatus = 'pending' | 'delivered' | 'executing' | 'completed' | 'failed' | 'expired';
 
 export interface DeviceCommand {
   id: string;

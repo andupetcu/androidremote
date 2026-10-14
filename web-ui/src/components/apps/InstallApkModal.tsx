@@ -1,10 +1,10 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Modal } from '../ui/Modal';
 import { Button } from '../ui/Button';
 import { Badge } from '../ui/Badge';
 import { Spinner } from '../ui/Spinner';
 import type { AppPackage } from '../../hooks/useApps';
-import type { Device } from '../../types/api';
+import type { Device, DeviceCommand } from '../../types/api';
 import { API_BASE, apiFetch } from '../../utils/api';
 import './InstallApkModal.css';
 
@@ -13,16 +13,29 @@ interface InstallApkModalProps {
   onClose: () => void;
   pkg: AppPackage | null;
   onInstall: (packageName: string, deviceIds: string[]) => Promise<unknown>;
+  /** How often to check install progress before queuing the reboot. */
+  pollIntervalMs?: number;
 }
 
-export function InstallApkModal({ open, onClose, pkg, onInstall }: InstallApkModalProps) {
+const TERMINAL_FAILURE = new Set(['failed', 'expired']);
+
+export function InstallApkModal({ open, onClose, pkg, onInstall, pollIntervalMs = 3000 }: InstallApkModalProps) {
   const [devices, setDevices] = useState<Device[]>([]);
   const [selectedDevices, setSelectedDevices] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [installing, setInstalling] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<'all' | 'online' | 'offline'>('all');
-  const [rebootAfterInstall, setRebootAfterInstall] = useState(true);
+  const [rebootAfterInstall, setRebootAfterInstall] = useState(false);
+  const [progress, setProgress] = useState<Record<string, string>>({});
+  const cancelledRef = useRef(false);
+
+  useEffect(() => {
+    cancelledRef.current = !open;
+    return () => {
+      cancelledRef.current = true;
+    };
+  }, [open]);
 
   useEffect(() => {
     if (open) {
@@ -74,32 +87,69 @@ export function InstallApkModal({ open, onClose, pkg, onInstall }: InstallApkMod
     setSelectedDevices(new Set());
   };
 
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  /** Wait until this device's INSTALL_APK reaches a terminal state. */
+  const waitForInstall = async (deviceId: string, commandId?: string): Promise<DeviceCommand> => {
+    for (;;) {
+      await sleep(pollIntervalMs);
+      if (cancelledRef.current) throw new Error('cancelled');
+      const res = await apiFetch(`${API_BASE}/api/devices/${deviceId}/commands`);
+      if (!res.ok) continue;
+      const data = (await res.json()) as { commands: DeviceCommand[] };
+      const cmd = commandId
+        ? data.commands.find((c) => c.id === commandId)
+        : data.commands.filter((c) => c.type === 'INSTALL_APK').sort((x, y) => y.createdAt - x.createdAt)[0];
+      if (!cmd) continue;
+      setProgress((p) => ({ ...p, [deviceId]: cmd.status }));
+      if (cmd.status === 'completed' || TERMINAL_FAILURE.has(cmd.status)) return cmd;
+    }
+  };
+
   const handleInstall = async () => {
     if (!pkg || selectedDevices.size === 0) return;
 
     setInstalling(true);
     setError(null);
+    setProgress({});
 
     try {
       const deviceIds = Array.from(selectedDevices);
-      await onInstall(pkg.packageName, deviceIds);
+      const result = (await onInstall(pkg.packageName, deviceIds)) as { commands?: Array<{ id?: string; deviceId?: string }> } | undefined;
 
-      // Send REBOOT commands so devices restart after install (clears notifications)
-      if (rebootAfterInstall) {
-        await Promise.all(deviceIds.map((deviceId) =>
-          apiFetch(`${API_BASE}/api/commands`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ deviceId, type: 'REBOOT', payload: {} }),
-          })
-        ));
+      if (!rebootAfterInstall) {
+        onClose();
+        return;
       }
 
+      // Reboot a device only after ITS install reports completed.
+      const problems: string[] = [];
+      await Promise.all(deviceIds.map(async (deviceId) => {
+        const name = devices.find((d) => d.id === deviceId)?.name ?? deviceId;
+        const queued = result?.commands?.find((c) => c.deviceId === deviceId);
+        const cmd = await waitForInstall(deviceId, queued?.id);
+        if (cmd.status !== 'completed') {
+          problems.push(`${name}: install ${cmd.status}${cmd.error ? ` - ${cmd.error}` : ''}; not rebooting`);
+          return;
+        }
+        const res = await apiFetch(`${API_BASE}/api/commands`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ deviceId, type: 'REBOOT', payload: {} }),
+        });
+        if (!res.ok) problems.push(`${name}: installed, but the reboot command was rejected (${res.status})`);
+      }));
+
+      if (problems.length > 0) {
+        setError(problems.join('\n'));
+        return;
+      }
       onClose();
     } catch (err) {
+      if (cancelledRef.current) return;
       setError(err instanceof Error ? err.message : 'Installation failed');
     } finally {
-      setInstalling(false);
+      if (!cancelledRef.current) setInstalling(false);
     }
   };
 
@@ -188,6 +238,12 @@ export function InstallApkModal({ open, onClose, pkg, onInstall }: InstallApkMod
                   >
                     {device.status}
                   </Badge>
+                  {progress[device.id] && (
+                    <span className="install-apk-modal__device-model">install {progress[device.id]}</span>
+                  )}
+                  {device.status !== 'online' && (
+                    <span className="install-apk-modal__device-model">Offline: the install is queued and will run when the device reconnects</span>
+                  )}
                 </label>
               ))}
             </div>
@@ -207,12 +263,12 @@ export function InstallApkModal({ open, onClose, pkg, onInstall }: InstallApkMod
             onChange={(e) => setRebootAfterInstall(e.target.checked)}
             className="install-apk-modal__checkbox"
           />
-          <span>Reboot device after install</span>
+          <span>Reboot device after install (only once the install completes)</span>
         </label>
 
         {/* Error */}
         {error && (
-          <div className="install-apk-modal__error">{error}</div>
+          <div className="install-apk-modal__error" role="alert" style={{ whiteSpace: 'pre-line' }}>{error}</div>
         )}
 
         {/* Actions */}

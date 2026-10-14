@@ -92,7 +92,7 @@ export function FileBrowser({ onFileSelect }: FileBrowserProps): ReactElement {
       formData.append('file', files[0]);
       formData.append('path', currentPath);
 
-      const response = await fetch('/api/files/upload', {
+      const response = await apiFetch('/api/files/upload', {
         method: 'POST',
         body: formData,
       });

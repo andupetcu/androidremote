@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import * as Protocol from '../lib/BinaryProtocol';
+import { fetchWsTicket, buildWsUrl } from '../lib/wsTicket';
 
 export type RelayConnectionState =
   | 'disconnected'
@@ -12,8 +13,8 @@ export interface UseRelayWebSocketOptions {
   deviceId: string;
   /** Session type */
   sessionType: 'desktop' | 'terminal' | 'files';
-  /** Auth token (JWT) */
-  token: string;
+  /** Whether the user is signed in; gates auto-connect. NEVER put in the URL. */
+  token?: string;
   /** Auto-connect on mount */
   autoConnect?: boolean;
   /** Handler for received protocol messages */
@@ -41,13 +42,9 @@ export interface UseRelayWebSocketReturn {
   sendTerminalResize: (cols: number, rows: number) => void;
 }
 
-function getRelayUrl(
-  deviceId: string,
-  sessionType: string,
-  token: string
-): string {
+function getRelayUrl(deviceId: string, sessionType: string, ticket: string): string {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${protocol}//${window.location.host}/relay?deviceId=${encodeURIComponent(deviceId)}&session=${sessionType}&token=${encodeURIComponent(token)}`;
+  return buildWsUrl(`${protocol}//${window.location.host}/relay`, ticket, { deviceId, session: sessionType });
 }
 
 export function useRelayWebSocket(
@@ -59,6 +56,7 @@ export function useRelayWebSocket(
   const [state, setState] = useState<RelayConnectionState>('disconnected');
   const [channelId, setChannelId] = useState<number | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const attemptRef = useRef(0); // invalidates in-flight ticket fetches
   const readBufferRef = useRef<Uint8Array>(new Uint8Array(0));
 
   // Keep callbacks in refs to avoid reconnection on callback changes
@@ -82,8 +80,22 @@ export function useRelayWebSocket(
 
     updateState('connecting');
     readBufferRef.current = new Uint8Array(0);
+    const attempt = ++attemptRef.current;
 
-    const url = getRelayUrl(deviceId, sessionType, token);
+    // Tickets are single use: fetch a fresh one on every connect.
+    fetchWsTicket('relay', deviceId).then(
+      (ticket) => {
+        if (attempt !== attemptRef.current) return;
+        openSocket(getRelayUrl(deviceId, sessionType, ticket));
+      },
+      () => {
+        if (attempt !== attemptRef.current) return;
+        onErrorRef.current?.('Could not get a relay ticket');
+        updateState('error');
+      }
+    );
+
+    function openSocket(url: string) {
     const ws = new WebSocket(url);
     ws.binaryType = 'arraybuffer';
     wsRef.current = ws;
@@ -137,9 +149,11 @@ export function useRelayWebSocket(
       onErrorRef.current?.('WebSocket connection error');
       updateState('error');
     };
-  }, [deviceId, sessionType, token, updateState, channelId]);
+    }
+  }, [deviceId, sessionType, updateState, channelId]);
 
   const disconnect = useCallback(() => {
+    attemptRef.current++;
     if (wsRef.current) {
       wsRef.current.close(1000, 'user disconnect');
       wsRef.current = null;
@@ -178,6 +192,7 @@ export function useRelayWebSocket(
       connect();
     }
     return () => {
+      attemptRef.current++;
       if (wsRef.current) {
         wsRef.current.close(1000, 'component unmount');
         wsRef.current = null;

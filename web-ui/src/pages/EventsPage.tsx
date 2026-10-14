@@ -192,6 +192,7 @@ export function EventsPage() {
   const styles = useStyles();
   const [filter, setFilter] = useState<FilterType>('all');
   const [realtimeEvents, setRealtimeEvents] = useState<DeviceEvent[]>([]);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [selectedEvents, setSelectedEvents] = useState<Set<string>>(new Set());
 
   const filters = useMemo(() => {
@@ -228,7 +229,7 @@ export function EventsPage() {
         prev.map((e) => (e.id === eventId ? { ...e, acknowledged: true } : e))
       );
     } catch (err) {
-      console.error('Failed to acknowledge event:', err);
+      setActionError(`Failed to acknowledge event: ${err instanceof Error ? err.message : 'unknown error'}`);
     }
   };
 
@@ -243,7 +244,7 @@ export function EventsPage() {
       );
       setSelectedEvents(new Set());
     } catch (err) {
-      console.error('Failed to acknowledge events:', err);
+      setActionError(`Failed to acknowledge events: ${err instanceof Error ? err.message : 'unknown error'}`);
     }
   };
 
@@ -299,6 +300,11 @@ export function EventsPage() {
 
   return (
     <div className={styles.root}>
+      {actionError && (
+        <div role="alert" style={{ background: 'rgba(244,67,54,0.15)', color: '#ff8a80', padding: '0.75rem 1rem', borderRadius: 8, margin: '0 0 1rem' }}>
+          {actionError}
+        </div>
+      )}
       <div className={styles.header}>
         <div>
           <h1 className={styles.headerTitle}>Events</h1>

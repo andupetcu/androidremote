@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { apiFetch } from '../utils/api';
 import './EnrollmentModal.css';
 
 const API_BASE_URL = import.meta.env.DEV ? 'http://localhost:7899' : '';
@@ -81,7 +82,7 @@ export function EnrollmentModal({ isOpen, onClose, onSuccess }: EnrollmentModalP
     setError(null);
 
     try {
-      const response = await fetch(`${API_BASE_URL}/api/enroll/tokens`, {
+      const response = await apiFetch(`${API_BASE_URL}/api/enroll/tokens`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -111,7 +112,7 @@ export function EnrollmentModal({ isOpen, onClose, onSuccess }: EnrollmentModalP
     // Poll every 2 seconds to check if a device enrolled
     pollIntervalRef.current = window.setInterval(async () => {
       try {
-        const response = await fetch(`${API_BASE_URL}/api/enroll/tokens`);
+        const response = await apiFetch(`${API_BASE_URL}/api/enroll/tokens`);
         if (response.ok) {
           const data = await response.json();
           const currentToken = data.tokens.find((t: EnrollmentToken) => t.token === tokenCode);
@@ -181,7 +182,7 @@ export function EnrollmentModal({ isOpen, onClose, onSuccess }: EnrollmentModalP
       const maxUses = parseInt(deployMaxUses, 10) || 1000;
       const expiresInHours = parseInt(deployExpiryHours, 10) || 72;
 
-      const response = await fetch(`${API_BASE_URL}/api/enroll/tokens`, {
+      const response = await apiFetch(`${API_BASE_URL}/api/enroll/tokens`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ maxUses, expiresInHours }),
