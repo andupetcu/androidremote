@@ -26,6 +26,7 @@ interface TelemetryApiResponse {
   kioskPackage?: string | null;
   lockTask?: boolean | null;
   protectedPackages?: unknown;
+  rooted?: boolean | null;
   updatedAt?: number | null;
 }
 
@@ -72,6 +73,7 @@ export function useTelemetry(deviceId: string): UseTelemetryResult {
         kioskPackage: data.kioskPackage ?? null,
         lockTask: data.lockTask ?? null,
         protectedPackages: Array.isArray(data.protectedPackages) ? data.protectedPackages : null,
+        rooted: typeof data.rooted === 'boolean' ? data.rooted : null,
         updatedAt: data.updatedAt ?? Date.now(),
       };
 

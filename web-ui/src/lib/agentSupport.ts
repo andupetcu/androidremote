@@ -12,7 +12,13 @@ export const ANDROID_COMMAND_TYPES: ReadonlySet<CommandType> = new Set<CommandTy
   'START_REMOTE', 'TAKE_SCREENSHOT', 'GET_LOCATION', 'REFRESH_TELEMETRY', 'SYNC_APPS', 'SYNC_POLICY', 'SET_VOLUME',
 ]);
 
-export const ANDROID_UNSUPPORTED_HINT = 'Not supported by the Android agent';
+/** Shown for Android devices that cannot do remote desktop because they are not rooted. */
+export const ROOT_REQUIRED_MESSAGE = 'Remote desktop requires a rooted device';
+
+/** True when an error string or capture-failure reason means "root is required". */
+export function isRootRequired(reason?: string | null): boolean {
+  return !!reason && /root[_\s-]?required|requires?\s+(a\s+)?root/i.test(reason);
+}
 
 /** Devices that report no OS are Android (the original and still the main agent). */
 export function isAndroid(osType?: string | null): boolean {

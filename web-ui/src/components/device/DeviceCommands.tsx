@@ -1,4 +1,4 @@
-import { useId, useState } from 'react';
+import { useState } from 'react';
 import { useDeviceCommands, CommandHelpers } from '../../hooks/useCommands';
 import { Button } from '../ui/Button';
 import { Badge } from '../ui/Badge';
@@ -6,7 +6,7 @@ import { Spinner } from '../ui/Spinner';
 import { EmptyState } from '../ui/EmptyState';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
 import type { CommandStatus } from '../../types/api';
-import { isCommandSupported, ANDROID_UNSUPPORTED_HINT } from '../../lib/agentSupport';
+import { isCommandSupported } from '../../lib/agentSupport';
 import './DeviceComponents.css';
 
 interface DeviceCommandsProps {
@@ -21,7 +21,6 @@ export function DeviceCommands({ deviceId, osType }: DeviceCommandsProps) {
   const [volumeLevel, setVolumeLevel] = useState(50);
 
   const soundSupported = isCommandSupported(osType, 'PLAY_SOUND');
-  const soundHintId = useId();
 
   const [actionError, setActionError] = useState<string | null>(null);
   const [pendingConfirm, setPendingConfirm] = useState<'lock' | 'reboot' | 'wipe' | null>(null);
@@ -142,21 +141,15 @@ export function DeviceCommands({ deviceId, osType }: DeviceCommandsProps) {
           >
             Refresh Telemetry
           </Button>
-          <Button
-            variant="secondary"
-            size="sm"
-            loading={sending === 'sound'}
-            disabled={!soundSupported}
-            title={soundSupported ? undefined : ANDROID_UNSUPPORTED_HINT}
-            aria-describedby={soundSupported ? undefined : soundHintId}
-            onClick={() => handleCommand(() => CommandHelpers.playSound(sendCommand), 'sound')}
-          >
-            Play Sound
-          </Button>
-          {!soundSupported && (
-            <span id={soundHintId} className="device-commands__hint">
-              Play Sound: {ANDROID_UNSUPPORTED_HINT}
-            </span>
+          {soundSupported && (
+            <Button
+              variant="secondary"
+              size="sm"
+              loading={sending === 'sound'}
+              onClick={() => handleCommand(() => CommandHelpers.playSound(sendCommand), 'sound')}
+            >
+              Play Sound
+            </Button>
           )}
           <Button
             variant="secondary"

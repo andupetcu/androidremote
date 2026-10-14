@@ -5,6 +5,8 @@ import { Button } from '../ui/Button';
 import type { ConnectionState } from '../../hooks/useWebRTC';
 import { API_BASE, apiFetch } from '../../utils/api';
 import { errorMessage } from '../../hooks/useCommands';
+import { useTelemetry } from '../../hooks/useTelemetry';
+import { ROOT_REQUIRED_MESSAGE, isRootRequired } from '../../lib/agentSupport';
 import './DeviceComponents.css';
 
 /**
@@ -38,6 +40,8 @@ function AndroidDeviceRemote({ deviceId }: { deviceId: string }) {
   const [connectionState, setConnectionState] = useState<ConnectionState>('disconnected');
   const [phase, setPhase] = useState<'idle' | 'sending' | 'active'>('idle');
   const [startError, setStartError] = useState<string | null>(null);
+  const { telemetry } = useTelemetry(deviceId);
+  const rootBlocked = telemetry?.rooted === false;
   const connectingRef = useRef(false);
   const disconnectWebRTCRef = useRef<(() => void) | null>(null);
 
@@ -74,13 +78,15 @@ function AndroidDeviceRemote({ deviceId }: { deviceId: string }) {
       });
 
       if (!response.ok) {
-        setStartError(`Could not start the remote session: ${await errorMessage(response, 'request failed')}`);
+        const msg = await errorMessage(response, 'request failed');
+        setStartError(isRootRequired(msg) ? ROOT_REQUIRED_MESSAGE : `Could not start the remote session: ${msg}`);
         setPhase('idle');
         connectingRef.current = false;
         return;
       }
     } catch (err) {
-      setStartError(`Could not start the remote session: ${err instanceof Error ? err.message : 'network error'}`);
+      const msg = err instanceof Error ? err.message : 'network error';
+      setStartError(isRootRequired(msg) ? ROOT_REQUIRED_MESSAGE : `Could not start the remote session: ${msg}`);
       setPhase('idle');
       connectingRef.current = false;
       return;
@@ -115,7 +121,7 @@ function AndroidDeviceRemote({ deviceId }: { deviceId: string }) {
         </span>
         <div className="device-remote__actions">
           {phase === 'idle' && (
-            <Button variant="primary" size="sm" onClick={handleConnect}>
+            <Button variant="primary" size="sm" onClick={handleConnect} disabled={rootBlocked}>
               Connect
             </Button>
           )}
@@ -140,7 +146,9 @@ function AndroidDeviceRemote({ deviceId }: { deviceId: string }) {
         {phase === 'idle' && (
           <div className="device-remote__disconnected">
             {startError && <p role="alert" className="device-remote__error">{startError}</p>}
-            <p>Click Connect to start a remote session.</p>
+            {rootBlocked
+              ? <p className="device-remote__error">{ROOT_REQUIRED_MESSAGE}</p>
+              : <p>Click Connect to start a remote session.</p>}
           </div>
         )}
         {phase === 'sending' && (

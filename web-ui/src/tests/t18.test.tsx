@@ -9,7 +9,7 @@ import { DeviceApps } from '../components/device/DeviceApps';
 import { DeviceCommands } from '../components/device/DeviceCommands';
 import { closeAdminSocket } from '../lib/adminSocket';
 import { effectiveProtectedPackages } from '../lib/deviceState';
-import { isCommandSupported, ANDROID_UNSUPPORTED_HINT, ANDROID_COMMAND_TYPES } from '../lib/agentSupport';
+import { isCommandSupported, ANDROID_COMMAND_TYPES } from '../lib/agentSupport';
 import type { DeviceCommand } from '../types/api';
 
 beforeEach(() => localStorage.setItem('auth_token', 'jwt'));
@@ -75,30 +75,25 @@ describe('T18 commands the Android agent does not implement', () => {
     server.use(http.get(`${API_BASE}/api/devices/dev-1/commands`, () => HttpResponse.json({ commands: [] })));
   }
 
-  it('Play Sound is disabled with a clear hint for an Android device', async () => {
+  it('Play Sound is hidden (not rendered) for an Android device, with no hint text', async () => {
     mockCommands();
     render(<DeviceCommands deviceId="dev-1" osType="android" />);
-    const btn = await screen.findByRole('button', { name: /play sound/i });
-    expect(btn).toBeDisabled();
-    expect(btn).toHaveAccessibleDescription(new RegExp(ANDROID_UNSUPPORTED_HINT));
-    expect(screen.getByText(new RegExp(ANDROID_UNSUPPORTED_HINT))).toBeVisible();
+    await screen.findByRole('button', { name: /^screenshot$/i });
+    expect(screen.queryByRole('button', { name: /play sound/i })).not.toBeInTheDocument();
+    expect(screen.queryByText(/not supported by the android agent/i)).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /^screenshot$/i })).toBeEnabled();
+  });
+
+  it('Play Sound is hidden when the OS is unknown (treated as Android)', async () => {
+    mockCommands();
+    render(<DeviceCommands deviceId="dev-1" />);
+    await screen.findByRole('button', { name: /^screenshot$/i });
+    expect(screen.queryByRole('button', { name: /play sound/i })).not.toBeInTheDocument();
   });
 
   it('Play Sound stays available for a non-Android agent', async () => {
     mockCommands();
     render(<DeviceCommands deviceId="dev-1" osType="windows" />);
     expect(await screen.findByRole('button', { name: /play sound/i })).toBeEnabled();
-    expect(screen.queryByText(new RegExp(ANDROID_UNSUPPORTED_HINT))).not.toBeInTheDocument();
-  });
-
-  it('clicking the disabled button sends nothing', async () => {
-    const posted: unknown[] = [];
-    mockCommands();
-    server.use(http.post(`${API_BASE}/api/commands`, async ({ request }) => { posted.push(await request.json()); return HttpResponse.json({}, { status: 201 }); }));
-    const user = userEvent.setup();
-    render(<DeviceCommands deviceId="dev-1" osType="android" />);
-    await user.click(await screen.findByRole('button', { name: /play sound/i }));
-    expect(posted).toHaveLength(0);
   });
 });

@@ -1,3 +1,4 @@
+import { ROOT_REQUIRED_MESSAGE, isRootRequired } from '../lib/agentSupport';
 import { useEffect, useRef, useCallback, useState, type ReactElement, type MutableRefObject } from 'react';
 import { useWebRTC } from '../hooks/useWebRTC';
 import type { ConnectionState } from '../hooks/useWebRTC';
@@ -287,7 +288,7 @@ export function RemoteScreen({
     ? `${contentSize.width}/${contentSize.height}`
     : '9/16'; // Default portrait until dimensions are known
   const problem = captureError
-    ? `Screen capture failed on the device: ${captureError}`
+    ? (isRootRequired(captureError) ? ROOT_REQUIRED_MESSAGE : `Screen capture failed on the device: ${captureError}`)
     : videoProblem;
 
   return (

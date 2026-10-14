@@ -52,6 +52,8 @@ export interface DeviceTelemetry {
   kioskPackage: string | null;
   lockTask: boolean | null;
   protectedPackages: string[] | null;
+  /** Android only: whether the device is rooted (remote desktop needs it). Undefined/null = unknown. */
+  rooted?: boolean | null;
   updatedAt: number;
 }
 

@@ -763,8 +763,3 @@
   text-decoration: underline;
 }
 
-.device-commands__hint {
-  align-self: center;
-  font-size: 12px;
-  opacity: 0.75;
-}
