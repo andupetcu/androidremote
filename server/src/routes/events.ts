@@ -14,7 +14,9 @@ function ackFilter(raw: unknown): boolean | undefined {
 /** GET /api/events - List all events (optionally for one device) */
 eventsRouter.get('/events', (req: Request, res: Response) => {
   const deviceId = typeof req.query.deviceId === 'string' && req.query.deviceId ? req.query.deviceId : undefined;
+  const eventType = typeof req.query.eventType === 'string' && req.query.eventType ? req.query.eventType : undefined;
   const filter = {
+    eventTypes: eventType ? [eventType as DeviceEventType] : undefined,
     severity: req.query.severity as EventSeverity | undefined,
     acknowledged: ackFilter(req.query.acknowledged),
     from: parseTimestamp(req.query.from),

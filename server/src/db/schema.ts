@@ -456,6 +456,11 @@ export function initializeSchema(db: Database.Database): void {
   `);
   // SR-08: last battery alert state (ok | low | critical), so alerts fire on transitions only.
   addColumnIfMissing(db, 'device_telemetry', 'battery_alert_state', "TEXT DEFAULT 'ok'");
+  // T13/T14: kiosk and protected-package state as the device reports it
+  addColumnIfMissing(db, 'device_telemetry', 'kiosk_active', 'INTEGER');
+  addColumnIfMissing(db, 'device_telemetry', 'kiosk_package', 'TEXT');
+  addColumnIfMissing(db, 'device_telemetry', 'lock_task', 'INTEGER');
+  addColumnIfMissing(db, 'device_telemetry', 'protected_packages', 'TEXT');
 
   // ============================================
   // Phase 2: Application Inventory

@@ -153,6 +153,7 @@ class EventStore {
   /** Number of events matching the filters (same filters as getAllEvents / getDeviceEvents, no paging). */
   countEvents(options?: {
     deviceId?: string;
+    eventTypes?: DeviceEventType[];
     severity?: EventSeverity;
     acknowledged?: boolean;
     from?: number;
@@ -162,6 +163,10 @@ class EventStore {
     let query = 'SELECT COUNT(*) AS c FROM device_events WHERE 1=1';
     const params: (string | number)[] = [];
     if (options?.deviceId) { query += ' AND device_id = ?'; params.push(options.deviceId); }
+    if (options?.eventTypes && options.eventTypes.length > 0) {
+      query += ` AND event_type IN (${options.eventTypes.map(() => '?').join(',')})`;
+      params.push(...options.eventTypes);
+    }
     if (options?.severity) { query += ' AND severity = ?'; params.push(options.severity); }
     if (options?.acknowledged !== undefined) { query += ' AND acknowledged = ?'; params.push(options.acknowledged ? 1 : 0); }
     if (options?.from) { query += ' AND created_at >= ?'; params.push(options.from); }

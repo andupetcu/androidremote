@@ -92,9 +92,10 @@ export function queueSyncPolicy(deviceId: string, policy: Policy) {
     kioskMode: policy.kioskMode,
     requiredApps: policy.requiredApps || [],
   };
-  // Optional maintenance window for app updates, "HH:mm" (AM-08). Absent means install immediately.
+  // Maintenance window for app updates, "HH:mm" (AM-08). Always sent: null tells the device to drop an older
+  // window (a missing key would leave it in place), meaning install immediately.
   const start = settingsStore.get('updateWindowStart');
   const end = settingsStore.get('updateWindowEnd');
-  if (start && end) payload.updateWindow = { start, end };
+  payload.updateWindow = start && end ? { start, end } : null;
   return commandStore.queueCommand(deviceId, 'SYNC_POLICY', payload, { supersede: 'type' });
 }

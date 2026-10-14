@@ -158,8 +158,8 @@ describe('AM-08: optional updateWindow in SYNC_POLICY', () => {
     return cmd.payload;
   }
 
-  it('is absent by default', () => {
-    expect(syncPayload().updateWindow).toBeUndefined();
+  it('is null by default (an explicit clear)', () => {
+    expect(syncPayload().updateWindow).toBeNull();
   });
 
   it('comes from the settings updateWindowStart / updateWindowEnd', () => {
@@ -181,7 +181,7 @@ describe('AM-08: optional updateWindow in SYNC_POLICY', () => {
     settingsStore.setMultiple({ updateWindowStart: '02:00', updateWindowEnd: '05:30' });
     const r = await request(app).put('/api/settings').set('Authorization', admin()).send({ updateWindowStart: '', updateWindowEnd: '' });
     expect(r.status).toBe(200);
-    expect(syncPayload().updateWindow).toBeUndefined();
+    expect(syncPayload().updateWindow).toBeNull();
   });
 });
 

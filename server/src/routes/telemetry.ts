@@ -30,6 +30,11 @@ const sampleFields = {
   locationAccuracy: num(z.number().min(0)),
   uptimeMs: num(z.number().int().min(0)),
   androidSecurityPatch: str(50),
+  // T13: kiosk state as the device sees it. kioskPackage is sent as null when no kiosk is configured.
+  kioskActive: z.union([z.boolean(), z.number()]).nullable().optional(),
+  kioskPackage: str(300),
+  lockTask: z.union([z.boolean(), z.number()]).nullable().optional(),
+  protectedPackages: z.array(z.string().max(300)).max(500).nullable().optional(),
   collectedAt: z.number().int().min(0).optional(),
 };
 // Unknown keys (including a deviceId) are stripped: the device ID always comes from the URL (C2).
@@ -44,8 +49,10 @@ function nextReportIn(): number {
 }
 
 function toInput(deviceId: string, sample: z.infer<typeof telemetrySchema>): TelemetryInput {
-  const { batteryCharging, screenOn, ...rest } = sample;
+  const { batteryCharging, screenOn, kioskActive, lockTask, ...rest } = sample;
   const out: TelemetryInput = { ...(rest as Omit<TelemetryInput, 'deviceId'>), deviceId };
+  if (kioskActive !== undefined) out.kioskActive = kioskActive === null ? null : Boolean(kioskActive);
+  if (lockTask !== undefined) out.lockTask = lockTask === null ? null : Boolean(lockTask);
   if (batteryCharging !== undefined) out.batteryCharging = batteryCharging === null ? null : Boolean(batteryCharging);
   if (screenOn !== undefined) out.screenOn = screenOn === null ? null : Boolean(screenOn);
   return out;
@@ -110,6 +117,10 @@ telemetryRouter.get('/devices/:id/telemetry', (req: Request, res: Response) => {
       storageTotalBytes: null,
       memoryUsedBytes: null,
       memoryTotalBytes: null,
+      kioskActive: null,
+      kioskPackage: null,
+      lockTask: null,
+      protectedPackages: null,
     });
     return;
   }

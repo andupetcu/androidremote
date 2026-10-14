@@ -330,12 +330,16 @@ class AuditStore {
    * Export logs as CSV
    */
   exportLogs(options?: {
+    actorType?: ActorType;
+    actorId?: string;
+    action?: AuditAction;
+    resourceType?: ResourceType;
+    resourceId?: string;
     from?: number;
     to?: number;
   }): string {
     const logs = this.getLogs({
-      from: options?.from,
-      to: options?.to,
+      ...options,
       limit: 100000, // Max export size
     });
 

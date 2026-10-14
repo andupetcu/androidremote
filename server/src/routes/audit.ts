@@ -4,10 +4,9 @@ import { parsePagination, parseTimestamp } from './pagination';
 
 export const auditRouter = Router();
 
-/** GET /api/audit - List audit logs */
-auditRouter.get('/audit', (req: Request, res: Response) => {
+function auditFilter(req: Request) {
   const { actorType, actorId, action, resourceType, resourceId } = req.query;
-  const filter = {
+  return {
     actorType: actorType as 'admin' | 'device' | 'system' | undefined,
     actorId: actorId as string | undefined,
     action: action as any,
@@ -16,6 +15,11 @@ auditRouter.get('/audit', (req: Request, res: Response) => {
     from: parseTimestamp(req.query.from),
     to: parseTimestamp(req.query.to),
   };
+}
+
+/** GET /api/audit - List audit logs */
+auditRouter.get('/audit', (req: Request, res: Response) => {
+  const filter = auditFilter(req);
   const page = parsePagination(req.query);
   const logs = auditStore.getLogs({ ...filter, ...page });
   res.json({ logs, count: logs.length, total: auditStore.countLogs(filter) });
@@ -23,10 +27,7 @@ auditRouter.get('/audit', (req: Request, res: Response) => {
 
 /** GET /api/audit/export - Export audit logs as CSV */
 auditRouter.get('/audit/export', (req: Request, res: Response) => {
-  const csv = auditStore.exportLogs({
-    from: parseTimestamp(req.query.from),
-    to: parseTimestamp(req.query.to),
-  });
+  const csv = auditStore.exportLogs(auditFilter(req));
 
   res.setHeader('Content-Type', 'text/csv');
   res.setHeader('Content-Disposition', `attachment; filename="audit-logs-${Date.now()}.csv"`);

@@ -38,6 +38,12 @@ export interface DeviceTelemetry {
   uptimeMs: number | null;
   androidSecurityPatch: string | null;
 
+  // Kiosk and protected packages, as reported by the device
+  kioskActive: boolean | null;
+  kioskPackage: string | null;
+  lockTask: boolean | null;
+  protectedPackages: string[] | null;
+
   updatedAt: number;
 }
 
@@ -64,6 +70,10 @@ export interface TelemetryInput {
   locationAccuracy?: number | null;
   uptimeMs?: number | null;
   androidSecurityPatch?: string | null;
+  kioskActive?: boolean | null;
+  kioskPackage?: string | null;
+  lockTask?: boolean | null;
+  protectedPackages?: string[] | null;
   /** Epoch ms when the device took the sample (buffered samples). Used when plausible. */
   collectedAt?: number;
 }
@@ -133,6 +143,10 @@ interface TelemetryRow {
   location_accuracy: number | null;
   uptime_ms: number | null;
   android_security_patch: string | null;
+  kiosk_active: number | null;
+  kiosk_package: string | null;
+  lock_task: number | null;
+  protected_packages: string | null;
   updated_at: number;
 }
 
@@ -146,7 +160,7 @@ interface HistoryRow {
   recorded_at: number;
 }
 
-const FIELDS: Array<[keyof TelemetryInput, string, 'num' | 'str' | 'bool']> = [
+const FIELDS: Array<[keyof TelemetryInput, string, 'num' | 'str' | 'bool' | 'json']> = [
   ['batteryLevel', 'battery_level', 'num'],
   ['batteryCharging', 'battery_charging', 'bool'],
   ['batteryHealth', 'battery_health', 'str'],
@@ -165,7 +179,21 @@ const FIELDS: Array<[keyof TelemetryInput, string, 'num' | 'str' | 'bool']> = [
   ['locationAccuracy', 'location_accuracy', 'num'],
   ['uptimeMs', 'uptime_ms', 'num'],
   ['androidSecurityPatch', 'android_security_patch', 'str'],
+  ['kioskActive', 'kiosk_active', 'bool'],
+  ['kioskPackage', 'kiosk_package', 'str'],
+  ['lockTask', 'lock_task', 'bool'],
+  ['protectedPackages', 'protected_packages', 'json'],
 ];
+
+function parseJsonList(raw: string | null): string[] | null {
+  if (raw === null) return null;
+  try {
+    const v = JSON.parse(raw);
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : null;
+  } catch {
+    return null;
+  }
+}
 
 class TelemetryStore {
   private db: Database.Database | null = null;
@@ -221,7 +249,7 @@ class TelemetryStore {
       const v = (input as unknown as Record<string, unknown>)[key];
       if (v === undefined) continue;
       cols.push(col);
-      vals.push(v === null ? null : kind === 'bool' ? (v ? 1 : 0) : (v as string | number));
+      vals.push(v === null ? null : kind === 'bool' ? (v ? 1 : 0) : kind === 'json' ? JSON.stringify(v) : (v as string | number));
     }
     const names = ['device_id', ...cols, 'updated_at'];
     const update = [...cols.map(c => `${c} = excluded.${c}`), 'updated_at = excluded.updated_at'].join(', ');
@@ -484,6 +512,10 @@ class TelemetryStore {
       locationAccuracy: row.location_accuracy,
       uptimeMs: row.uptime_ms,
       androidSecurityPatch: row.android_security_patch,
+      kioskActive: row.kiosk_active !== null ? row.kiosk_active === 1 : null,
+      kioskPackage: row.kiosk_package,
+      lockTask: row.lock_task !== null ? row.lock_task === 1 : null,
+      protectedPackages: parseJsonList(row.protected_packages),
       updatedAt: row.updated_at,
     };
   }
