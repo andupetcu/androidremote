@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useConfirm } from '../hooks/useConfirm';
 import { Link } from 'react-router-dom';
 import { makeStyles, mergeClasses } from '@fluentui/react-components';
 import { useDevices } from '../hooks/useDevices';
@@ -150,9 +151,10 @@ export function DevicesPage() {
   const styles = useStyles();
   const { devices, loading, error, unenrollDevice } = useDevices();
   const [syncing, setSyncing] = useState(false);
+  const { confirm, dialog } = useConfirm();
 
   const handleReapplyAll = async () => {
-    if (!confirm('Reapply policies to all devices?')) return;
+    if (!(await confirm({ title: 'Reapply policies?', body: `Queue a policy sync on all ${devices.length} devices.`, confirmLabel: 'Reapply', danger: false }))) return;
     setSyncing(true);
     try {
       await Promise.all(
@@ -172,9 +174,12 @@ export function DevicesPage() {
   };
 
   const handleUnenroll = async (id: string, name: string) => {
-    if (confirm(`Are you sure you want to unenroll "${name}"? This action cannot be undone.`)) {
-      await unenrollDevice(id);
-    }
+    const ok = await confirm({
+      title: `Unenroll ${name}?`,
+      body: 'The device is removed from the fleet and its management data is deleted. This cannot be undone.',
+      confirmLabel: 'Unenroll',
+    });
+    if (ok) await unenrollDevice(id);
   };
 
   if (loading) {
@@ -187,6 +192,7 @@ export function DevicesPage() {
 
   return (
     <div className={styles.root}>
+      {dialog}
       <div className={styles.header}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
           <h1 className={styles.headerTitle}>Devices</h1>

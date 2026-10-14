@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useConfirm } from '../hooks/useConfirm';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { makeStyles } from '@fluentui/react-components';
 import { useGroup, useGroups } from '../hooks/useGroups';
@@ -201,6 +202,7 @@ export function GroupDetailPage() {
   const { groupId } = useParams<{ groupId: string }>();
   const navigate = useNavigate();
   const { group, devices, loading, error, refresh, addDevice, removeDevice } = useGroup(groupId || '');
+  const { confirm, dialog } = useConfirm();
   const { updateGroup } = useGroups();
   const { devices: allDevices } = useDevices();
   const { policies } = usePolicies();
@@ -226,7 +228,7 @@ export function GroupDetailPage() {
   };
 
   const handleRemoveDevice = async (deviceId: string) => {
-    if (!confirm('Remove this device from the group?')) return;
+    if (!(await confirm({ title: 'Remove device from group?', body: 'The device stays enrolled; it only leaves this group.', confirmLabel: 'Remove device' }))) return;
     try {
       await removeDevice(deviceId);
     } catch (err) {
@@ -340,6 +342,7 @@ export function GroupDetailPage() {
 
   return (
     <div className={styles.root}>
+      {dialog}
       <header className={styles.header}>
         <div className={styles.nav}>
           <Button variant="ghost" onClick={() => navigate('/groups')}>

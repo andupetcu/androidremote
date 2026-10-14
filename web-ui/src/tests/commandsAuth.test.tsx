@@ -105,7 +105,9 @@ describe('DeviceCommands (WU-13)', () => {
     const user = userEvent.setup();
     render(<DeviceCommands deviceId="dev-1" />);
     await user.click(await screen.findByRole('button', { name: /wipe device/i }));
-    await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: /wipe device/i }));
+    const dialog = await screen.findByRole('dialog');
+    await user.type(within(dialog).getByLabelText(/type the device id/i), 'dev-1');
+    await user.click(within(dialog).getByRole('button', { name: /wipe device/i }));
     await waitFor(() => expect(posted).toHaveLength(1));
     expect(posted[0]).toMatchObject({ type: 'WIPE', payload: expect.objectContaining({ confirm: 'dev-1' }) });
   });

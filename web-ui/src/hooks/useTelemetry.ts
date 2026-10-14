@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import type { DeviceTelemetry, TelemetryHistory } from '../types/api';
 import { API_BASE, apiFetch } from '../utils/api';
+import { fetchJsonShared } from '../lib/polling';
+import { usePolling } from './usePolling';
 
 interface UseTelemetryResult {
   telemetry: DeviceTelemetry | null;
@@ -14,12 +16,12 @@ export function useTelemetry(deviceId: string): UseTelemetryResult {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const refresh = useCallback(async () => {
+  const fetchOnce = useCallback(async (): Promise<boolean> => {
     try {
       setError(null);
-      const res = await apiFetch(`${API_BASE}/api/devices/${deviceId}/telemetry`);
-      if (!res.ok) throw new Error('Failed to fetch telemetry');
-      const data = await res.json();
+      const res = await fetchJsonShared<Record<string, any>>(`${API_BASE}/api/devices/${deviceId}/telemetry`);
+      if (!res.ok || !res.data) throw new Error('Failed to fetch telemetry');
+      const data = res.data;
 
       // Transform API field names to frontend interface names
       // API returns: storageTotalBytes, storageUsedBytes, networkSsid, etc.
@@ -50,18 +52,24 @@ export function useTelemetry(deviceId: string): UseTelemetryResult {
       } else {
         setTelemetry(null);
       }
+      return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error');
+      return false;
     } finally {
       setLoading(false);
     }
   }, [deviceId]);
 
+  const refresh = useCallback(async () => {
+    await fetchOnce();
+  }, [fetchOnce]);
+
   useEffect(() => {
-    refresh();
-    const interval = setInterval(refresh, 30000); // Poll every 30 seconds
-    return () => clearInterval(interval);
-  }, [refresh]);
+    void fetchOnce();
+  }, [fetchOnce]);
+
+  usePolling(fetchOnce, 30000);
 
   return { telemetry, loading, error, refresh };
 }
@@ -119,25 +127,30 @@ export function useAllTelemetry(): UseAllTelemetryResult {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const refresh = useCallback(async () => {
+  const fetchOnce = useCallback(async (): Promise<boolean> => {
     try {
       setError(null);
-      const res = await apiFetch(`${API_BASE}/api/telemetry`);
-      if (!res.ok) throw new Error('Failed to fetch telemetry');
-      const data = await res.json();
-      setTelemetry(data.telemetry);
+      const res = await fetchJsonShared<{ telemetry: DeviceTelemetry[] }>(`${API_BASE}/api/telemetry`);
+      if (!res.ok || !res.data) throw new Error('Failed to fetch telemetry');
+      setTelemetry(res.data.telemetry);
+      return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error');
+      return false;
     } finally {
       setLoading(false);
     }
   }, []);
 
+  const refresh = useCallback(async () => {
+    await fetchOnce();
+  }, [fetchOnce]);
+
   useEffect(() => {
-    refresh();
-    const interval = setInterval(refresh, 30000);
-    return () => clearInterval(interval);
-  }, [refresh]);
+    void fetchOnce();
+  }, [fetchOnce]);
+
+  usePolling(fetchOnce, 30000);
 
   return { telemetry, loading, error, refresh };
 }

@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { apiFetch } from '../utils/api';
+import { createPoller, type Poller } from '../lib/polling';
 import './EnrollmentModal.css';
 
 const API_BASE_URL = import.meta.env.DEV ? 'http://localhost:7899' : '';
@@ -28,7 +29,7 @@ export function EnrollmentModal({ isOpen, onClose, onSuccess }: EnrollmentModalP
   const [token, setToken] = useState<EnrollmentToken | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const pollIntervalRef = useRef<number | null>(null);
+  const pollerRef = useRef<Poller | null>(null);
   const mountIdRef = useRef(Math.random().toString(36).slice(2, 8));
 
   // Deploy tab state
@@ -59,19 +60,15 @@ export function EnrollmentModal({ isOpen, onClose, onSuccess }: EnrollmentModalP
       setDeployToken(null);
       setDeployServerUrl('');
       setCopiedField(null);
-      if (pollIntervalRef.current) {
-        clearInterval(pollIntervalRef.current);
-        pollIntervalRef.current = null;
-      }
+      pollerRef.current?.stop();
+      pollerRef.current = null;
     }
   }, [isOpen, step]);
 
   // Cleanup on unmount
   useEffect(() => {
     return () => {
-      if (pollIntervalRef.current) {
-        clearInterval(pollIntervalRef.current);
-      }
+      pollerRef.current?.stop();
     };
   }, []);
 
@@ -109,44 +106,34 @@ export function EnrollmentModal({ isOpen, onClose, onSuccess }: EnrollmentModalP
   };
 
   const startPolling = (tokenCode: string) => {
-    // Poll every 2 seconds to check if a device enrolled
-    pollIntervalRef.current = window.setInterval(async () => {
-      try {
+    // Shared scheduler: no overlapping requests, paused while the tab is hidden, backs off on
+    // errors (WU-16). TODO(server): a single-token endpoint would avoid listing every token.
+    pollerRef.current?.stop();
+    const poller = createPoller({
+      intervalMs: 3000,
+      maxIntervalMs: 30000,
+      task: async () => {
         const response = await apiFetch(`${API_BASE_URL}/api/enroll/tokens`);
-        if (response.ok) {
-          const data = await response.json();
-          const currentToken = data.tokens.find((t: EnrollmentToken) => t.token === tokenCode);
-
-          console.log('[Enrollment] Polling token:', tokenCode, 'Found:', currentToken?.token, 'Status:', currentToken?.status);
-
-          if (currentToken) {
-            if (currentToken.usedCount > 0 || currentToken.status === 'exhausted') {
-              // Device enrolled successfully
-              console.log('[Enrollment] Device enrolled!');
-              if (pollIntervalRef.current) {
-                clearInterval(pollIntervalRef.current);
-                pollIntervalRef.current = null;
-              }
-              setStep('success');
-              onSuccess();
-            } else if (currentToken.status === 'expired' || currentToken.status === 'revoked') {
-              // Token is no longer valid
-              console.log('[Enrollment] Token expired/revoked:', currentToken.status);
-              if (pollIntervalRef.current) {
-                clearInterval(pollIntervalRef.current);
-                pollIntervalRef.current = null;
-              }
-              setError('Enrollment token expired or was revoked');
-              setStep('generate');
-            }
-          } else {
-            console.log('[Enrollment] Token not found in response!');
-          }
+        if (!response.ok) return false;
+        const data = await response.json();
+        const currentToken = data.tokens.find((t: EnrollmentToken) => t.token === tokenCode);
+        if (!currentToken) return true;
+        if (currentToken.usedCount > 0 || currentToken.status === 'exhausted') {
+          poller.stop();
+          pollerRef.current = null;
+          setStep('success');
+          onSuccess();
+        } else if (currentToken.status === 'expired' || currentToken.status === 'revoked') {
+          poller.stop();
+          pollerRef.current = null;
+          setError('Enrollment token expired or was revoked');
+          setStep('generate');
         }
-      } catch (err) {
-        console.log('[Enrollment] Polling error:', err);
-      }
-    }, 2000);
+        return true;
+      },
+    });
+    pollerRef.current = poller;
+    poller.start();
   };
 
   const copyToClipboard = (text: string, field?: string) => {

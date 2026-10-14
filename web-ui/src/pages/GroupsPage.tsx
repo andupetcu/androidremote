@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useConfirm } from '../hooks/useConfirm';
 import { useNavigate } from 'react-router-dom';
 import { makeStyles } from '@fluentui/react-components';
 import { useGroups } from '../hooks/useGroups';
@@ -145,6 +146,7 @@ export function GroupsPage() {
   const styles = useStyles();
   const navigate = useNavigate();
   const { groups, loading, error, createGroup, deleteGroup, refresh } = useGroups();
+  const { confirm, dialog } = useConfirm();
   const [showCreate, setShowCreate] = useState(false);
   const [newGroupName, setNewGroupName] = useState('');
   const [newGroupDesc, setNewGroupDesc] = useState('');
@@ -172,7 +174,7 @@ export function GroupsPage() {
   };
 
   const handleDeleteGroup = async (id: string) => {
-    if (!confirm('Are you sure you want to delete this group?')) return;
+    if (!(await confirm({ title: 'Delete group?', body: 'Are you sure you want to delete this group? Devices in it are not removed.', confirmLabel: 'Delete group' }))) return;
     try {
       await deleteGroup(id);
     } catch (err) {
@@ -205,6 +207,7 @@ export function GroupsPage() {
 
   return (
     <div className={styles.root}>
+      {dialog}
       <div className={styles.header}>
         <div>
           <h1 className={styles.headerTitle}>Device Groups</h1>

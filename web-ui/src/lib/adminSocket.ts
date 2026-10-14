@@ -1,5 +1,5 @@
 import { fetchWsTicket, buildWsUrl } from './wsTicket';
-import type { DeviceEvent, Device } from '../types/api';
+import type { DeviceEvent, Device, DeviceCommand } from '../types/api';
 
 /**
  * Message types the server sends on /admin (see server/src/signaling.ts).
@@ -8,6 +8,7 @@ import type { DeviceEvent, Device } from '../types/api';
 export const ADMIN_MESSAGE_TYPES = [
   'connected',
   'device-event',
+  'command-update',
   'subscribed',
   'unsubscribed',
   'pong',
@@ -20,6 +21,8 @@ export interface AdminMessage {
   deviceId?: string;
   device?: Device;
   event?: DeviceEvent;
+  /** 'command-update': a command changed state (every transition, not only the final one). */
+  command?: DeviceCommand;
   message?: string;
 }
 

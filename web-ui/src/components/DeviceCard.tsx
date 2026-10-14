@@ -1,4 +1,5 @@
 import { Link } from 'react-router-dom';
+import { useConfirm } from '../hooks/useConfirm';
 import type { Device } from '../hooks/useDevices';
 import './DeviceCard.css';
 
@@ -8,12 +9,18 @@ interface DeviceCardProps {
 }
 
 export function DeviceCard({ device, onUnenroll }: DeviceCardProps) {
-  const handleUnenroll = (e: React.MouseEvent) => {
+  const { confirm, dialog } = useConfirm();
+
+  const handleUnenroll = async (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    if (onUnenroll && confirm(`Unenroll ${device.name}?`)) {
-      onUnenroll(device.id);
-    }
+    if (!onUnenroll) return;
+    const ok = await confirm({
+      title: `Unenroll ${device.name}?`,
+      body: 'The device is removed from the fleet. This cannot be undone.',
+      confirmLabel: 'Unenroll',
+    });
+    if (ok) onUnenroll(device.id);
   };
 
   const formatDate = (timestamp: number | null) => {
@@ -22,6 +29,8 @@ export function DeviceCard({ device, onUnenroll }: DeviceCardProps) {
   };
 
   return (
+    <>
+    {dialog}
     <Link to={`/devices/${device.id}`} className="device-card">
       <div className="device-card__header">
         <span className={`device-card__status device-card__status--${device.status}`} />
@@ -58,5 +67,6 @@ export function DeviceCard({ device, onUnenroll }: DeviceCardProps) {
         </button>
       </div>
     </Link>
+    </>
   );
 }

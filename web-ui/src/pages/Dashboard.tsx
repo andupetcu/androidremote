@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { makeStyles } from '@fluentui/react-components';
 import { useDevices } from '../hooks/useDevices';
@@ -11,6 +11,7 @@ import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
 import { Spinner } from '../components/ui/Spinner';
 import { EmptyState } from '../components/ui/EmptyState';
+import { debounce } from '../lib/polling';
 import type { DeviceEvent } from '../types/api';
 
 const useStyles = makeStyles({
@@ -157,29 +158,23 @@ export function Dashboard() {
   const { events, refresh: refreshEvents } = useEvents({ acknowledged: false });
   const [showEnrollment, setShowEnrollment] = useState(false);
   const [recentEvents, setRecentEvents] = useState<DeviceEvent[]>([]);
-  const mountIdRef = useRef(Math.random().toString(36).slice(2, 8));
-
-  // Track Dashboard mounts
-  useEffect(() => {
-    console.log('[Dashboard] MOUNTED, id:', mountIdRef.current);
-    return () => {
-      console.log('[Dashboard] UNMOUNTED, id:', mountIdRef.current);
-    };
-  }, []);
 
   // Real-time event updates
   const handleNewEvent = useCallback((event: DeviceEvent) => {
     setRecentEvents((prev) => [event, ...prev].slice(0, 5));
   }, []);
 
-  // Memoize device status callbacks to avoid effect re-runs
+  // A fleet-wide reconnect sends one event per device: collapse them into one refetch (WU-16)
+  const debouncedRefresh = useMemo(() => debounce(() => void refresh(), 2000), [refresh]);
+  useEffect(() => () => debouncedRefresh.cancel(), [debouncedRefresh]);
+
   const handleDeviceOnline = useCallback(() => {
-    refresh();
-  }, [refresh]);
+    debouncedRefresh();
+  }, [debouncedRefresh]);
 
   const handleDeviceOffline = useCallback(() => {
-    refresh();
-  }, [refresh]);
+    debouncedRefresh();
+  }, [debouncedRefresh]);
 
   // Memoize modal callbacks to ensure stable references
   const handleCloseEnrollment = useCallback(() => {

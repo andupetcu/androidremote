@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useConfirm } from '../hooks/useConfirm';
 import { useNavigate } from 'react-router-dom';
 import { makeStyles, mergeClasses } from '@fluentui/react-components';
 import { usePolicies } from '../hooks/usePolicies';
@@ -172,6 +173,7 @@ export function PoliciesPage() {
   const styles = useStyles();
   const navigate = useNavigate();
   const { policies, loading, error, createPolicy, deletePolicy, refresh } = usePolicies();
+  const { confirm, dialog } = useConfirm();
   const [showCreate, setShowCreate] = useState(false);
   const [formData, setFormData] = useState<PolicyInput>({
     name: '',
@@ -211,7 +213,7 @@ export function PoliciesPage() {
   };
 
   const handleDeletePolicy = async (id: string) => {
-    if (!confirm('Are you sure you want to delete this policy?')) return;
+    if (!(await confirm({ title: 'Delete policy?', body: 'Are you sure you want to delete this policy? Devices using it fall back to no policy.', confirmLabel: 'Delete policy' }))) return;
     try {
       await deletePolicy(id);
     } catch (err) {
@@ -244,6 +246,7 @@ export function PoliciesPage() {
 
   return (
     <div className={styles.root}>
+      {dialog}
       <div className={styles.header}>
         <div>
           <h1 className={styles.headerTitle}>Policies</h1>

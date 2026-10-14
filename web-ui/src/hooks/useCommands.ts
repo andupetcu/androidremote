@@ -1,6 +1,9 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import type { DeviceCommand, CommandType, CommandStatus } from '../types/api';
 import { API_BASE, apiFetch } from '../utils/api';
+import { acquireAdminSocket, addAdminHandler, onAdminStatus, isAdminConnected } from '../lib/adminSocket';
+import { debounce } from '../lib/polling';
+import { usePolling } from './usePolling';
 
 /** Pull the server's error text out of a failed response. */
 export async function errorMessage(res: Response, fallback: string): Promise<string> {
@@ -94,35 +97,65 @@ export function useDeviceCommands(deviceId: string): UseDeviceCommandsResult {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const refresh = useCallback(async () => {
+  const fetchOnce = useCallback(async (): Promise<boolean> => {
     try {
       setError(null);
       const res = await apiFetch(`${API_BASE}/api/devices/${deviceId}/commands`);
       if (!res.ok) throw new Error('Failed to fetch device commands');
       const data = await res.json();
       setCommands(data.commands);
+      return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error');
+      return false;
     } finally {
       setLoading(false);
     }
   }, [deviceId]);
 
+  const refresh = useCallback(async () => {
+    await fetchOnce();
+  }, [fetchOnce]);
+
   useEffect(() => {
     refresh();
   }, [refresh]);
 
-  // Auto-poll every 5s while any command is in a non-terminal state
-  useEffect(() => {
-    const NON_TERMINAL: Set<string> = new Set(['pending', 'delivered', 'executing']);
-    const hasInFlight = commands.some((cmd) => NON_TERMINAL.has(cmd.status));
-    if (!hasInFlight) return;
+  // Command state arrives over the shared admin socket (WU-16). The slow poll below is only
+  // a safety net: it runs while a command is in flight, every 30 s when the socket is
+  // connected (10 s when it is not), pauses while the tab is hidden and backs off on failure.
+  const [socketUp, setSocketUp] = useState(isAdminConnected());
+  const hasInFlight = commands.some((cmd) => ['pending', 'delivered', 'executing'].includes(cmd.status));
 
-    const interval = setInterval(() => {
-      refresh();
-    }, 5000);
-    return () => clearInterval(interval);
-  }, [commands, refresh]);
+  const refreshRef = useRef(refresh);
+  refreshRef.current = refresh;
+
+  useEffect(() => {
+    const release = acquireAdminSocket();
+    const offStatus = onAdminStatus(setSocketUp);
+    const debounced = debounce(() => void refreshRef.current(), 500);
+    const offCommand = addAdminHandler('command-update', (msg) => {
+      const cmd = msg.command;
+      if (!cmd || cmd.deviceId !== deviceId) return;
+      setCommands((prev) =>
+        prev.some((c) => c.id === cmd.id) ? prev.map((c) => (c.id === cmd.id ? { ...c, ...cmd } : c)) : [cmd, ...prev]
+      );
+    });
+    const offEvent = addAdminHandler('device-event', (msg) => {
+      const ev = msg.event;
+      if (!ev || ev.deviceId !== deviceId) return;
+      if (ev.eventType === 'command-completed' || ev.eventType === 'command-failed') debounced();
+    });
+    return () => {
+      debounced.cancel();
+      offCommand();
+      offEvent();
+      offStatus();
+      release();
+    };
+  }, [deviceId]);
+
+  usePolling(fetchOnce, socketUp ? 30000 : 10000, hasInFlight);
 
   const sendCommand = async (
     type: CommandType,

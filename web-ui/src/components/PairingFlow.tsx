@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, type ReactElement } from 'react';
+import { apiFetch } from '../utils/api';
 
 export interface PairingResult {
   sessionToken: string;
@@ -32,7 +33,7 @@ export function PairingFlow({ onPaired }: PairingFlowProps): ReactElement {
   const initiatePairing = useCallback(async () => {
     setState({ status: 'loading' });
     try {
-      const response = await fetch('/api/pair/initiate', { method: 'POST' });
+      const response = await apiFetch('/api/pair/initiate', { method: 'POST' });
       if (!response.ok) {
         throw new Error('Failed to initiate pairing');
       }
@@ -67,7 +68,7 @@ export function PairingFlow({ onPaired }: PairingFlowProps): ReactElement {
   const handleConnect = async () => {
     setState({ status: 'connecting' });
     try {
-      const response = await fetch('/api/pair/complete', {
+      const response = await apiFetch('/api/pair/complete', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

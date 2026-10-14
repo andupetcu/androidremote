@@ -1,6 +1,16 @@
 import { http, HttpResponse } from 'msw';
 
 export const handlers = [
+  // Short-lived WebSocket tickets (C3). Tests that care override this.
+  http.post('*/api/ws-ticket', () => {
+    return HttpResponse.json({ ticket: 'test-ticket', expiresAt: Date.now() + 60_000 });
+  }),
+
+  // ICE servers (C7). Default: STUN only; tests that care override this.
+  http.get('*/api/ice-servers', () => {
+    return HttpResponse.json({ iceServers: [{ urls: 'stun:stun.example.test:3478' }] });
+  }),
+
   // Pairing endpoints
   http.post('/api/pair/initiate', () => {
     return HttpResponse.json({

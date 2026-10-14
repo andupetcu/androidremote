@@ -81,6 +81,7 @@ export function DeviceCommands({ deviceId }: DeviceCommandsProps) {
           open
           title={CONFIRMS[pendingConfirm].title}
           confirmLabel={CONFIRMS[pendingConfirm].label}
+          requireText={pendingConfirm === 'wipe' ? deviceId : undefined}
           onCancel={() => setPendingConfirm(null)}
           onConfirm={() => {
             const c = CONFIRMS[pendingConfirm];

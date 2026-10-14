@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useConfirm } from '../hooks/useConfirm';
 import { useRelayWebSocket } from '../hooks/useRelayWebSocket';
 import { useAuth } from '../hooks/useAuth';
 import * as Protocol from '../lib/BinaryProtocol';
@@ -23,6 +24,7 @@ interface DownloadState {
 }
 
 export function RelayFileBrowser({ deviceId }: RelayFileBrowserProps) {
+  const { confirm, dialog } = useConfirm();
   const { token } = useAuth();
   const [currentPath, setCurrentPath] = useState('/');
   const [entries, setEntries] = useState<FileEntry[]>([]);
@@ -176,9 +178,9 @@ export function RelayFileBrowser({ deviceId }: RelayFileBrowserProps) {
   );
 
   const requestDelete = useCallback(
-    (path: string) => {
+    async (path: string) => {
       const name = path.split('/').pop() || path;
-      if (!window.confirm(`Delete "${name}"?`)) return;
+      if (!(await confirm({ title: 'Delete file?', body: `Delete "${name}" from the device? This cannot be undone.`, confirmLabel: 'Delete' }))) return;
 
       const ch = channelId ?? 0;
       const msg = Protocol.encodeJson(Protocol.FILE_DELETE_REQ, ch, nextRequestId(), { path });
@@ -187,7 +189,7 @@ export function RelayFileBrowser({ deviceId }: RelayFileBrowserProps) {
       // Refresh after a brief delay
       setTimeout(() => requestListing(currentPath), 500);
     },
-    [send, channelId, currentPath, requestListing]
+    [confirm, send, channelId, currentPath, requestListing]
   );
 
   const handleUpload = useCallback(() => {
@@ -262,6 +264,7 @@ export function RelayFileBrowser({ deviceId }: RelayFileBrowserProps) {
 
   return (
     <div className="file-browser">
+      {dialog}
       {/* Toolbar */}
       <div className="file-browser__toolbar">
         <div className="file-browser__nav">

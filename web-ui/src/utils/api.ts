@@ -16,7 +16,8 @@ export async function apiFetch(input: string, init?: RequestInit): Promise<Respo
 
   const res = await fetch(input, { ...init, headers });
 
-  if (res.status === 401 && !input.includes('/api/auth/')) {
+  // /api/auth/* and /api/pair/* answer 401 for bad credentials/codes: not a session expiry
+  if (res.status === 401 && !input.includes('/api/auth/') && !input.includes('/api/pair/')) {
     localStorage.removeItem('auth_token');
     localStorage.removeItem('auth_username');
     window.location.href = '/login';
