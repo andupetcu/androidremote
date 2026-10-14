@@ -68,3 +68,14 @@ export function closeTestDatabase(): void {
 export function adminAuthHeader(): string {
   return `Bearer ${jwt.sign({ username: 'admin' }, getJwtSecret(), { expiresIn: '1h' })}`;
 }
+
+// Session token for an already-enrolled device, for device-facing routes (contract C1: X-Session-Token).
+export function deviceTokenFor(deviceId: string, ttlMs = 60 * 60 * 1000): string {
+  if (!testDb) throw new Error('setupTestDatabase() has not been called');
+  const token = require('crypto').randomBytes(32).toString('base64url') as string;
+  const now = Date.now();
+  testDb
+    .prepare('INSERT INTO sessions (token, device_id, created_at, last_activity, expires_at) VALUES (?, ?, ?, ?, ?)')
+    .run(token, deviceId, now, now, now + ttlMs);
+  return token;
+}

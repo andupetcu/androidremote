@@ -1,6 +1,7 @@
 import { createServer } from 'http';
 import { app } from './app';
 import { setupSignaling } from './signaling';
+import { ensureInitialAdminPassword } from './middleware/auth';
 
 const PORT = process.env.PORT || 7899;
 
@@ -20,6 +21,9 @@ if (!process.env.JWT_SECRET) {
     console.warn('='.repeat(80) + '\n');
   }
 }
+
+// One-time admin password setup from ADMIN_INITIAL_PASSWORD (ignored once a password is stored).
+ensureInitialAdminPassword().catch(err => console.error('Admin password setup failed:', err));
 
 const server = createServer(app);
 

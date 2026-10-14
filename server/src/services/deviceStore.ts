@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3';
 import { getDatabase } from '../db/connection';
-import { initializeSchema } from '../db/schema';
+import { initializeSchema, validateSessionToken } from '../db/schema';
 
 export interface Device {
   id: string;
@@ -265,6 +265,18 @@ class DeviceStore {
     `).run(id);
 
     return result.changes > 0;
+  }
+
+  /**
+   * True when `token` is an unexpired session token issued to this device (contract C1).
+   * Refreshes the session's last_activity on success.
+   */
+  validateDeviceSession(token: string, deviceId: string): boolean {
+    this.initialize();
+    const db = this.getDb();
+    if (!validateSessionToken(db, token, deviceId)) return false;
+    db.prepare('UPDATE sessions SET last_activity = ? WHERE token = ?').run(Date.now(), token);
+    return true;
   }
 
   /**

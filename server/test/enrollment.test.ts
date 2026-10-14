@@ -151,16 +151,17 @@ describe('Enrollment Token API', () => {
       expect(response.body.sessionToken).toBeDefined();
     });
 
-    // KNOWN-BUG enroll/device returns serverUrl as http(s)://, but the Android client expects a ws(s):// form
-    // (it maps ws:// -> http:// and wss:// -> https:// in MainActivity.kt and CommandPollingService.kt).
-    it.skip('returns a ws:// serverUrl for the device signaling connection', async () => {
+    // Contract (T1 decision): serverUrl is the http(s) base URL. The device derives the ws(s)://.../ws
+    // signaling URL itself (Android already maps ws->http for REST, and T8a adds the http->ws derivation).
+    it('returns the http(s) base URL as serverUrl', async () => {
       const tokenResponse = await request(app).post('/api/enroll/tokens').set('Authorization', adminAuthHeader()).send({});
       const response = await request(app)
         .post('/api/enroll/device')
         .send({ token: tokenResponse.body.token, deviceName: 'Test Phone' });
 
       expect(response.status).toBe(201);
-      expect(response.body.serverUrl).toContain('ws://');
+      expect(response.body.serverUrl).toMatch(/^https?:\/\/[^/]+$/);
+      expect(response.body.serverUrl).not.toMatch(/^wss?:/);
     });
 
     it('device appears in device list after enrollment', async () => {

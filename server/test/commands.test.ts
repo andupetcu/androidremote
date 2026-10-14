@@ -2,7 +2,7 @@ import request from 'supertest';
 import { app, resetRateLimiters } from '../src/app';
 import { deviceStore } from '../src/services/deviceStore';
 import { commandStore } from '../src/services/commandStore';
-import { setupTestDatabase, cleanupTestDatabase, closeTestDatabase, adminAuthHeader } from './setup';
+import { setupTestDatabase, cleanupTestDatabase, closeTestDatabase, adminAuthHeader, deviceTokenFor } from './setup';
 
 describe('Device Commands API', () => {
   beforeAll(() => {
@@ -159,7 +159,7 @@ describe('Device Commands API', () => {
   describe('GET /api/devices/:id/commands/pending', () => {
     it('returns empty list when no pending commands', async () => {
       const response = await request(app)
-        .get('/api/devices/test-device/commands/pending');
+        .get('/api/devices/test-device/commands/pending').set('X-Session-Token', deviceTokenFor('test-device'));
 
       expect(response.status).toBe(200);
       expect(response.body.commands).toEqual([]);
@@ -176,7 +176,7 @@ describe('Device Commands API', () => {
 
       // Poll for commands
       const response = await request(app)
-        .get('/api/devices/test-device/commands/pending');
+        .get('/api/devices/test-device/commands/pending').set('X-Session-Token', deviceTokenFor('test-device'));
 
       expect(response.status).toBe(200);
       expect(response.body.commands).toHaveLength(2);
@@ -185,7 +185,7 @@ describe('Device Commands API', () => {
 
       // Second poll should return empty (commands are now delivered)
       const secondPoll = await request(app)
-        .get('/api/devices/test-device/commands/pending');
+        .get('/api/devices/test-device/commands/pending').set('X-Session-Token', deviceTokenFor('test-device'));
 
       expect(secondPoll.body.commands).toEqual([]);
     });
@@ -197,7 +197,7 @@ describe('Device Commands API', () => {
       expect(initialStatus.body.status).toBe('offline');
 
       // Poll for commands
-      await request(app).get('/api/devices/test-device/commands/pending');
+      await request(app).get('/api/devices/test-device/commands/pending').set('X-Session-Token', deviceTokenFor('test-device'));
 
       // Status should now be online
       const afterPoll = await request(app)
@@ -344,7 +344,7 @@ describe('Device Commands API', () => {
       expect(response.status).toBe(404);
     });
 
-    it('returns 404 when acknowledging already completed command', async () => {
+    it('returns 409 when acknowledging already completed command', async () => {
       const cmd = await request(app)
         .post('/api/devices/test-device/commands').set('Authorization', adminAuthHeader())
         .send({ type: 'LOCK' });
@@ -359,7 +359,7 @@ describe('Device Commands API', () => {
         .patch(`/api/devices/test-device/commands/${cmd.body.id}`).set('Authorization', adminAuthHeader())
         .send({ status: 'completed' });
 
-      expect(response.status).toBe(404);
+      expect(response.status).toBe(409);
     });
   });
 
@@ -387,7 +387,7 @@ describe('Device Commands API', () => {
         .send({ type: 'LOCK' });
 
       // Mark as delivered by polling
-      await request(app).get('/api/devices/test-device/commands/pending');
+      await request(app).get('/api/devices/test-device/commands/pending').set('X-Session-Token', deviceTokenFor('test-device'));
 
       // Try to cancel
       const response = await request(app)

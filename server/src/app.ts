@@ -16,14 +16,16 @@ import { policyStore, PolicyInput } from './services/policyStore';
 import { eventStore, EventInput, DeviceEventType, EventSeverity } from './services/eventStore';
 import { fileTransferStore, TransferInput } from './services/fileTransferStore';
 import { auditStore, AuditInput } from './services/auditStore';
-import { COMMAND_TYPES, validateSessionToken } from './db/schema';
+import { COMMAND_TYPES } from './db/schema';
 import { LocalStorageProvider, setStorageProvider, getStorageProvider } from './services/storageProvider';
 import * as appPackageStore from './services/appPackageStore';
 import { syncRequiredApps, syncPolicyRequiredApps } from './services/appSyncService';
 import { agentConnectionStore } from './services/agentConnectionStore';
 import { agentBinaryStore } from './services/agentBinaryStore';
 import { getDatabase } from './db/connection';
-import { authMiddleware, loginHandler, changePasswordHandler } from './middleware/auth';
+import { authMiddleware, loginHandler, changePasswordHandler, adminSubject } from './middleware/auth';
+import { apiGate } from './middleware/apiGate';
+import { wsTicketStore, TicketPurpose } from './services/wsTicketStore';
 import { settingsStore } from './services/settingsStore';
 import { validateBody } from './middleware/validate';
 
@@ -51,7 +53,15 @@ export const app = express();
 // This makes req.protocol correctly return 'https' when behind TLS-terminating proxy.
 // Set TRUST_PROXY to a specific value (e.g. "loopback", "1", "172.17.0.0/16") for
 // fine-grained control. Defaults to "loopback" (trusts localhost proxies).
-app.set('trust proxy', process.env.TRUST_PROXY || 'loopback');
+// Accepts a hop count ("1"), a boolean ("true"/"false") or an address/CIDR list as express does.
+function parseTrustProxy(raw: string | undefined): boolean | number | string {
+  if (!raw) return 'loopback';
+  if (/^\d+$/.test(raw)) return parseInt(raw, 10);
+  if (raw === 'true') return true;
+  if (raw === 'false') return false;
+  return raw;
+}
+app.set('trust proxy', parseTrustProxy(process.env.TRUST_PROXY));
 
 // Security headers via helmet
 app.use(helmet({
@@ -188,76 +198,50 @@ app.get('/api/auth/verify', authMiddleware, (_req: Request, res: Response) => {
 app.put('/api/auth/password', authMiddleware, validateBody(changePasswordSchema), changePasswordHandler);
 
 // ============================================
-// Auth middleware for admin API routes
-// Exempt: device-facing endpoints, pairing, enrollment, health, static uploads
+// Auth gate for /api (see middleware/apiGate.ts): explicit public routes,
+// device-token routes (contract C1), everything else needs the admin JWT.
 // ============================================
-app.use('/api', (req: Request, res: Response, next: NextFunction) => {
-  // Public routes that don't require auth
-  // NOTE: req.path inside app.use('/api', ...) is stripped of the '/api' prefix
-  const publicPrefixes = [
-    '/auth/',           // Auth endpoints handled above
-    '/pair/',           // Device pairing
-    '/enroll/',         // Device enrollment
-    '/uploads/',        // Static file serving
-    '/downloads/',      // Agent binary downloads (for deployment scripts)
-  ];
-  const publicExact = [
-    '/health',
-  ];
+app.use('/api', apiGate);
 
-  // Device-facing endpoints (devices call these with their own session tokens)
-  const devicePrefixes = [
-    '/devices/',        // Heartbeat, command polling, telemetry reporting, app reporting
-  ];
-
-  const path = req.path;
-
-  // Skip auth for public routes
-  if (publicExact.includes(path)) return next();
-  if (publicPrefixes.some(p => path.startsWith(p))) return next();
-
-  // Device-facing endpoints require a valid session token instead of JWT
-  if (devicePrefixes.some(p => path.startsWith(p))) {
-    const deviceFacingMethods = ['POST', 'PATCH'];
-    const deviceFacingPaths = ['/heartbeat', '/telemetry', '/apps', '/commands/pending', '/events'];
-    const isDeviceFacing = (
-      (deviceFacingMethods.includes(req.method) && deviceFacingPaths.some(dp => path.includes(dp))) ||
-      (req.method === 'GET' && path.includes('/commands/pending')) ||
-      (req.method === 'GET' && path.includes('/app-updates')) ||
-      (req.method === 'GET' && path.includes('/policy'))
-    );
-
-    if (isDeviceFacing) {
-      // Validate device session token
-      const sessionToken = req.headers['x-session-token'] as string
-        || (req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.slice(7) : '');
-
-      if (!sessionToken) {
-        return next(); // Allow without token for backward compat during migration
-      }
-
-      // Extract device ID from path (e.g. /devices/device-abc123/heartbeat)
-      const deviceIdMatch = path.match(/^\/devices\/([^/]+)/);
-      const deviceId = deviceIdMatch?.[1];
-
-      if (deviceId) {
-        const db = getDatabase();
-        const validDeviceId = validateSessionToken(db, sessionToken, deviceId);
-        if (!validDeviceId) {
-          res.status(401).json({ error: 'Invalid or expired session token.' });
-          return;
-        }
-        // Update last_activity
-        db.prepare('UPDATE sessions SET last_activity = ? WHERE token = ?').run(Date.now(), sessionToken);
-      }
-
-      return next();
-    }
+// POST /api/ws-ticket (contract C3): short-lived single-use ticket for browser WebSocket upgrades.
+const WS_TICKET_PURPOSES: readonly TicketPurpose[] = ['signaling', 'admin', 'relay'];
+app.post('/api/ws-ticket', (req: Request, res: Response) => {
+  const { purpose, deviceId } = req.body ?? {};
+  if (typeof purpose !== 'string' || !WS_TICKET_PURPOSES.includes(purpose as TicketPurpose)) {
+    res.status(400).json({ error: `purpose must be one of: ${WS_TICKET_PURPOSES.join(', ')}` });
+    return;
   }
-
-  // All other /api routes require auth
-  authMiddleware(req, res, next);
+  if (deviceId !== undefined && (typeof deviceId !== 'string' || deviceId.length === 0 || deviceId.length > 200)) {
+    res.status(400).json({ error: 'deviceId must be a non-empty string' });
+    return;
+  }
+  if (purpose === 'relay' && deviceId === undefined) {
+    res.status(400).json({ error: 'deviceId is required for relay tickets' });
+    return;
+  }
+  res.json(wsTicketStore.issue({ purpose: purpose as TicketPurpose, subject: adminSubject(req), deviceId }));
 });
+
+/** Audit a command queued by an admin action (single, batch, policy-triggered). */
+function auditCommandQueued(req: Request, command: { id: string; deviceId: string; type: string; payload?: Record<string, unknown> }): void {
+  const details: Record<string, unknown> = { deviceId: command.deviceId, type: command.type };
+  if (command.type === 'RUN_SHELL' && typeof command.payload?.command === 'string') {
+    details.command = command.payload.command.slice(0, 500);
+  }
+  try {
+    auditStore.log({
+      actorType: 'admin',
+      actorId: adminSubject(req),
+      action: 'command.queued',
+      resourceType: 'command',
+      resourceId: command.id,
+      details,
+      ipAddress: req.ip,
+    });
+  } catch (err) {
+    console.error('Failed to write audit entry:', err);
+  }
+}
 
 // ============================================
 // Settings endpoints
@@ -560,6 +544,15 @@ app.delete('/api/devices/:id', (req: Request, res: Response) => {
     return;
   }
 
+  auditStore.log({
+    actorType: 'admin',
+    actorId: adminSubject(req),
+    action: 'device.unenrolled',
+    resourceType: 'device',
+    resourceId: id,
+    ipAddress: req.ip,
+  });
+
   res.json({ success: true, message: 'Device unenrolled' });
 });
 
@@ -634,6 +627,16 @@ app.post('/api/enroll/tokens', (req: Request, res: Response) => {
     expiresInMs: expiresInHours ? expiresInHours * 60 * 60 * 1000 : undefined,
   });
 
+  auditStore.log({
+    actorType: 'admin',
+    actorId: adminSubject(req),
+    action: 'token.created',
+    resourceType: 'token',
+    resourceId: token.id,
+    details: { maxUses: maxUses || 1 },
+    ipAddress: req.ip,
+  });
+
   res.status(201).json(token);
 });
 
@@ -659,6 +662,15 @@ app.delete('/api/enroll/tokens/:id', (req: Request, res: Response) => {
     res.status(404).json({ error: 'Token not found or already inactive' });
     return;
   }
+
+  auditStore.log({
+    actorType: 'admin',
+    actorId: adminSubject(req),
+    action: 'token.revoked',
+    resourceType: 'token',
+    resourceId: id,
+    ipAddress: req.ip,
+  });
 
   res.json({ success: true, message: 'Token revoked' });
 });
@@ -1112,6 +1124,7 @@ app.post('/api/commands', (req: Request, res: Response) => {
   }
 
   const command = commandStore.queueCommand(deviceId, type as CommandType, enrichedPayload);
+  auditCommandQueued(req, command);
 
   res.status(201).json({ command });
 });
@@ -1199,6 +1212,7 @@ app.post('/api/devices/:id/commands', (req: Request, res: Response) => {
   }
 
   const command = commandStore.queueCommand(id, type as CommandType, finalPayload);
+  auditCommandQueued(req, command);
 
   res.status(201).json(command);
 });
@@ -1237,7 +1251,7 @@ app.get('/api/devices/:id/commands', (req: Request, res: Response) => {
  * PATCH /api/devices/:id/commands/:cmdId - Acknowledge command status
  */
 app.patch('/api/devices/:id/commands/:cmdId', (req: Request, res: Response) => {
-  const { cmdId } = req.params;
+  const { id: deviceId, cmdId } = req.params;
   const { status, error } = req.body;
 
   const validStatuses = ['executing', 'completed', 'failed'];
@@ -1248,8 +1262,28 @@ app.patch('/api/devices/:id/commands/:cmdId', (req: Request, res: Response) => {
     return;
   }
 
-  // Get command info before updating (for event data)
+  // The device in the URL must own the command. Another device's command looks like an unknown one.
   const command = commandStore.getCommand(cmdId);
+  if (!command || command.deviceId !== deviceId) {
+    res.status(404).json({ error: 'Command not found' });
+    return;
+  }
+
+  // The device treats any 4xx other than 401 as permanent, so terminal states answer 409/410.
+  const current = command.status as string;
+  if (current === 'expired') {
+    res.status(410).json({ error: 'Command expired', status: current });
+    return;
+  }
+  if (current === 'completed' || current === 'failed') {
+    res.status(409).json({ error: `Command already ${current}`, status: current });
+    return;
+  }
+  // A retried "executing" ack after a lost response is not an error.
+  if (status === 'executing' && current === 'executing') {
+    res.json({ success: true, commandId: cmdId, status });
+    return;
+  }
 
   const updated = commandStore.acknowledgeCommand(
     cmdId,
@@ -1258,12 +1292,11 @@ app.patch('/api/devices/:id/commands/:cmdId', (req: Request, res: Response) => {
   );
 
   if (!updated) {
-    res.status(404).json({ error: 'Command not found or already completed' });
+    res.status(409).json({ error: 'Command is no longer awaiting an acknowledgement' });
     return;
   }
 
   // Generate command completion/failure events
-  const { id: deviceId } = req.params;
   if (status === 'completed' && command) {
     eventStore.recordEvent({
       deviceId,
@@ -1328,9 +1361,10 @@ app.post('/api/devices/:id/telemetry', validateBody(telemetrySchema), (req: Requ
   // Update device last seen
   deviceStore.updateLastSeen(id);
 
+  // The device ID comes from the URL (contract C2); a deviceId in the body never wins.
   const input: TelemetryInput = {
-    deviceId: id,
     ...req.body,
+    deviceId: id,
   };
 
   const telemetry = telemetryStore.updateTelemetry(input);
@@ -1715,6 +1749,7 @@ app.post('/api/apps/packages/:packageName/install', (req: Request, res: Response
 
       const cmd = commandStore.queueCommand(deviceId, 'INSTALL_APK', installPayload);
       commands.push(cmd);
+      auditCommandQueued(req, cmd);
 
       auditStore.log({
         actorType: 'admin',
@@ -1775,6 +1810,7 @@ app.post('/api/apps/packages/:packageName/deploy', (req: Request, res: Response)
 
       const cmd = commandStore.queueCommand(deviceId, 'INSTALL_APK', installPayload);
       commands.push(cmd);
+      auditCommandQueued(req, cmd);
     }
   }
 
@@ -1865,6 +1901,7 @@ app.post('/api/commands/batch', (req: Request, res: Response) => {
     try {
       const cmd = commandStore.queueCommand(deviceId, type, payload || {});
       commands.push(cmd);
+      auditCommandQueued(req, cmd);
     } catch {
       errors.push(`Failed to queue command for device ${deviceId}`);
     }
@@ -2269,11 +2306,11 @@ app.put('/api/policies/:id', (req: Request, res: Response) => {
       const db = getDatabase();
       const devices = db.prepare(`SELECT id FROM devices WHERE policy_id = ?`).all(id) as { id: string }[];
       for (const device of devices) {
-        commandStore.queueCommand(device.id, 'SYNC_POLICY', {
+        auditCommandQueued(req, commandStore.queueCommand(device.id, 'SYNC_POLICY', {
           silentMode: policy.silentMode,
           kioskMode: policy.kioskMode,
           requiredApps: policy.requiredApps || [],
-        });
+        }));
         commandsQueued++;
       }
     }
@@ -2399,11 +2436,11 @@ app.put('/api/devices/:id/policy', (req: Request, res: Response) => {
 
       // Also send SYNC_POLICY with full settings so device can apply
       // boot preferences for already-installed apps
-      commandStore.queueCommand(id, 'SYNC_POLICY', {
+      auditCommandQueued(req, commandStore.queueCommand(id, 'SYNC_POLICY', {
         silentMode: policy.silentMode,
         kioskMode: policy.kioskMode,
         requiredApps: policy.requiredApps || [],
-      });
+      }));
       commandsQueued++;
     }
   }

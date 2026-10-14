@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
+import type Database from 'better-sqlite3';
 import { getDatabase } from '../db/connection';
 
 // Extend Express Request to include user payload
@@ -30,9 +31,52 @@ export function getJwtSecret(): string {
   return jwtSecret;
 }
 
+let authDb: Database.Database | null = null;
+
+/** Point the credential store at a specific database (tests). Pass null to go back to the default. */
+export function setAuthDatabase(db: Database.Database | null): void {
+  authDb = db;
+}
+
+function credentialDb(): Database.Database {
+  return authDb ?? getDatabase();
+}
+
+const NOT_CONFIGURED_MESSAGE =
+  'Admin password is not configured. Set ADMIN_INITIAL_PASSWORD (first start) or ADMIN_PASSWORD_HASH on the server.';
+
+/**
+ * One-time setup: when no password hash is stored and ADMIN_PASSWORD_HASH is not set,
+ * hash ADMIN_INITIAL_PASSWORD and store it. Once a hash is stored the variable is ignored.
+ * Returns true when a password was stored.
+ */
+export async function ensureInitialAdminPassword(): Promise<boolean> {
+  const initial = process.env.ADMIN_INITIAL_PASSWORD;
+  if (!initial) return false;
+  if (process.env.ADMIN_PASSWORD_HASH) return false;
+  if ((await getStoredPasswordHash()) !== null) return false;
+  if (initial.length < 8) {
+    console.error('ADMIN_INITIAL_PASSWORD is shorter than 8 characters and was ignored.');
+    return false;
+  }
+  await storePasswordHash(await bcrypt.hash(initial, 12));
+  console.warn('Admin password initialised from ADMIN_INITIAL_PASSWORD. Remove the variable from the environment.');
+  return true;
+}
+
+/** Identity of the authenticated admin, for audit entries and ticket subjects. */
+export function adminSubject(req: Request): string {
+  const u = req.user;
+  if (u && typeof u === 'object') {
+    if (typeof u.sub === 'string' && u.sub) return u.sub;
+    if (typeof (u as { username?: unknown }).username === 'string') return (u as { username: string }).username;
+  }
+  return 'admin';
+}
+
 async function getStoredPasswordHash(): Promise<string | null> {
   try {
-    const db = getDatabase();
+    const db = credentialDb();
     const row = db
       .prepare('SELECT value FROM settings WHERE key = ?')
       .get('adminPasswordHash') as { value: string } | undefined;
@@ -43,7 +87,7 @@ async function getStoredPasswordHash(): Promise<string | null> {
 }
 
 async function storePasswordHash(hash: string): Promise<void> {
-  const db = getDatabase();
+  const db = credentialDb();
   db.prepare(
     'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)'
   ).run('adminPasswordHash', hash);
@@ -88,28 +132,20 @@ export async function loginHandler(req: Request, res: Response): Promise<void> {
   const envHash = process.env.ADMIN_PASSWORD_HASH || null;
   const passwordHash = storedHash ?? envHash;
 
-  let mustChangePassword = false;
-
   if (!passwordHash) {
-    // First-time setup: accept default password 'admin'
-    console.warn(
-      'WARNING: ADMIN_PASSWORD_HASH is not set and no password is stored. Accepting default password "admin". Change it immediately.'
-    );
-    if (password !== 'admin') {
-      res.status(401).json({ error: 'Invalid credentials.' });
-      return;
-    }
-    mustChangePassword = true;
-  } else {
-    const isValid = await bcrypt.compare(password, passwordHash);
-    if (!isValid) {
-      res.status(401).json({ error: 'Invalid credentials.' });
-      return;
-    }
+    console.error('Login refused: ' + NOT_CONFIGURED_MESSAGE);
+    res.status(401).json({ error: NOT_CONFIGURED_MESSAGE });
+    return;
+  }
+
+  const isValid = await bcrypt.compare(password, passwordHash);
+  if (!isValid) {
+    res.status(401).json({ error: 'Invalid credentials.' });
+    return;
   }
 
   const token = jwt.sign({ username }, getJwtSecret(), { expiresIn: '24h' });
-  res.json({ token, username, mustChangePassword });
+  res.json({ token, username, mustChangePassword: false });
 }
 
 export async function changePasswordHandler(req: Request, res: Response): Promise<void> {
@@ -126,17 +162,13 @@ export async function changePasswordHandler(req: Request, res: Response): Promis
   const passwordHash = storedHash ?? envHash;
 
   if (!passwordHash) {
-    // No hash stored yet — validate against default password
-    if (currentPassword !== 'admin') {
-      res.status(401).json({ error: 'Current password is incorrect.' });
-      return;
-    }
-  } else {
-    const isValid = await bcrypt.compare(currentPassword, passwordHash);
-    if (!isValid) {
-      res.status(401).json({ error: 'Current password is incorrect.' });
-      return;
-    }
+    res.status(401).json({ error: NOT_CONFIGURED_MESSAGE });
+    return;
+  }
+  const isValid = await bcrypt.compare(currentPassword, passwordHash);
+  if (!isValid) {
+    res.status(401).json({ error: 'Current password is incorrect.' });
+    return;
   }
 
   // Hash and store the new password in the settings table
@@ -150,3 +182,4 @@ export async function changePasswordHandler(req: Request, res: Response): Promis
     res.status(500).json({ error: 'Failed to update password.' });
   }
 }
+

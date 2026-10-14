@@ -90,7 +90,7 @@ describe('Pairing API', () => {
         .send({ devicePublicKey: mockDevicePublicKey });
 
       const response = await request(app)
-        .post('/api/pair/complete')
+        .post('/api/pair/complete').set('Authorization', adminAuthHeader())
         .send({
           pairingCode: initResponse.body.pairingCode,
           controllerPublicKey: mockControllerPublicKey,
@@ -108,7 +108,7 @@ describe('Pairing API', () => {
         .send({ devicePublicKey: mockDevicePublicKey });
 
       const response = await request(app)
-        .post('/api/pair/complete')
+        .post('/api/pair/complete').set('Authorization', adminAuthHeader())
         .send({
           pairingCode: initResponse.body.pairingCode,
           controllerPublicKey: mockControllerPublicKey,
@@ -120,7 +120,7 @@ describe('Pairing API', () => {
 
     it('rejects invalid pairing code', async () => {
       const response = await request(app)
-        .post('/api/pair/complete')
+        .post('/api/pair/complete').set('Authorization', adminAuthHeader())
         .send({
           pairingCode: '000000',
           controllerPublicKey: mockControllerPublicKey,
@@ -140,7 +140,7 @@ describe('Pairing API', () => {
       pairingStore.expireSession(initResponse.body.deviceId);
 
       const response = await request(app)
-        .post('/api/pair/complete')
+        .post('/api/pair/complete').set('Authorization', adminAuthHeader())
         .send({
           pairingCode: initResponse.body.pairingCode,
           controllerPublicKey: mockControllerPublicKey,
@@ -152,7 +152,7 @@ describe('Pairing API', () => {
 
     it('rejects request without pairing code', async () => {
       const response = await request(app)
-        .post('/api/pair/complete')
+        .post('/api/pair/complete').set('Authorization', adminAuthHeader())
         .send({
           controllerPublicKey: mockControllerPublicKey,
         });
@@ -167,7 +167,7 @@ describe('Pairing API', () => {
         .send({ devicePublicKey: mockDevicePublicKey });
 
       const response = await request(app)
-        .post('/api/pair/complete')
+        .post('/api/pair/complete').set('Authorization', adminAuthHeader())
         .send({
           pairingCode: initResponse.body.pairingCode,
         });
@@ -183,7 +183,7 @@ describe('Pairing API', () => {
 
       // First completion succeeds
       const response1 = await request(app)
-        .post('/api/pair/complete')
+        .post('/api/pair/complete').set('Authorization', adminAuthHeader())
         .send({
           pairingCode: initResponse.body.pairingCode,
           controllerPublicKey: mockControllerPublicKey,
@@ -192,7 +192,7 @@ describe('Pairing API', () => {
 
       // Second attempt with same code fails
       const response2 = await request(app)
-        .post('/api/pair/complete')
+        .post('/api/pair/complete').set('Authorization', adminAuthHeader())
         .send({
           pairingCode: initResponse.body.pairingCode,
           controllerPublicKey: mockControllerPublicKey,
@@ -218,7 +218,7 @@ describe('Pairing API', () => {
     it('rate limits pairing completion attempts', async () => {
       const attempts = Array(20).fill(null).map(() =>
         request(app)
-          .post('/api/pair/complete')
+          .post('/api/pair/complete').set('Authorization', adminAuthHeader())
           .send({
             pairingCode: '000000',
             controllerPublicKey: mockControllerPublicKey,
@@ -251,7 +251,7 @@ describe('Pairing API', () => {
         .send({ devicePublicKey: mockDevicePublicKey });
 
       await request(app)
-        .post('/api/pair/complete')
+        .post('/api/pair/complete').set('Authorization', adminAuthHeader())
         .send({
           pairingCode: initResponse.body.pairingCode,
           controllerPublicKey: mockControllerPublicKey,

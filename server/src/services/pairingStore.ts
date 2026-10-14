@@ -76,7 +76,7 @@ class PairingStore {
     let code: string;
     let attempts = 0;
     do {
-      code = Math.floor(100000 + Math.random() * 900000).toString();
+      code = crypto.randomInt(100000, 1000000).toString();
       const existing = db.prepare(`
         SELECT 1 FROM pairing_sessions WHERE pairing_code = ? AND status = 'pending'
       `).get(code);

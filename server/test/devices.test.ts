@@ -1,7 +1,7 @@
 import request from 'supertest';
 import { app, resetRateLimiters } from '../src/app';
 import { deviceStore } from '../src/services/deviceStore';
-import { setupTestDatabase, cleanupTestDatabase, closeTestDatabase, adminAuthHeader } from './setup';
+import { setupTestDatabase, cleanupTestDatabase, closeTestDatabase, adminAuthHeader, deviceTokenFor } from './setup';
 
 describe('Device Management API', () => {
   beforeAll(() => {
@@ -131,7 +131,7 @@ describe('Device Management API', () => {
         name: 'Heartbeat Test Device',
       });
 
-      const response = await request(app).post('/api/devices/device-heartbeat-test/heartbeat');
+      const response = await request(app).post('/api/devices/device-heartbeat-test/heartbeat').set('X-Session-Token', deviceTokenFor('device-heartbeat-test'));
 
       expect(response.status).toBe(200);
       expect(response.body.success).toBe(true);
@@ -144,9 +144,10 @@ describe('Device Management API', () => {
     });
 
     it('returns 404 for unknown device', async () => {
-      const response = await request(app).post('/api/devices/unknown/heartbeat');
+      // No session can exist for an unknown device, so the gate answers 401 before the handler could 404.
+      const response = await request(app).post('/api/devices/unknown/heartbeat').set('X-Session-Token', 'whatever');
 
-      expect(response.status).toBe(404);
+      expect(response.status).toBe(401);
     });
   });
 
