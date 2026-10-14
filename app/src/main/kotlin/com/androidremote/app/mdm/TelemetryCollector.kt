@@ -27,6 +27,25 @@ import com.androidremote.app.ui.SessionStorage
 import io.ktor.client.HttpClient
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
+import com.androidremote.app.mdm.telemetry.BatchOutcome
+import com.androidremote.app.mdm.telemetry.LocationFix
+import com.androidremote.app.mdm.telemetry.LocationPolicy
+import com.androidremote.app.mdm.telemetry.ReportSchedule
+import com.androidremote.app.mdm.telemetry.SampleRingBuffer
+import com.androidremote.app.mdm.telemetry.TelemetryFlusher
+import io.ktor.client.request.post
+import io.ktor.client.request.setBody
+import io.ktor.client.statement.bodyAsText
+import io.ktor.http.ContentType
+import io.ktor.http.HttpStatusCode
+import io.ktor.http.contentType
+import io.ktor.http.isSuccess
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
+import kotlin.coroutines.resume
 
 /**
  * Collects device telemetry and sends it to the MDM server.
@@ -115,19 +134,46 @@ class TelemetryCollector(
     fun sendTelemetry(serverUrl: String, deviceId: String): Boolean =
         runBlocking { sendTelemetrySuspend(serverUrl, deviceId) }
 
+    /** Offline buffer of up to 1000 samples (AM-18). */
+    private val buffer = SampleRingBuffer(java.io.File(context.filesDir, "telemetry/samples.jsonl"), 1000)
+
+    /** Report cadence; follows the server's `nextReportIn` (default 60 s). */
+    val schedule = ReportSchedule()
+
+    private val encodeJson = Json { ignoreUnknownKeys = true; encodeDefaults = false }
+
     /**
-     * Send telemetry to the server with the session token header (contract C1).
+     * Send telemetry only if the report interval has elapsed. Safe to call on every poll.
+     * Returns null when not due.
+     */
+    suspend fun reportIfDue(serverUrl: String, deviceId: String): Boolean? {
+        if (!schedule.isDue(System.currentTimeMillis())) return null
+        return sendTelemetrySuspend(serverUrl, deviceId)
+    }
+
+    /**
+     * Collect a sample, queue it, then flush the queue (oldest first) with the session token
+     * header (contract C1). Returns true when the queue is empty afterwards.
      */
     suspend fun sendTelemetrySuspend(serverUrl: String, deviceId: String): Boolean {
         return try {
-            val body = json.encodeToString(collectTelemetry())
-            val success = CommandApiClient(serverUrl, deviceId, clientFor(serverUrl)).postTelemetry(body)
+            schedule.markReported(System.currentTimeMillis())
+            refreshLocation()
+            buffer.append(encodeJson.encodeToString(collectTelemetry().copy(collectedAt = System.currentTimeMillis())))
+            val client = clientFor(serverUrl)
+            val base = "${serverUrl.trimEnd('/')}/api/devices/$deviceId/telemetry"
+            val flusher = TelemetryFlusher(
+                buffer,
+                sendBatch = { samples -> postBatch(client, base, samples) },
+                sendSingle = { sample -> postSingle(client, base, sample) }
+            )
+            val success = flusher.flush()
 
             if (success) {
                 Log.i(TAG, "Telemetry sent successfully")
                 sessionStorage.updateSyncStatus(true)
             } else {
-                Log.w(TAG, "Telemetry send failed")
+                Log.w(TAG, "Telemetry send failed, ${buffer.size} samples buffered")
                 sessionStorage.updateSyncStatus(false, "Server rejected telemetry")
             }
             success
@@ -139,6 +185,29 @@ class TelemetryCollector(
             false
         }
     }
+
+    private suspend fun postSingle(client: HttpClient, base: String, sample: String): Boolean = try {
+        val response = client.post(base) { contentType(ContentType.Application.Json); setBody(sample) }
+        if (response.status.isSuccess()) {
+            runCatching {
+                val obj = json.parseToJsonElement(response.bodyAsText()) as? JsonObject
+                schedule.update(obj?.get("nextReportIn")?.jsonPrimitive?.longOrNull)
+            }
+            true
+        } else false
+    } catch (e: CancellationException) { throw e } catch (e: Exception) { false }
+
+    private suspend fun postBatch(client: HttpClient, base: String, samples: List<String>): BatchOutcome = try {
+        val response = client.post("$base/batch") {
+            contentType(ContentType.Application.Json)
+            setBody("{\"samples\":[" + samples.joinToString(",") + "]}")
+        }
+        when {
+            response.status.isSuccess() -> BatchOutcome.OK
+            response.status == HttpStatusCode.NotFound -> BatchOutcome.NOT_FOUND
+            else -> BatchOutcome.FAILED
+        }
+    } catch (e: CancellationException) { throw e } catch (e: Exception) { BatchOutcome.FAILED }
 
     // ==================== Battery ====================
 
@@ -255,44 +324,56 @@ class TelemetryCollector(
 
     // ==================== Location ====================
 
-    private var cachedLocation: android.location.Location? = null
+    /** Fixes gathered by [refreshLocation]; filtered by [LocationPolicy] on every read, never trusted forever. */
+    private var refreshedFix: LocationFix? = null
 
-    private fun getLocation(): android.location.Location? {
-        if (cachedLocation != null) return cachedLocation
+    private fun locationAllowed(): Boolean {
+        val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) ==
+            PackageManager.PERMISSION_GRANTED
+        val lm = context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
+        val enabled = lm != null && (Build.VERSION.SDK_INT < Build.VERSION_CODES.P || lm.isLocationEnabled)
+        return LocationPolicy.shouldRequest(enabled, granted)
+    }
 
-        if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION)
-            != PackageManager.PERMISSION_GRANTED) {
-            return null
+    /** Ask the platform for a fresh fix (API 30+), waiting at most 5 s. */
+    @Suppress("MissingPermission")
+    private suspend fun refreshLocation() {
+        if (!locationAllowed() || Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return
+        val lm = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        val provider = listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)
+            .firstOrNull { runCatching { lm.isProviderEnabled(it) }.getOrDefault(false) } ?: return
+        val loc = withTimeoutOrNull(5_000) {
+            suspendCancellableCoroutine<android.location.Location?> { cont ->
+                val cancel = android.os.CancellationSignal()
+                cont.invokeOnCancellation { cancel.cancel() }
+                try {
+                    lm.getCurrentLocation(provider, cancel, ContextCompat.getMainExecutor(context)) {
+                        if (cont.isActive) cont.resume(it)
+                    }
+                } catch (e: Exception) { if (cont.isActive) cont.resume(null) }
+            }
         }
+        if (loc != null) refreshedFix = LocationFix(loc.latitude, loc.longitude, loc.accuracy, loc.time)
+    }
 
+    private fun getLocation(): LocationFix? {
+        if (!locationAllowed()) return null
         val locationManager = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
-
-        val providers = listOf(
-            LocationManager.GPS_PROVIDER,
-            LocationManager.NETWORK_PROVIDER,
-            LocationManager.PASSIVE_PROVIDER
-        )
-
-        var bestLocation: android.location.Location? = null
-
-        for (provider in providers) {
+        val fixes = mutableListOf<LocationFix>()
+        refreshedFix?.let { fixes += it }
+        for (provider in listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER, LocationManager.PASSIVE_PROVIDER)) {
             try {
                 if (locationManager.isProviderEnabled(provider)) {
                     @Suppress("MissingPermission")
-                    val location = locationManager.getLastKnownLocation(provider)
-                    if (location != null) {
-                        if (bestLocation == null || location.accuracy < bestLocation.accuracy) {
-                            bestLocation = location
-                        }
+                    locationManager.getLastKnownLocation(provider)?.let {
+                        fixes += LocationFix(it.latitude, it.longitude, it.accuracy, it.time)
                     }
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to get location from $provider: ${e.message}")
             }
         }
-
-        cachedLocation = bestLocation
-        return bestLocation
+        return LocationPolicy.select(fixes, System.currentTimeMillis())
     }
 
     private fun getLatitude(): Double? = getLocation()?.latitude
@@ -334,5 +415,7 @@ data class TelemetryData(
     val longitude: Double? = null,
     val locationAccuracy: Float? = null,
     val uptimeMs: Long? = null,
-    val androidSecurityPatch: String? = null
+    val androidSecurityPatch: String? = null,
+    /** Epoch ms when the sample was taken; lets the server place buffered samples correctly. */
+    val collectedAt: Long? = null
 )
