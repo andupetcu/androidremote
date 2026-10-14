@@ -18,6 +18,9 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         buildConfigField("String", "PAIRING_SERVER_URL", "\"http://192.168.68.209:7899\"")
+
+        // Contract C6: INSTALL_APK without a sha256 is refused unless a build opts in. Keep false.
+        buildConfigField("boolean", "ALLOW_UNVERIFIED_APK", "false")
     }
 
     buildTypes {
@@ -101,6 +104,7 @@ dependencies {
     implementation(libs.androidx.lifecycle.viewmodel.ktx)
     implementation(libs.material)
     implementation(libs.androidx.security.crypto)
+    implementation("androidx.work:work-runtime-ktx:2.9.1")
 
     // Networking - Ktor HTTP Client
     implementation(libs.ktor.client.core)

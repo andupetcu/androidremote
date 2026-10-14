@@ -23,7 +23,8 @@ enum class CommandStatus {
     delivered,
     executing,
     completed,
-    failed
+    failed,
+    expired
 }
 
 /**
@@ -86,4 +87,26 @@ data class WipePayload(
  */
 data class StartRemotePayload(
     val signalingUrl: String
+)
+
+/**
+ * Response from GET /api/devices/:id/app-updates.
+ */
+@Serializable
+data class AppUpdatesResponse(
+    val updates: List<AppUpdateEntry> = emptyList()
+)
+
+/**
+ * A single app update entry returned by the server.
+ */
+@Serializable
+data class AppUpdateEntry(
+    val packageName: String,
+    val apkUrl: String,
+    val latestVersionCode: Int,
+    val latestVersionName: String? = null,
+    val installedVersionCode: Int? = null,
+    /** Hex SHA-256 of the APK (contract C6). */
+    val sha256: String? = null
 )

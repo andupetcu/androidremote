@@ -5,6 +5,9 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageInstaller
 import android.net.Uri
+import com.androidremote.app.BuildConfig
+import com.androidremote.app.api.DeviceHttpClient
+import com.androidremote.app.ui.SessionStorage
 import android.os.Build
 import android.util.Log
 import com.androidremote.app.admin.DeviceOwnerManager
@@ -12,22 +15,18 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.io.FileOutputStream
-import java.io.InputStream
-import java.net.HttpURLConnection
-import java.net.URL
 import kotlin.coroutines.resume
 
 /**
  * Silent package installer for MDM operations.
  *
  * When the app is Device Owner, installations complete without user prompts.
- * Otherwise, falls back to standard install intent (requires user approval).
+ * Otherwise installs and uninstalls fail with a clear message (no user-prompt fallback).
  *
  * Usage:
  * ```
  * val installer = SilentPackageInstaller(context)
- * val result = installer.installFromUrl("https://example.com/app.apk", "com.example.app")
+ * val result = installer.installFromUrl(url, "com.example.app", sha256, serverBaseUrl)
  * when (result) {
  *     is InstallResult.Success -> Log.i(TAG, "Installed successfully")
  *     is InstallResult.Failure -> Log.e(TAG, "Failed: ${result.message}")
@@ -38,7 +37,6 @@ class SilentPackageInstaller(private val context: Context) {
 
     companion object {
         private const val TAG = "SilentPackageInstaller"
-        private const val DOWNLOAD_BUFFER_SIZE = 8192
         private const val INSTALL_BUFFER_SIZE = 65536
     }
 
@@ -46,42 +44,49 @@ class SilentPackageInstaller(private val context: Context) {
     private val packageInstaller = context.packageManager.packageInstaller
 
     /**
-     * Download and install an APK from a URL.
+     * Download, verify and install an APK from a URL (contract C6).
      *
      * @param url HTTP(S) URL to the APK file
-     * @param packageName Expected package name (for verification)
-     * @return InstallResult indicating success or failure
+     * @param packageName Expected package name
+     * @param sha256 Expected hex SHA-256 of the APK. Required unless the build sets ALLOW_UNVERIFIED_APK.
+     * @param serverBaseUrl The configured server URL; cleartext http is only allowed to its host.
      */
-    suspend fun installFromUrl(url: String, packageName: String): InstallResult {
+    suspend fun installFromUrl(url: String, packageName: String, sha256: String?, serverBaseUrl: String): InstallResult {
         return withContext(Dispatchers.IO) {
+            var apkFile: File? = null
             try {
-                Log.i(TAG, "Downloading APK from: $url")
-                val apkFile = downloadApk(url, packageName)
+                // Fail early, before any download, when we could not install silently anyway.
+                if (!deviceOwnerManager.isDeviceOwner()) return@withContext notDeviceOwner()
 
-                try {
-                    installFromFile(apkFile, packageName)
+                val sessionStorage = SessionStorage.create(context)
+                val http = DeviceHttpClient.create(serverBaseUrl, { sessionStorage.getSessionToken() })
+                val fetched = try {
+                    VerifiedApkFetcher(ApkDownloader(http), BuildConfig.ALLOW_UNVERIFIED_APK, context.cacheDir)
+                        .fetch(url, packageName, sha256, serverBaseUrl)
                 } finally {
-                    // Clean up downloaded file
-                    if (apkFile.exists()) {
-                        apkFile.delete()
-                        Log.d(TAG, "Cleaned up temp APK: ${apkFile.name}")
-                    }
+                    http.close()
                 }
-            } catch (e: DownloadException) {
-                Log.e(TAG, "Download failed", e)
-                InstallResult.Failure(
-                    InstallResult.ERROR_DOWNLOAD_FAILED,
-                    "Download failed: ${e.message}"
-                )
+                fetched.failure?.let { return@withContext it }
+                apkFile = fetched.file!!
+                installFromFile(apkFile, packageName)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.e(TAG, "Installation failed", e)
-                InstallResult.Failure(
-                    InstallResult.ERROR_UNKNOWN,
-                    "Installation failed: ${e.message}"
-                )
+                InstallResult.Failure(InstallResult.ERROR_UNKNOWN, "Installation failed: ${e.message}")
+            } finally {
+                apkFile?.takeIf { it.exists() }?.let {
+                    it.delete()
+                    Log.d(TAG, "Cleaned up temp APK: ${it.name}")
+                }
             }
         }
     }
+
+    private fun notDeviceOwner() = InstallResult.Failure(
+        InstallResult.ERROR_NOT_DEVICE_OWNER,
+        "Silent install requires Device Owner privileges"
+    )
 
     /**
      * Install an APK from a local file.
@@ -101,7 +106,7 @@ class SilentPackageInstaller(private val context: Context) {
         return if (deviceOwnerManager.isDeviceOwner()) {
             installSilently(file, packageName)
         } else {
-            installWithUserPrompt(file, packageName)
+            notDeviceOwner()
         }
     }
 
@@ -127,7 +132,10 @@ class SilentPackageInstaller(private val context: Context) {
                 if (deviceOwnerManager.isDeviceOwner()) {
                     uninstallSilently(packageName)
                 } else {
-                    uninstallWithUserPrompt(packageName)
+                    InstallResult.Failure(
+                        InstallResult.ERROR_NOT_DEVICE_OWNER,
+                        "Silent uninstall requires Device Owner privileges"
+                    )
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Uninstall failed", e)
@@ -150,101 +158,36 @@ class SilentPackageInstaller(private val context: Context) {
     // Private Implementation
     // ========================================
 
-    private fun downloadApk(url: String, packageName: String): File {
-        val connection = URL(url).openConnection() as HttpURLConnection
-        connection.connectTimeout = 30_000
-        connection.readTimeout = 60_000
-
-        try {
-            connection.connect()
-
-            if (connection.responseCode != HttpURLConnection.HTTP_OK) {
-                throw DownloadException("HTTP ${connection.responseCode}: ${connection.responseMessage}")
-            }
-
-            val contentLength = connection.contentLength
-            Log.d(TAG, "APK size: $contentLength bytes")
-
-            // Create temp file in cache directory
-            val tempFile = File(context.cacheDir, "download_${packageName}_${System.currentTimeMillis()}.apk")
-
-            connection.inputStream.use { input ->
-                FileOutputStream(tempFile).use { output ->
-                    val buffer = ByteArray(DOWNLOAD_BUFFER_SIZE)
-                    var bytesRead: Int
-                    var totalBytesRead = 0L
-
-                    while (input.read(buffer).also { bytesRead = it } != -1) {
-                        output.write(buffer, 0, bytesRead)
-                        totalBytesRead += bytesRead
-
-                        // Log progress every 1MB
-                        if (totalBytesRead % (1024 * 1024) < DOWNLOAD_BUFFER_SIZE) {
-                            Log.d(TAG, "Downloaded: ${totalBytesRead / 1024}KB")
-                        }
-                    }
-                }
-            }
-
-            Log.i(TAG, "APK downloaded to: ${tempFile.absolutePath}")
-            return tempFile
-
-        } finally {
-            connection.disconnect()
-        }
-    }
-
     private suspend fun installSilently(file: File, packageName: String): InstallResult {
         return suspendCancellableCoroutine { continuation ->
+            var sessionId = -1
+            var callbackId = -1L
+            var committed = false
             try {
                 Log.i(TAG, "Starting silent installation for: $packageName")
 
-                // Create installation session
                 val params = PackageInstaller.SessionParams(
                     PackageInstaller.SessionParams.MODE_FULL_INSTALL
                 )
                 params.setAppPackageName(packageName)
 
-                val sessionId = packageInstaller.createSession(params)
+                sessionId = packageInstaller.createSession(params)
                 val session = packageInstaller.openSession(sessionId)
+                val openedSessionId = sessionId
 
-                // Register callback to receive result
-                val callbackId = InstallResultReceiver.registerCallback(packageName) { status, message ->
-                    val result = when (status) {
-                        PackageInstaller.STATUS_SUCCESS -> InstallResult.Success
-                        PackageInstaller.STATUS_FAILURE_ABORTED -> InstallResult.Failure(
-                            InstallResult.ERROR_ABORTED,
-                            message ?: "Installation aborted"
-                        )
-                        PackageInstaller.STATUS_FAILURE_BLOCKED -> InstallResult.Failure(
-                            InstallResult.ERROR_BLOCKED,
-                            message ?: "Installation blocked"
-                        )
-                        PackageInstaller.STATUS_FAILURE_CONFLICT -> InstallResult.Failure(
-                            InstallResult.ERROR_CONFLICT,
-                            message ?: "Package conflict"
-                        )
-                        PackageInstaller.STATUS_FAILURE_INCOMPATIBLE -> InstallResult.Failure(
-                            InstallResult.ERROR_INCOMPATIBLE,
-                            message ?: "Incompatible package"
-                        )
-                        PackageInstaller.STATUS_FAILURE_INVALID -> InstallResult.Failure(
-                            InstallResult.ERROR_INVALID,
-                            message ?: "Invalid APK"
-                        )
-                        PackageInstaller.STATUS_FAILURE_STORAGE -> InstallResult.Failure(
-                            InstallResult.ERROR_STORAGE,
-                            message ?: "Insufficient storage"
-                        )
-                        else -> InstallResult.Failure(status, message ?: "Unknown error")
-                    }
+                // Always release the session if we do not finish with a commit
+                continuation.invokeOnCancellation {
+                    if (callbackId >= 0) InstallResultReceiver.unregisterCallback(callbackId)
+                    abandonQuietly(openedSessionId)
+                }
 
+                callbackId = InstallResultReceiver.registerCallback(packageName) { status, message ->
+                    if (status != PackageInstaller.STATUS_SUCCESS) abandonQuietly(openedSessionId)
                     if (continuation.isActive) {
-                        continuation.resume(result)
+                        continuation.resume(InstallStatusMapper.toResult(status, message))
                     }
                 }
 
-                // Write APK to session
                 session.openWrite("package", 0, file.length()).use { outputStream ->
                     file.inputStream().use { inputStream ->
                         val buffer = ByteArray(INSTALL_BUFFER_SIZE)
@@ -256,7 +199,6 @@ class SilentPackageInstaller(private val context: Context) {
                     }
                 }
 
-                // Create pending intent for result
                 val intent = Intent(context, InstallResultReceiver::class.java).apply {
                     action = InstallResultReceiver.ACTION_INSTALL_RESULT
                     putExtra(InstallResultReceiver.EXTRA_CALLBACK_ID, callbackId)
@@ -270,22 +212,13 @@ class SilentPackageInstaller(private val context: Context) {
                     PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
                 )
 
-                // Commit the session
                 session.commit(pendingIntent.intentSender)
+                committed = true
                 Log.i(TAG, "Installation session committed for: $packageName")
-
-                // Handle cancellation
-                continuation.invokeOnCancellation {
-                    InstallResultReceiver.unregisterCallback(callbackId)
-                    try {
-                        session.abandon()
-                    } catch (e: Exception) {
-                        Log.w(TAG, "Failed to abandon session", e)
-                    }
-                }
-
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to create installation session", e)
+                if (callbackId >= 0) InstallResultReceiver.unregisterCallback(callbackId)
+                if (!committed && sessionId >= 0) abandonQuietly(sessionId)
                 if (continuation.isActive) {
                     continuation.resume(
                         InstallResult.Failure(
@@ -298,29 +231,11 @@ class SilentPackageInstaller(private val context: Context) {
         }
     }
 
-    private fun installWithUserPrompt(file: File, packageName: String): InstallResult {
-        Log.i(TAG, "Falling back to user-prompted installation for: $packageName")
-
+    private fun abandonQuietly(sessionId: Int) {
         try {
-            val intent = Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(
-                    Uri.fromFile(file),
-                    "application/vnd.android.package-archive"
-                )
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            }
-
-            context.startActivity(intent)
-
-            // Note: This returns immediately, actual result is unknown
-            return InstallResult.UserPromptShown
+            packageInstaller.abandonSession(sessionId)
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to launch install prompt", e)
-            return InstallResult.Failure(
-                InstallResult.ERROR_INTENT_FAILED,
-                "Could not launch installer: ${e.message}"
-            )
+            Log.w(TAG, "Failed to abandon session $sessionId: ${e.message}")
         }
     }
 
@@ -331,13 +246,8 @@ class SilentPackageInstaller(private val context: Context) {
 
                 // Register callback to receive result
                 val callbackId = InstallResultReceiver.registerCallback(packageName) { status, message ->
-                    val result = when (status) {
-                        PackageInstaller.STATUS_SUCCESS -> InstallResult.Success
-                        else -> InstallResult.Failure(status, message ?: "Uninstall failed")
-                    }
-
                     if (continuation.isActive) {
-                        continuation.resume(result)
+                        continuation.resume(InstallStatusMapper.toResult(status, message, uninstall = true))
                     }
                 }
 
@@ -377,28 +287,6 @@ class SilentPackageInstaller(private val context: Context) {
             }
         }
     }
-
-    private fun uninstallWithUserPrompt(packageName: String): InstallResult {
-        Log.i(TAG, "Falling back to user-prompted uninstall for: $packageName")
-
-        try {
-            val intent = Intent(Intent.ACTION_DELETE).apply {
-                data = Uri.parse("package:$packageName")
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-
-            context.startActivity(intent)
-
-            // Note: This returns immediately, actual result is unknown
-            return InstallResult.UserPromptShown
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to launch uninstall prompt", e)
-            return InstallResult.Failure(
-                InstallResult.ERROR_INTENT_FAILED,
-                "Could not launch uninstaller: ${e.message}"
-            )
-        }
-    }
 }
 
 /**
@@ -407,9 +295,6 @@ class SilentPackageInstaller(private val context: Context) {
 sealed class InstallResult {
     /** Installation completed successfully */
     object Success : InstallResult()
-
-    /** User was prompted (non-Device Owner mode) - result unknown */
-    object UserPromptShown : InstallResult()
 
     /** Installation failed with error code and message */
     data class Failure(val code: Int, val message: String) : InstallResult()
@@ -421,6 +306,11 @@ sealed class InstallResult {
         const val ERROR_SESSION_FAILED = -3
         const val ERROR_INTENT_FAILED = -4
         const val ERROR_PACKAGE_NOT_FOUND = -5
+        const val ERROR_HASH_MISMATCH = -6
+        const val ERROR_MISSING_HASH = -7
+        const val ERROR_URL_REFUSED = -8
+        const val ERROR_USER_ACTION_REQUIRED = -9
+        const val ERROR_NOT_DEVICE_OWNER = -10
         const val ERROR_UNKNOWN = -100
 
         // PackageInstaller status codes (for reference)
@@ -436,4 +326,4 @@ sealed class InstallResult {
 /**
  * Exception thrown during APK download.
  */
-class DownloadException(message: String) : Exception(message)
+class DownloadException(message: String, val fatal: Boolean = false) : Exception(message)

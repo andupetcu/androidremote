@@ -3,18 +3,17 @@ package com.androidremote.app.api
 import android.util.Log
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
-import io.ktor.client.engine.okhttp.OkHttp
-import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.request.get
 import io.ktor.client.request.patch
+import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
-import io.ktor.serialization.kotlinx.json.json
+import io.ktor.http.isSuccess
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
-import kotlinx.serialization.json.Json
 
 /**
  * HTTP client for the device command polling API.
@@ -25,21 +24,11 @@ import kotlinx.serialization.json.Json
 class CommandApiClient(
     private val baseUrl: String,
     private val deviceId: String,
-    private val httpClient: HttpClient = createDefaultClient()
-) {
+    private val httpClient: HttpClient
+) : CommandAcks {
     companion object {
         private const val TAG = "CommandApiClient"
-
-        fun createDefaultClient(): HttpClient {
-            return HttpClient(OkHttp) {
-                install(ContentNegotiation) {
-                    json(Json {
-                        ignoreUnknownKeys = true
-                        isLenient = true
-                    })
-                }
-            }
-        }
+        private const val ACK_MAX_ATTEMPTS = 3
     }
 
     /**
@@ -61,6 +50,10 @@ class CommandApiClient(
                 Log.d(TAG, "Received ${body.commands.size} pending commands")
                 body.commands
             }
+            HttpStatusCode.Unauthorized -> {
+                Log.w(TAG, "Session token rejected by server")
+                throw CommandApiException("Unauthorized", CommandApiErrorType.UNAUTHORIZED)
+            }
             HttpStatusCode.NotFound -> {
                 Log.w(TAG, "Device not found on server")
                 throw CommandApiException("Device not found", CommandApiErrorType.DEVICE_NOT_FOUND)
@@ -75,96 +68,82 @@ class CommandApiClient(
         }
     }
 
-    /**
-     * Acknowledge command as executing.
-     *
-     * Call this before starting command execution to let the server know
-     * the command was received.
-     *
-     * @param commandId The command ID to acknowledge
-     * @return true if acknowledged successfully
-     */
-    suspend fun markExecuting(commandId: String): Boolean {
-        return acknowledgeCommand(commandId, CommandStatus.executing, null)
-    }
+    suspend fun markExecuting(commandId: String): AckResult = ack(commandId, CommandStatus.executing, null)
+
+    suspend fun markCompleted(commandId: String): AckResult = ack(commandId, CommandStatus.completed, null)
+
+    suspend fun markFailed(commandId: String, errorMessage: String): AckResult =
+        ack(commandId, CommandStatus.failed, errorMessage)
 
     /**
-     * Acknowledge command as completed successfully.
+     * Acknowledge a command status.
      *
-     * @param commandId The command ID to acknowledge
-     * @return true if acknowledged successfully
+     * Network errors and 5xx are retried with backoff (2 s, 4 s). 401 is returned as
+     * [AckResult.UNAUTHORIZED]. Other 4xx are permanent ([AckResult.REJECTED]) and not retried.
+     * When every attempt fails the result is [AckResult.RETRY_LATER], and the caller queues it.
      */
-    suspend fun markCompleted(commandId: String): Boolean {
-        return acknowledgeCommand(commandId, CommandStatus.completed, null)
-    }
-
-    /**
-     * Acknowledge command as failed.
-     *
-     * @param commandId The command ID to acknowledge
-     * @param errorMessage Description of the failure
-     * @return true if acknowledged successfully
-     */
-    suspend fun markFailed(commandId: String, errorMessage: String): Boolean {
-        return acknowledgeCommand(commandId, CommandStatus.failed, errorMessage)
-    }
-
-    /**
-     * Acknowledge command status.
-     *
-     * @param commandId The command ID to acknowledge
-     * @param status New status (executing, completed, failed)
-     * @param error Error message if status is failed
-     * @return true if acknowledged successfully
-     */
-    private suspend fun acknowledgeCommand(
-        commandId: String,
-        status: CommandStatus,
-        error: String?
-    ): Boolean {
+    override suspend fun ack(commandId: String, status: CommandStatus, error: String?): AckResult {
         Log.d(TAG, "Acknowledging command $commandId with status $status")
 
-        val maxRetries = 3
-        var lastException: Exception? = null
-
-        for (attempt in 1..maxRetries) {
-            try {
+        for (attempt in 1..ACK_MAX_ATTEMPTS) {
+            val outcome = try {
                 val response: HttpResponse = httpClient.patch(
                     "$baseUrl/api/devices/$deviceId/commands/$commandId"
                 ) {
                     contentType(ContentType.Application.Json)
-                    setBody(CommandAcknowledgeRequest(
-                        status = status.name,
-                        error = error
-                    ))
+                    setBody(CommandAcknowledgeRequest(status = status.name, error = error))
                 }
-
-                return when (response.status) {
-                    HttpStatusCode.OK -> {
-                        Log.d(TAG, "Command $commandId acknowledged as $status")
-                        true
-                    }
-                    HttpStatusCode.NotFound -> {
-                        Log.w(TAG, "Command $commandId not found")
-                        false
-                    }
-                    else -> {
-                        Log.e(TAG, "Failed to acknowledge command: ${response.status}")
-                        false
-                    }
+                val code = response.status.value
+                when {
+                    code in 200..299 -> AckResult.OK
+                    code == 401 -> AckResult.UNAUTHORIZED
+                    code in 400..499 -> AckResult.REJECTED
+                    else -> AckResult.RETRY_LATER
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
-                lastException = e
-                if (attempt < maxRetries) {
-                    val backoffMs = (1L shl attempt) * 1000L // 2s, 4s, 8s
-                    Log.w(TAG, "Acknowledge attempt $attempt/$maxRetries failed for command $commandId, retrying in ${backoffMs}ms: ${e.message}")
-                    delay(backoffMs)
-                }
+                Log.w(TAG, "Acknowledge attempt $attempt/$ACK_MAX_ATTEMPTS failed for command $commandId: ${e.message}")
+                AckResult.RETRY_LATER
             }
+
+            if (outcome != AckResult.RETRY_LATER) {
+                if (outcome != AckResult.OK) Log.w(TAG, "Ack of $commandId as $status gave $outcome")
+                return outcome
+            }
+            if (attempt < ACK_MAX_ATTEMPTS) delay((1L shl attempt) * 1000L) // 2s, 4s
         }
 
-        Log.e(TAG, "All $maxRetries attempts to acknowledge command $commandId as $status failed", lastException)
-        return false
+        Log.e(TAG, "All $ACK_MAX_ATTEMPTS attempts to acknowledge command $commandId as $status failed")
+        return AckResult.RETRY_LATER
+    }
+
+    /** POST the telemetry JSON. Returns true on a 2xx response. */
+    suspend fun postTelemetry(jsonBody: String): Boolean = postJson("telemetry", jsonBody)
+
+    /** POST the app inventory JSON. Returns true on a 2xx response. */
+    suspend fun postApps(jsonBody: String): Boolean = postJson("apps", jsonBody)
+
+    private suspend fun postJson(path: String, jsonBody: String): Boolean {
+        val response = httpClient.post("$baseUrl/api/devices/$deviceId/$path") {
+            contentType(ContentType.Application.Json)
+            setBody(jsonBody)
+        }
+        if (!response.status.isSuccess()) Log.w(TAG, "POST $path failed: ${response.status}")
+        return response.status.isSuccess()
+    }
+
+    /** GET app-updates. Returns null when the server does not answer 200. */
+    suspend fun getAppUpdates(): AppUpdatesResponse? {
+        val response = httpClient.get("$baseUrl/api/devices/$deviceId/app-updates")
+        if (response.status == HttpStatusCode.Unauthorized) {
+            throw CommandApiException("Unauthorized", CommandApiErrorType.UNAUTHORIZED)
+        }
+        if (response.status != HttpStatusCode.OK) {
+            Log.w(TAG, "App updates check failed: ${response.status}")
+            return null
+        }
+        return response.body()
     }
 
     /**
@@ -179,6 +158,7 @@ class CommandApiClient(
  * Types of command API errors.
  */
 enum class CommandApiErrorType {
+    UNAUTHORIZED,
     DEVICE_NOT_FOUND,
     NETWORK,
     SERVER_ERROR
@@ -190,4 +170,23 @@ enum class CommandApiErrorType {
 class CommandApiException(
     override val message: String,
     val errorType: CommandApiErrorType
-) : Exception(message)
+) : Exception(message) {
+    /** 401 or 404 on poll: the enrollment is no longer valid, so polling must stop. */
+    val isEnrollmentInvalid: Boolean
+        get() = errorType == CommandApiErrorType.UNAUTHORIZED || errorType == CommandApiErrorType.DEVICE_NOT_FOUND
+}
+
+/** Result of acknowledging a command status. */
+enum class AckResult {
+    OK,
+    /** Permanent 4xx (unknown command, expired, bad state). Do not retry. */
+    REJECTED,
+    UNAUTHORIZED,
+    /** Network error or 5xx. Queue the ack and resend later. */
+    RETRY_LATER
+}
+
+/** Abstraction used by the command loop so it can be tested without HTTP. */
+interface CommandAcks {
+    suspend fun ack(commandId: String, status: CommandStatus, error: String?): AckResult
+}

@@ -21,17 +21,21 @@ import androidx.core.content.ContextCompat
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
-import java.util.concurrent.TimeUnit
+import com.androidremote.app.api.CommandApiClient
+import com.androidremote.app.api.DeviceHttpClient
 import com.androidremote.app.ui.SessionStorage
+import io.ktor.client.HttpClient
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.runBlocking
 
 /**
  * Collects device telemetry and sends it to the MDM server.
  */
-class TelemetryCollector(private val context: Context) {
+class TelemetryCollector(
+    private val context: Context,
+    /** Test seam. Production code leaves it null and gets a client that sends X-Session-Token. */
+    httpClientOverride: HttpClient? = null
+) {
 
     private val sessionStorage = SessionStorage.create(context)
 
@@ -39,10 +43,20 @@ class TelemetryCollector(private val context: Context) {
         private const val TAG = "TelemetryCollector"
     }
 
-    private val httpClient = OkHttpClient.Builder()
-        .connectTimeout(10, TimeUnit.SECONDS)
-        .readTimeout(10, TimeUnit.SECONDS)
-        .build()
+    private var clientBaseUrl: String? = null
+    private var httpClient: HttpClient? = httpClientOverride
+    private val injectedClient = httpClientOverride != null
+
+    @Synchronized
+    private fun clientFor(serverUrl: String): HttpClient {
+        if (injectedClient) return httpClient!!
+        if (httpClient == null || clientBaseUrl != serverUrl) {
+            httpClient?.close()
+            httpClient = DeviceHttpClient.create(serverUrl, { sessionStorage.getSessionToken() })
+            clientBaseUrl = serverUrl
+        }
+        return httpClient!!
+    }
 
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -96,34 +110,29 @@ class TelemetryCollector(private val context: Context) {
     }
 
     /**
-     * Send telemetry to the server.
+     * Send telemetry to the server (blocking wrapper for callers that are not coroutines).
      */
-    fun sendTelemetry(serverUrl: String, deviceId: String): Boolean {
+    fun sendTelemetry(serverUrl: String, deviceId: String): Boolean =
+        runBlocking { sendTelemetrySuspend(serverUrl, deviceId) }
+
+    /**
+     * Send telemetry to the server with the session token header (contract C1).
+     */
+    suspend fun sendTelemetrySuspend(serverUrl: String, deviceId: String): Boolean {
         return try {
-            val telemetry = collectTelemetry()
-            val url = "$serverUrl/api/devices/$deviceId/telemetry"
-
-            val requestBody = json.encodeToString(telemetry)
-                .toRequestBody("application/json".toMediaType())
-
-            val request = Request.Builder()
-                .url(url)
-                .post(requestBody)
-                .build()
-
-            val response = httpClient.newCall(request).execute()
-            val success = response.isSuccessful
+            val body = json.encodeToString(collectTelemetry())
+            val success = CommandApiClient(serverUrl, deviceId, clientFor(serverUrl)).postTelemetry(body)
 
             if (success) {
                 Log.i(TAG, "Telemetry sent successfully")
                 sessionStorage.updateSyncStatus(true)
             } else {
-                Log.w(TAG, "Telemetry send failed: ${response.code}")
-                sessionStorage.updateSyncStatus(false, "Server returned ${response.code}")
+                Log.w(TAG, "Telemetry send failed")
+                sessionStorage.updateSyncStatus(false, "Server rejected telemetry")
             }
-
-            response.close()
             success
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "Failed to send telemetry", e)
             sessionStorage.updateSyncStatus(false, e.message ?: "Connection failed")

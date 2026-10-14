@@ -4,7 +4,6 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageInstaller
-import android.os.Build
 import android.util.Log
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
@@ -90,30 +89,9 @@ class InstallResultReceiver : BroadcastReceiver() {
 
         Log.i(TAG, "Install result for $packageName: status=$status, message=$message")
 
-        // Handle special case where user confirmation is needed (non-Device Owner)
-        if (status == PackageInstaller.STATUS_PENDING_USER_ACTION) {
-            val confirmIntent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                intent.getParcelableExtra(Intent.EXTRA_INTENT, Intent::class.java)
-            } else {
-                @Suppress("DEPRECATION")
-                intent.getParcelableExtra(Intent.EXTRA_INTENT)
-            }
-            if (confirmIntent != null) {
-                Log.i(TAG, "User confirmation required for: $packageName")
-                confirmIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                try {
-                    // Note: This would need a context reference to launch
-                    // In Device Owner mode, this shouldn't happen
-                    Log.w(TAG, "Cannot launch confirmation intent from receiver")
-                } catch (e: Exception) {
-                    Log.e(TAG, "Failed to launch confirmation", e)
-                }
-            }
-
-            // Don't invoke callback yet - wait for actual result
-            return
-        }
-
+        // STATUS_PENDING_USER_ACTION is passed on to the callback like any other status. The installer
+        // reports it as a failed result and abandons the session, so the caller never waits forever
+        // for a dialog nobody will answer (AM-03, AM-21).
         // Invoke the registered callback
         val callback = callbacks.remove(callbackId)
         if (callback != null) {

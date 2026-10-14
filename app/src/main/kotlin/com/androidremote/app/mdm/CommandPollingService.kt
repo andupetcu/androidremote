@@ -23,26 +23,18 @@ import com.androidremote.app.api.CommandApiClient
 import com.androidremote.app.api.CommandApiException
 import com.androidremote.app.api.DeviceCommand
 import com.androidremote.app.ui.SessionStorage
+import com.androidremote.app.api.AppUpdatesResponse
+import com.androidremote.app.api.DeviceHttpClient
 import io.ktor.client.HttpClient
-import io.ktor.client.call.body
-import io.ktor.client.engine.okhttp.OkHttp
-import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
-import io.ktor.client.request.get
-import io.ktor.http.HttpStatusCode
-import io.ktor.serialization.kotlinx.json.json
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.launch
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
-import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -80,6 +72,11 @@ class CommandPollingService : Service() {
         /** Intent extra for custom polling interval */
         const val EXTRA_POLL_INTERVAL = "poll_interval"
 
+        /** True while an instance of the service is alive. Read by the WorkManager watchdog. */
+        @Volatile
+        var isRunning: Boolean = false
+            private set
+
         fun startService(context: Context, pollIntervalMs: Long = DEFAULT_POLL_INTERVAL_MS) {
             val intent = Intent(context, CommandPollingService::class.java).apply {
                 putExtra(EXTRA_POLL_INTERVAL, pollIntervalMs)
@@ -99,19 +96,25 @@ class CommandPollingService : Service() {
     private val binder = LocalBinder()
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
+    /** Installs, uninstalls and app updates run here so they never hold up the poll loop. */
+    private val installScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var appUpdateJob: Job? = null
+    private var pollJob: Job? = null
+
     private lateinit var sessionStorage: SessionStorage
     private lateinit var deviceOwnerManager: DeviceOwnerManager
     private lateinit var silentInstaller: SilentPackageInstaller
     private lateinit var telemetryCollector: TelemetryCollector
 
     private var commandApiClient: CommandApiClient? = null
-    private val httpClient = OkHttpClient()
+    private var httpClient: HttpClient? = null
+    private var processor: CommandProcessor? = null
     private var pollIntervalMs = DEFAULT_POLL_INTERVAL_MS
     private var isPolling = false
     private var pollCount = 0
     private var httpBaseUrl: String? = null
 
-    /** Send telemetry every N polls (e.g., 6 polls = 30 seconds with 5s interval) */
+    /** Send telemetry every N polls (6 polls at the 10 s minimum interval = about 60 s) */
     private val TELEMETRY_POLL_INTERVAL = 6
 
     inner class LocalBinder : Binder() {
@@ -121,6 +124,7 @@ class CommandPollingService : Service() {
     override fun onCreate() {
         super.onCreate()
         Log.d(TAG, "CommandPollingService created")
+        isRunning = true
 
         sessionStorage = SessionStorage.create(this)
         deviceOwnerManager = DeviceOwnerManager(this)
@@ -143,6 +147,9 @@ class CommandPollingService : Service() {
             return START_NOT_STICKY
         }
 
+        // A fresh start (boot, re-enrolment, user action) gets one new chance; a 401/404 sets the flag again
+        EnrollmentState.clear(this)
+
         // Get polling interval from intent
         val requestedInterval = intent?.getLongExtra(EXTRA_POLL_INTERVAL, DEFAULT_POLL_INTERVAL_MS)
             ?: DEFAULT_POLL_INTERVAL_MS
@@ -160,9 +167,12 @@ class CommandPollingService : Service() {
 
     override fun onDestroy() {
         Log.d(TAG, "CommandPollingService destroyed")
+        isRunning = false
         stopPolling()
         commandApiClient?.close()
+        httpClient?.close()
         serviceScope.cancel()
+        installScope.cancel()
         super.onDestroy()
     }
 
@@ -188,7 +198,20 @@ class CommandPollingService : Service() {
         // Save HTTP base URL for telemetry
         httpBaseUrl = httpUrl
 
-        commandApiClient = CommandApiClient(httpUrl, deviceId)
+        // One authenticated client (X-Session-Token) for polling, acks, inventory and app updates
+        httpClient?.close()
+        val client = DeviceHttpClient.create(httpUrl, { sessionStorage.getSessionToken() })
+        httpClient = client
+        val api = CommandApiClient(httpUrl, deviceId, client)
+        commandApiClient = api
+        processor = CommandProcessor(
+            acks = api,
+            store = PrefsCommandStateStore(getSharedPreferences("command_state", Context.MODE_PRIVATE)),
+            handler = { dispatchCommand(it) }
+        )
+
+        BatteryExemption.requestIfDeviceOwner(this, deviceOwnerManager)
+        PollingWatchdog.schedule(this)
 
         // Apply silent mode from saved preferences
         applySavedSilentMode()
@@ -199,7 +222,7 @@ class CommandPollingService : Service() {
         // Send initial telemetry and app inventory immediately
         serviceScope.launch {
             try {
-                val success = telemetryCollector.sendTelemetry(httpUrl, deviceId)
+                val success = telemetryCollector.sendTelemetrySuspend(httpUrl, deviceId)
                 Log.i(TAG, "Initial telemetry sent: $success")
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to send initial telemetry: ${e.message}")
@@ -240,27 +263,49 @@ class CommandPollingService : Service() {
         isPolling = true
         Log.i(TAG, "Starting command polling (interval: ${pollIntervalMs}ms)")
 
-        serviceScope.launch {
-            while (isActive && isPolling) {
-                try {
+        pollJob = serviceScope.launch {
+            runPollLoop(
+                baseMs = pollIntervalMs,
+                backoff = PollBackoff(pollIntervalMs, MAX_POLL_INTERVAL_MS),
+                isActive = { isPolling },
+                pollOnce = {
+                    processor?.flushPendingAcks()
                     fetchAndExecuteCommands()
 
-                    // Send telemetry and check for app updates periodically
+                    // Telemetry and app updates are periodic and must not delay command polling
                     pollCount++
                     if (pollCount >= TELEMETRY_POLL_INTERVAL) {
                         pollCount = 0
                         sendPeriodicTelemetry()
-                        checkAndInstallAppUpdates()
+                        startAppUpdateCheck()
                     }
-                } catch (e: CommandApiException) {
-                    Log.e(TAG, "Command API error: ${e.message}")
-                    // Continue polling even on errors
-                } catch (e: Exception) {
-                    Log.e(TAG, "Unexpected error during polling", e)
-                }
+                },
+                onEnrollmentInvalid = { e -> onEnrollmentInvalid(e) }
+            )
+        }
+    }
 
-                delay(pollIntervalMs)
-            }
+    /** 401 or 404 on poll: stop, remember it, and say so in the notification. */
+    private fun onEnrollmentInvalid(e: CommandApiException) {
+        isPolling = false
+        val reason = when (e.errorType) {
+            com.androidremote.app.api.CommandApiErrorType.UNAUTHORIZED -> "Server rejected this device's session token"
+            else -> "Device is not registered on the server"
+        }
+        EnrollmentState.markInvalid(this, reason)
+        PollingWatchdog.cancel(this)
+        try {
+            getSystemService(NotificationManager::class.java).notify(
+                NOTIFICATION_ID,
+                NotificationCompat.Builder(this, CHANNEL_ID)
+                    .setContentTitle("Enrollment invalid - re-enrol this device")
+                    .setContentText(reason)
+                    .setSmallIcon(android.R.drawable.ic_lock_lock)
+                    .setOngoing(true)
+                    .build()
+            )
+        } catch (ex: Exception) {
+            Log.w(TAG, "Could not update notification: ${ex.message}")
         }
     }
 
@@ -270,23 +315,32 @@ class CommandPollingService : Service() {
     private fun stopPolling() {
         Log.i(TAG, "Stopping command polling")
         isPolling = false
+        pollJob?.cancel()
     }
 
     /**
      * Send telemetry data to the server periodically.
      */
-    private fun sendPeriodicTelemetry() {
+    private suspend fun sendPeriodicTelemetry() {
         val serverUrl = httpBaseUrl ?: return
         val deviceId = sessionStorage.getDeviceId() ?: return
 
         try {
-            val success = telemetryCollector.sendTelemetry(serverUrl, deviceId)
+            val success = telemetryCollector.sendTelemetrySuspend(serverUrl, deviceId)
             if (success) {
                 Log.d(TAG, "Periodic telemetry sent")
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.w(TAG, "Failed to send periodic telemetry: ${e.message}")
         }
+    }
+
+    /** Start the app-update check in the install scope, unless the previous one is still running. */
+    private fun startAppUpdateCheck() {
+        if (appUpdateJob?.isActive == true) return
+        appUpdateJob = installScope.launch { checkAndInstallAppUpdates() }
     }
 
     /**
@@ -297,24 +351,10 @@ class CommandPollingService : Service() {
      */
     private suspend fun checkAndInstallAppUpdates() {
         val baseUrl = httpBaseUrl ?: return
-        val deviceId = sessionStorage.getDeviceId() ?: return
+        val api = commandApiClient ?: return
 
         try {
-            val client = HttpClient(OkHttp) {
-                install(ContentNegotiation) {
-                    json(Json { ignoreUnknownKeys = true; isLenient = true })
-                }
-            }
-
-            val response = client.get("$baseUrl/api/devices/$deviceId/app-updates")
-            client.close()
-
-            if (response.status != HttpStatusCode.OK) {
-                Log.w(TAG, "App updates check failed: ${response.status}")
-                return
-            }
-
-            val body: AppUpdatesResponse = response.body()
+            val body: AppUpdatesResponse = api.getAppUpdates() ?: return
             if (body.updates.isEmpty()) {
                 Log.d(TAG, "No app updates available")
                 return
@@ -331,13 +371,17 @@ class CommandPollingService : Service() {
 
                 Log.i(TAG, "Auto-updating ${update.packageName}: installed=${update.installedVersionCode} -> latest=${update.latestVersionCode}")
 
-                val result = silentInstaller.installFromUrl(apkUrl, update.packageName)
+                val result = withTimeoutOrNull(CommandProcessor.INSTALL_TIMEOUT_MS) {
+                    silentInstaller.installFromUrl(apkUrl, update.packageName, update.sha256, baseUrl)
+                }
                 when (result) {
                     is InstallResult.Success -> Log.i(TAG, "Auto-update installed: ${update.packageName}")
-                    is InstallResult.UserPromptShown -> Log.i(TAG, "Auto-update prompted user: ${update.packageName}")
                     is InstallResult.Failure -> Log.w(TAG, "Auto-update failed for ${update.packageName}: ${result.message}")
+                    null -> Log.w(TAG, "Auto-update timed out for ${update.packageName}")
                 }
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.w(TAG, "Failed to check for app updates: ${e.message}")
         }
@@ -345,9 +389,13 @@ class CommandPollingService : Service() {
 
     /**
      * Fetch pending commands and execute them.
+     *
+     * Installs and uninstalls run in their own coroutine (one at a time) so REBOOT, LOCK and the
+     * rest are never queued behind a stuck install. Everything else runs inline.
      */
     private suspend fun fetchAndExecuteCommands() {
         val client = commandApiClient ?: return
+        val proc = processor ?: return
 
         val commands = client.getPendingCommands()
         if (commands.isEmpty()) {
@@ -358,62 +406,31 @@ class CommandPollingService : Service() {
         Log.i(TAG, "Received ${commands.size} pending commands")
 
         for (command in commands) {
-            executeCommand(command)
+            if (command.type in CommandProcessor.LONG_RUNNING_TYPES) {
+                installScope.launch { proc.process(command, serialize = true) }
+            } else {
+                proc.process(command)
+            }
         }
     }
 
-    /**
-     * Execute a single command.
-     */
-    private suspend fun executeCommand(command: DeviceCommand) {
-        val client = commandApiClient ?: return
-
+    /** Run the handler for one command. Lifecycle, timeout and dedup are in [CommandProcessor]. */
+    private suspend fun dispatchCommand(command: DeviceCommand): CommandResult {
         Log.i(TAG, "Executing command: ${command.type} (${command.id})")
-
-        // Mark as executing
-        client.markExecuting(command.id)
-
-        try {
-            val result = when (command.type) {
-                "INSTALL_APK" -> executeInstallApk(command)
-                "UNINSTALL_APP" -> executeUninstallApp(command)
-                "LOCK" -> executeLock()
-                "REBOOT" -> executeReboot()
-                "WIPE" -> executeWipe(command)
-                "START_REMOTE" -> executeStartRemote(command)
-                "TAKE_SCREENSHOT" -> executeTakeScreenshot()
-                "GET_LOCATION" -> executeGetLocation()
-                "REFRESH_TELEMETRY" -> executeRefreshTelemetry()
-                "SYNC_APPS" -> executeSyncApps()
-                "SYNC_POLICY" -> executeSyncPolicy(command)
-                "SET_VOLUME" -> executeSetVolume(command)
-                else -> CommandResult.failure("Unknown command type: ${command.type}")
-            }
-
-            // Report result — wrapped in its own try/catch so a network failure
-            // reporting status doesn't crash the polling loop or mask the outcome.
-            if (result.success) {
-                Log.i(TAG, "Command ${command.id} completed successfully")
-                try {
-                    client.markCompleted(command.id)
-                } catch (reportEx: Exception) {
-                    Log.w(TAG, "Failed to report completion for command ${command.id}: ${reportEx.message}")
-                }
-            } else {
-                Log.w(TAG, "Command ${command.id} failed: ${result.error}")
-                try {
-                    client.markFailed(command.id, result.error ?: "Unknown error")
-                } catch (reportEx: Exception) {
-                    Log.w(TAG, "Failed to report failure for command ${command.id}: ${reportEx.message}")
-                }
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Command ${command.id} threw exception", e)
-            try {
-                client.markFailed(command.id, "Exception: ${e.message}")
-            } catch (reportEx: Exception) {
-                Log.w(TAG, "Failed to report exception for command ${command.id}: ${reportEx.message}")
-            }
+        return when (command.type) {
+            "INSTALL_APK" -> executeInstallApk(command)
+            "UNINSTALL_APP" -> executeUninstallApp(command)
+            "LOCK" -> executeLock()
+            "REBOOT" -> executeReboot()
+            "WIPE" -> executeWipe(command)
+            "START_REMOTE" -> executeStartRemote(command)
+            "TAKE_SCREENSHOT" -> executeTakeScreenshot()
+            "GET_LOCATION" -> executeGetLocation()
+            "REFRESH_TELEMETRY" -> executeRefreshTelemetry()
+            "SYNC_APPS" -> executeSyncApps()
+            "SYNC_POLICY" -> executeSyncPolicy(command)
+            "SET_VOLUME" -> executeSetVolume(command)
+            else -> CommandResult.failure("Unknown command type: ${command.type}")
         }
     }
 
@@ -434,13 +451,11 @@ class CommandPollingService : Service() {
         val foregroundApp = command.payload["foregroundApp"]?.jsonPrimitive?.content?.toBoolean() ?: false
         val autoStartOnBoot = command.payload["autoStartOnBoot"]?.jsonPrimitive?.content?.toBoolean() ?: false
 
+        val baseUrl = httpBaseUrl ?: return CommandResult.failure("Server URL not configured")
+        val sha256 = command.payload["sha256"]?.jsonPrimitive?.content
+
         // If the URL is relative (starts with /), prepend the server base URL
-        val url = if (urlPath.startsWith("/")) {
-            val baseUrl = httpBaseUrl ?: return CommandResult.failure("Server URL not configured")
-            "$baseUrl$urlPath"
-        } else {
-            urlPath
-        }
+        val url = if (urlPath.startsWith("/")) "$baseUrl$urlPath" else urlPath
 
         // Self-update: when installing our own package, the process will be killed.
         // Ensure auto-restart by saving boot preference BEFORE installing.
@@ -452,7 +467,7 @@ class CommandPollingService : Service() {
 
         Log.d(TAG, "Installing APK from: $url (autoStart=$autoStartAfterInstall, foreground=$foregroundApp, bootStart=$autoStartOnBoot, selfUpdate=$isSelfUpdate)")
 
-        val installResult = silentInstaller.installFromUrl(url, packageName)
+        val installResult = silentInstaller.installFromUrl(url, packageName, sha256, baseUrl)
 
         return when (installResult) {
             is InstallResult.Success -> {
@@ -470,13 +485,6 @@ class CommandPollingService : Service() {
                     launchAppWithRetry(packageName, foregroundApp)
                 }
 
-                CommandResult.success()
-            }
-            is InstallResult.UserPromptShown -> {
-                // Save preferences even when user is prompted - they'll apply after manual install
-                if (autoStartOnBoot || foregroundApp) {
-                    saveBootStartApp(packageName, foregroundApp)
-                }
                 CommandResult.success()
             }
             is InstallResult.Failure -> CommandResult.failure("Install failed: ${installResult.message}")
@@ -553,7 +561,6 @@ class CommandPollingService : Service() {
 
         return when (val result = silentInstaller.uninstall(packageName)) {
             is InstallResult.Success -> CommandResult.success()
-            is InstallResult.UserPromptShown -> CommandResult.success() // User was prompted
             is InstallResult.Failure -> CommandResult.failure("Uninstall failed: ${result.message}")
         }
     }
@@ -637,7 +644,7 @@ class CommandPollingService : Service() {
         return CommandResult.failure("Screenshot requires an active remote session or user consent")
     }
 
-    private fun executeGetLocation(): CommandResult {
+    private suspend fun executeGetLocation(): CommandResult {
         // Check for location permission
         val hasPermission = ContextCompat.checkSelfPermission(
             this,
@@ -681,7 +688,7 @@ class CommandPollingService : Service() {
             val serverUrl = httpBaseUrl
             val deviceId = sessionStorage.getDeviceId()
             if (serverUrl != null && deviceId != null) {
-                telemetryCollector.sendTelemetry(serverUrl, deviceId)
+                telemetryCollector.sendTelemetrySuspend(serverUrl, deviceId)
             }
             CommandResult.success()
         } else {
@@ -689,7 +696,7 @@ class CommandPollingService : Service() {
         }
     }
 
-    private fun executeRefreshTelemetry(): CommandResult {
+    private suspend fun executeRefreshTelemetry(): CommandResult {
         Log.i(TAG, "Telemetry refresh requested")
 
         val serverUrl = httpBaseUrl
@@ -699,7 +706,7 @@ class CommandPollingService : Service() {
             return CommandResult.failure("Device not enrolled - missing server URL or device ID")
         }
 
-        val success = telemetryCollector.sendTelemetry(serverUrl, deviceId)
+        val success = telemetryCollector.sendTelemetrySuspend(serverUrl, deviceId)
         return if (success) {
             CommandResult.success()
         } else {
@@ -707,58 +714,39 @@ class CommandPollingService : Service() {
         }
     }
 
-    private fun executeSyncApps(): CommandResult {
-        val serverUrl = httpBaseUrl ?: return CommandResult.failure("Server URL not configured")
-        val deviceId = sessionStorage.getDeviceId() ?: return CommandResult.failure("Device not enrolled")
+    private suspend fun executeSyncApps(): CommandResult {
+        val api = commandApiClient ?: return CommandResult.failure("Server URL not configured")
 
         val pm = packageManager
         val packages = pm.getInstalledPackages(0)
         Log.i(TAG, "Syncing ${packages.size} installed apps to server")
 
-        val appsArray = buildString {
-            append("[")
-            packages.forEachIndexed { index, pkg ->
-                if (index > 0) append(",")
-                val appName = pkg.applicationInfo?.loadLabel(pm)?.toString()?.replace("\"", "\\\"") ?: ""
-                val isSystem = (pkg.applicationInfo?.flags ?: 0) and android.content.pm.ApplicationInfo.FLAG_SYSTEM != 0
-                val enabled = pkg.applicationInfo?.enabled ?: true
-                val versionName = (pkg.versionName ?: "").replace("\"", "\\\"")
-                val versionCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+        val apps = packages.map { pkg ->
+            InstalledApp(
+                packageName = pkg.packageName,
+                appName = pkg.applicationInfo?.loadLabel(pm)?.toString() ?: "",
+                versionName = pkg.versionName ?: "",
+                versionCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                     pkg.longVersionCode
                 } else {
                     @Suppress("DEPRECATION")
                     pkg.versionCode.toLong()
-                }
-                append("{")
-                append("\"packageName\":\"${pkg.packageName}\",")
-                append("\"appName\":\"${appName}\",")
-                append("\"versionName\":\"${versionName}\",")
-                append("\"versionCode\":${versionCode},")
-                append("\"isSystemApp\":${isSystem},")
-                append("\"enabled\":${enabled}")
-                append("}")
-            }
-            append("]")
+                },
+                isSystemApp = ((pkg.applicationInfo?.flags ?: 0) and android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0,
+                enabled = pkg.applicationInfo?.enabled ?: true
+            )
         }
 
         return try {
-            val body = "{\"apps\":${appsArray}}"
-            val requestBody = body.toRequestBody("application/json".toMediaType())
-            val request = Request.Builder()
-                .url("$serverUrl/api/devices/$deviceId/apps")
-                .post(requestBody)
-                .build()
-
-            val response = httpClient.newCall(request).execute()
-            val success = response.isSuccessful
+            val success = api.postApps(AppInventory.toJson(apps))
             if (success) {
                 Log.i(TAG, "App inventory synced: ${packages.size} apps")
+                CommandResult.success()
             } else {
-                Log.w(TAG, "App inventory sync failed: ${response.code}")
+                CommandResult.failure("Server rejected the app inventory")
             }
-            response.close()
-
-            if (success) CommandResult.success() else CommandResult.failure("Server returned ${response.code}")
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "Failed to sync apps", e)
             CommandResult.failure("Failed to sync apps: ${e.message}")
@@ -923,23 +911,3 @@ data class CommandResult(
         fun failure(error: String) = CommandResult(false, error)
     }
 }
-
-/**
- * Response from GET /api/devices/:id/app-updates.
- */
-@Serializable
-data class AppUpdatesResponse(
-    val updates: List<AppUpdateEntry> = emptyList()
-)
-
-/**
- * A single app update entry returned by the server.
- */
-@Serializable
-data class AppUpdateEntry(
-    val packageName: String,
-    val apkUrl: String,
-    val latestVersionCode: Int,
-    val latestVersionName: String? = null,
-    val installedVersionCode: Int? = null
-)
