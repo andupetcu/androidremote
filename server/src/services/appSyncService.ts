@@ -1,7 +1,6 @@
 import { policyStore, Policy, RequiredAppConfig } from './policyStore';
 import { commandStore } from './commandStore';
-import { getAppPackageByName, AppPackage } from './appPackageStore';
-import { getDatabase } from '../db/connection';
+import { getAppPackageByName, ensurePackageSha256, AppPackage } from './appPackageStore';
 
 /**
  * Sync required apps for a device based on its policy
@@ -19,13 +18,20 @@ export function syncRequiredApps(deviceId: string, policyId: string): number {
   for (const appConfig of requiredApps) {
     const pkg = getAppPackageByName(appConfig.packageName);
     if (pkg && pkg.downloadUrl) {
+      const sha256 = ensurePackageSha256(pkg);
+      if (!sha256) {
+        console.warn(`[policy-sync] ${pkg.packageName}: APK file unreadable, no sha256, install not queued`);
+        continue;
+      }
+      // One pending install per device and package: a policy edited five times queues one download (SR-18).
       commandStore.queueCommand(deviceId, 'INSTALL_APK', {
         url: pkg.downloadUrl,
         packageName: pkg.packageName,
+        sha256,
         autoStartAfterInstall: appConfig.autoStartAfterInstall || false,
         foregroundApp: appConfig.foregroundApp || false,
         autoStartOnBoot: appConfig.autoStartOnBoot || false,
-      });
+      }, { supersede: 'packageName' });
       commandsQueued++;
     }
   }
@@ -38,16 +44,9 @@ export function syncRequiredApps(deviceId: string, policyId: string): number {
  * Used when a policy's requiredApps field changes
  */
 export function syncPolicyRequiredApps(policyId: string): number {
-  const db = getDatabase();
-
-  // Get all devices with this policy
-  const devices = db.prepare(`
-    SELECT id FROM devices WHERE policy_id = ?
-  `).all(policyId) as { id: string }[];
-
   let totalCommands = 0;
-  for (const device of devices) {
-    totalCommands += syncRequiredApps(device.id, policyId);
+  for (const deviceId of policyStore.getDeviceIdsForPolicy(policyId)) {
+    totalCommands += syncRequiredApps(deviceId, policyId);
   }
 
   return totalCommands;
@@ -80,4 +79,16 @@ export function getRequiredAppsStatus(policyId: string): {
   }
 
   return { available, missing };
+}
+
+/**
+ * Queue the full policy for a device. An older SYNC_POLICY still waiting for the device is superseded,
+ * so a device that was offline during several edits receives one command (SR-18).
+ */
+export function queueSyncPolicy(deviceId: string, policy: Policy) {
+  return commandStore.queueCommand(deviceId, 'SYNC_POLICY', {
+    silentMode: policy.silentMode,
+    kioskMode: policy.kioskMode,
+    requiredApps: policy.requiredApps || [],
+  }, { supersede: 'type' });
 }

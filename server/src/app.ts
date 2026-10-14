@@ -1,6 +1,7 @@
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import path from 'path';
+import fs from 'fs';
 import helmet from 'helmet';
 import rateLimit, { MemoryStore } from 'express-rate-limit';
 import multer from 'multer';
@@ -19,7 +20,7 @@ import { auditStore, AuditInput } from './services/auditStore';
 import { COMMAND_TYPES } from './db/schema';
 import { LocalStorageProvider, setStorageProvider, getStorageProvider } from './services/storageProvider';
 import * as appPackageStore from './services/appPackageStore';
-import { syncRequiredApps, syncPolicyRequiredApps } from './services/appSyncService';
+import { syncRequiredApps, syncPolicyRequiredApps, queueSyncPolicy } from './services/appSyncService';
 import { agentConnectionStore } from './services/agentConnectionStore';
 import { agentBinaryStore } from './services/agentBinaryStore';
 import { getDatabase } from './db/connection';
@@ -28,16 +29,20 @@ import { apiGate } from './middleware/apiGate';
 import { wsTicketStore, TicketPurpose } from './services/wsTicketStore';
 import { settingsStore } from './services/settingsStore';
 import { validateBody } from './middleware/validate';
+import { HashingDiskStorage } from './services/uploadStorage';
+import { inspectApk, isValidPackageName } from './services/apkValidator';
+import { buildIceServers } from './services/iceServers';
 
 // Initialize storage provider
-const uploadsDir = path.join(__dirname, '..', 'uploads');
+const uploadsDir = path.resolve(process.env.UPLOADS_DIR || path.join(__dirname, '..', 'uploads'));
 const storageProvider = new LocalStorageProvider(uploadsDir, '/api/uploads');
 setStorageProvider(storageProvider);
 
 // Configure multer for APK uploads
+// The upload streams to a temp file under uploads/.incoming while its SHA-256 is computed (C6, SR-11).
 const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 500 * 1024 * 1024 }, // 500MB max
+  storage: new HashingDiskStorage(uploadsDir),
+  limits: { fileSize: 500 * 1024 * 1024, files: 1 }, // 500MB max
   fileFilter: (_req, file, cb) => {
     if (file.originalname.endsWith('.apk')) {
       cb(null, true);
@@ -79,9 +84,6 @@ app.use(helmet({
   },
   crossOriginEmbedderPolicy: false,  // Needed for cross-origin resources on LAN
 }));
-
-// Serve uploaded files statically
-app.use('/api/uploads', express.static(uploadsDir));
 
 // Middleware
 app.use(cors({
@@ -280,29 +282,15 @@ app.put('/api/settings', (req: Request, res: Response) => {
 });
 
 /**
- * Derive the external base URL from the incoming request.
- * Works correctly behind reverse proxies when 'trust proxy' is enabled.
- * Override with BASE_URL env var for non-standard setups (e.g. path prefixes).
+ * External base URL of this server, from configuration only (SS-14). It ends up in installers, enrolment
+ * responses and START_REMOTE payloads, so it must not follow the request's Host or X-Forwarded-* headers.
+ * Set PUBLIC_BASE_URL (for example https://mdm.example.com). BASE_URL is accepted as an older name.
+ * Without either, the URL falls back to http://localhost:<PORT>, which is only right for local development.
  */
-function getBaseUrl(req: Request): string {
-  if (process.env.BASE_URL) {
-    return process.env.BASE_URL.replace(/\/$/, '');
-  }
-  // req.protocol respects X-Forwarded-Proto when trust proxy is set.
-  // However, some reverse proxies (nginx) don't set X-Forwarded-Proto by default.
-  // If we're behind a proxy (X-Forwarded-For present) and protocol is still 'http',
-  // check if the port suggests HTTPS (443) or if host is a public domain (not localhost/IP).
-  let protocol = req.protocol;
-  if (protocol === 'http' && req.get('x-forwarded-for')) {
-    const host = req.get('host') || '';
-    const isLocalhost = /^(localhost|127\.|192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)/i.test(host);
-    if (!isLocalhost && !host.match(/:\d+$/)) {
-      // Public domain without explicit port → almost certainly behind TLS-terminating proxy
-      protocol = 'https';
-    }
-  }
-  const host = req.get('host') || 'localhost:7899';
-  return `${protocol}://${host}`;
+function getBaseUrl(_req?: Request): string {
+  const configured = process.env.PUBLIC_BASE_URL || process.env.BASE_URL;
+  if (configured) return configured.replace(/\/+$/, '');
+  return `http://localhost:${process.env.PORT || 7899}`;
 }
 
 /**
@@ -448,6 +436,9 @@ app.get('/api/pair/status/:deviceId', (req: Request, res: Response) => {
     return;
   }
 
+  // The session token leaves the server once, and only inside the pairing window.
+  const sessionToken = session.status === 'paired' ? pairingStore.consumeSessionToken(deviceId) : null;
+
   // Map 'paired' status to 'completed' for Android app compatibility
   const status = session.status === 'paired' ? 'completed' : session.status;
 
@@ -457,8 +448,8 @@ app.get('/api/pair/status/:deviceId', (req: Request, res: Response) => {
   };
 
   // Include sessionToken and serverUrl when pairing is complete
-  if (session.status === 'paired' && session.sessionToken) {
-    response.sessionToken = session.sessionToken;
+  if (sessionToken) {
+    response.sessionToken = sessionToken;
     response.serverUrl = getSignalingUrl(req);
   }
 
@@ -602,9 +593,8 @@ app.post('/api/devices/:id/heartbeat', (req: Request, res: Response) => {
   // Auto-sync apps if device has no apps yet and no pending SYNC_APPS command
   const appCount = appInventoryStore.getDeviceAppCount(id, true);
   if (appCount === 0) {
-    const pendingCmds = commandStore.getPendingCommands(id);
-    const hasPendingSync = pendingCmds.some(c => c.type === 'SYNC_APPS');
-    if (!hasPendingSync) {
+    // Existence check only: the heartbeat must never consume the device's queue (C5, SR-02).
+    if (!commandStore.hasPendingOfType(id, 'SYNC_APPS')) {
       commandStore.queueCommand(id, 'SYNC_APPS', {});
     }
   }
@@ -805,9 +795,7 @@ app.get('/api/agent/latest', (req: Request, res: Response) => {
   }
 
   // Build download URL
-  const protocol = req.protocol;
-  const host = req.get('host');
-  const url = `${protocol}://${host}/api/agent/download/${os}/${arch}`;
+  const url = `${getBaseUrl(req)}/api/agent/download/${os}/${arch}`;
 
   res.json({
     version: info.version,
@@ -1060,6 +1048,54 @@ app.post('/api/agent/upload-installer', authMiddleware, installerUpload.single('
 // ============================================
 
 /**
+ * Server-side completion of a command payload before it is queued:
+ *  - START_REMOTE gets the signaling URL (from PUBLIC_BASE_URL) and ICE servers with fresh TURN credentials (C7);
+ *  - INSTALL_APK gets its sha256 (C6): from our own store when the URL points at an uploaded package, otherwise
+ *    from the caller, who must supply a 64-hex value. A client-supplied hash never overrides a stored one.
+ *    Policy flags (autoStart, foreground) are merged in as before.
+ */
+function finalizeCommandPayload(
+  req: Request,
+  device: { id: string; policyId?: string | null },
+  type: string,
+  payload: Record<string, unknown> | undefined
+): { payload: Record<string, unknown> } | { error: string } {
+  const out: Record<string, unknown> = { ...(payload || {}) };
+
+  if (type === 'START_REMOTE') {
+    out.signalingUrl = getSignalingUrl(req);
+    out.iceServers = buildIceServers(device.id);
+  }
+
+  if (type === 'INSTALL_APK') {
+    const stored = typeof out.url === 'string' ? appPackageStore.getSha256ForDownloadUrl(out.url, getBaseUrl(req)) : null;
+    if (stored) {
+      out.sha256 = stored;
+    } else if (typeof out.sha256 === 'string' && /^[0-9a-fA-F]{64}$/.test(out.sha256)) {
+      out.sha256 = out.sha256.toLowerCase();
+    } else {
+      return {
+        error: 'INSTALL_APK requires payload.sha256 (64 hex characters) unless the url points at an APK uploaded to this server',
+      };
+    }
+
+    if (device.policyId && typeof out.packageName === 'string') {
+      const policy = policyStore.getPolicy(device.policyId);
+      const appConfig = policy?.requiredApps?.find(
+        (a: { packageName: string }) => a.packageName === out.packageName
+      );
+      if (appConfig) {
+        out.autoStartAfterInstall = appConfig.autoStartAfterInstall || false;
+        out.foregroundApp = appConfig.foregroundApp || false;
+        out.autoStartOnBoot = appConfig.autoStartOnBoot || false;
+      }
+    }
+  }
+
+  return { payload: out };
+}
+
+/**
  * POST /api/commands - Queue a command for a device (used by web UI)
  */
 app.post('/api/commands', (req: Request, res: Response) => {
@@ -1104,26 +1140,13 @@ app.post('/api/commands', (req: Request, res: Response) => {
     }
   }
 
-  // Enrich INSTALL_APK payload with policy settings (foregroundApp, autoStart, etc.)
-  let enrichedPayload = payload || {};
-  if (type === 'INSTALL_APK' && device.policyId && payload?.packageName) {
-    const policy = policyStore.getPolicy(device.policyId);
-    if (policy?.requiredApps) {
-      const appConfig = policy.requiredApps.find(
-        (a: { packageName: string }) => a.packageName === payload.packageName
-      );
-      if (appConfig) {
-        enrichedPayload = {
-          ...enrichedPayload,
-          autoStartAfterInstall: appConfig.autoStartAfterInstall || false,
-          foregroundApp: appConfig.foregroundApp || false,
-          autoStartOnBoot: appConfig.autoStartOnBoot || false,
-        };
-      }
-    }
+  const prepared = finalizeCommandPayload(req, device, type, payload);
+  if ('error' in prepared) {
+    res.status(400).json({ error: prepared.error });
+    return;
   }
 
-  const command = commandStore.queueCommand(deviceId, type as CommandType, enrichedPayload);
+  const command = commandStore.queueCommand(deviceId, type as CommandType, prepared.payload);
   auditCommandQueued(req, command);
 
   res.status(201).json({ command });
@@ -1189,29 +1212,13 @@ app.post('/api/devices/:id/commands', (req: Request, res: Response) => {
     }
   }
 
-  // For START_REMOTE, inject the signaling URL server-side so the web UI
-  // doesn't need to know the external server address.
-  const finalPayload = { ...(payload || {}) };
-  if (type === 'START_REMOTE') {
-    finalPayload.signalingUrl = getSignalingUrl(req);
+  const prepared = finalizeCommandPayload(req, device, type, payload);
+  if ('error' in prepared) {
+    res.status(400).json({ error: prepared.error });
+    return;
   }
 
-  // Enrich INSTALL_APK payload with policy settings (foregroundApp, autoStart, etc.)
-  if (type === 'INSTALL_APK' && device.policyId && payload?.packageName) {
-    const policy = policyStore.getPolicy(device.policyId);
-    if (policy?.requiredApps) {
-      const appConfig = policy.requiredApps.find(
-        (a: { packageName: string }) => a.packageName === payload.packageName
-      );
-      if (appConfig) {
-        finalPayload.autoStartAfterInstall = appConfig.autoStartAfterInstall || false;
-        finalPayload.foregroundApp = appConfig.foregroundApp || false;
-        finalPayload.autoStartOnBoot = appConfig.autoStartOnBoot || false;
-      }
-    }
-  }
-
-  const command = commandStore.queueCommand(id, type as CommandType, finalPayload);
+  const command = commandStore.queueCommand(id, type as CommandType, prepared.payload);
   auditCommandQueued(req, command);
 
   res.status(201).json(command);
@@ -1239,7 +1246,7 @@ app.get('/api/devices/:id/commands', (req: Request, res: Response) => {
   const { status, limit, offset } = req.query;
 
   const commands = commandStore.getCommandHistory(id, {
-    status: status as 'pending' | 'delivered' | 'executing' | 'completed' | 'failed' | undefined,
+    status: status as 'pending' | 'delivered' | 'executing' | 'completed' | 'failed' | 'expired' | undefined,
     limit: limit ? parseInt(limit as string, 10) : undefined,
     offset: offset ? parseInt(offset as string, 10) : undefined,
   });
@@ -1261,6 +1268,9 @@ app.patch('/api/devices/:id/commands/:cmdId', (req: Request, res: Response) => {
     });
     return;
   }
+
+  // Commands past their expiry turn 'expired' even if no poll has swept them yet, so the ack sees 410.
+  commandStore.expireStale(deviceId);
 
   // The device in the URL must own the command. Another device's command looks like an unknown one.
   const command = commandStore.getCommand(cmdId);
@@ -1288,7 +1298,8 @@ app.patch('/api/devices/:id/commands/:cmdId', (req: Request, res: Response) => {
   const updated = commandStore.acknowledgeCommand(
     cmdId,
     status as 'executing' | 'completed' | 'failed',
-    error
+    error,
+    deviceId
   );
 
   if (!updated) {
@@ -1330,9 +1341,9 @@ app.patch('/api/devices/:id/commands/:cmdId', (req: Request, res: Response) => {
  * DELETE /api/devices/:id/commands/:cmdId - Cancel a pending command
  */
 app.delete('/api/devices/:id/commands/:cmdId', (req: Request, res: Response) => {
-  const { cmdId } = req.params;
+  const { id: deviceId, cmdId } = req.params;
 
-  const cancelled = commandStore.cancelCommand(cmdId);
+  const cancelled = commandStore.cancelCommand(cmdId, deviceId);
 
   if (!cancelled) {
     res.status(404).json({ error: 'Command not found or not pending' });
@@ -1508,6 +1519,45 @@ app.get('/api/apps', (req: Request, res: Response) => {
 });
 
 // ============================================
+// ICE servers (C7)
+// ============================================
+
+/**
+ * GET /api/ice-servers - STUN/TURN list with short-lived TURN credentials. Admin JWT or device session token.
+ */
+app.get('/api/ice-servers', (req: Request, res: Response) => {
+  const id: string = typeof res.locals.deviceId === 'string' ? res.locals.deviceId : adminSubject(req);
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ iceServers: buildIceServers(id) });
+});
+
+// ============================================
+// Uploaded APK downloads: admin JWT or an enrolled device's session token (checked in apiGate)
+// ============================================
+
+app.get(/^\/api\/uploads\/(.+)$/, (req: Request, res: Response) => {
+  let relative: string;
+  try {
+    relative = decodeURIComponent(req.params[0]);
+  } catch {
+    res.status(400).json({ error: 'Bad path' });
+    return;
+  }
+  let full: string;
+  try {
+    // Only stored APKs are served; the temp upload directory and anything outside the root are not.
+    if (!relative.startsWith('apks/')) throw new Error('not an apk path');
+    full = storageProvider.resolveSafe(relative);
+  } catch {
+    res.status(404).json({ error: 'Not found' });
+    return;
+  }
+  res.sendFile(full, { dotfiles: 'deny' }, err => {
+    if (err && !res.headersSent) res.status(404).json({ error: 'Not found' });
+  });
+});
+
+// ============================================
 // App Packages (APK Upload & Install)
 // IMPORTANT: These routes must come BEFORE /api/apps/:packageName
 // to avoid "packages" being matched as a packageName parameter
@@ -1573,72 +1623,109 @@ app.put('/api/apps/:packageName', (req: Request, res: Response) => {
 /**
  * POST /api/apps/upload - Upload an APK file
  */
-app.post('/api/apps/upload', upload.single('file'), async (req: Request, res: Response) => {
+// multer errors (size limit, rejected file name) become JSON 4xx instead of the generic error handler's 500.
+function uploadApk(req: Request, res: Response, next: NextFunction): void {
+  upload.single('file')(req, res, (err: unknown) => {
+    if (!err) return next();
+    const code = (err as { code?: string }).code;
+    if (code === 'LIMIT_FILE_SIZE') {
+      res.status(413).json({ error: 'APK is larger than the 500 MB limit' });
+    } else {
+      res.status(400).json({ error: (err as Error).message || 'Invalid upload' });
+    }
+  });
+}
+
+app.post('/api/apps/upload', uploadApk, async (req: Request, res: Response) => {
+  // The file is already on disk (uploads/.incoming/...) with its sha256 computed. Whatever happens, it must
+  // end up either stored under apks/ or deleted.
+  const file = req.file as (Express.Multer.File & { sha256?: string }) | undefined;
+  const tempPath = file?.path;
+  let storedPath: string | undefined;
+  const cleanup = async () => {
+    if (storedPath) await getStorageProvider().delete(storedPath).catch(() => undefined);
+    if (tempPath) await fs.promises.unlink(tempPath).catch(() => undefined);
+  };
+
   try {
-    if (!req.file) {
+    if (!file || !tempPath || !file.sha256) {
       res.status(400).json({ error: 'No file uploaded' });
       return;
     }
 
     const { packageName, appName, versionName, versionCode } = req.body;
 
-    if (!packageName) {
-      res.status(400).json({ error: 'packageName is required' });
+    if (!isValidPackageName(packageName)) {
+      await cleanup();
+      res.status(400).json({ error: 'packageName is required and must look like com.example.app' });
       return;
     }
 
-    // Generate unique filename
+    const apk = await inspectApk(tempPath);
+    if (!apk.ok) {
+      await cleanup();
+      res.status(400).json({ error: apk.reason });
+      return;
+    }
+
+    // Generate unique filename. packageName matches the package-name pattern, so it has no path separators;
+    // the storage provider checks containment again.
     const timestamp = Date.now();
     const filename = `apks/${packageName}-${timestamp}.apk`;
 
-    // Save file using storage provider
     const storage = getStorageProvider();
-    const filePath = await storage.save(filename, req.file.buffer);
+    const filePath = await storage.adopt(tempPath, filename);
+    storedPath = filePath;
 
     // Check if package already exists
     const existing = appPackageStore.getAppPackageByName(packageName);
     const parsedVersionCode = versionCode ? parseInt(versionCode, 10) : undefined;
 
-    let pkg;
-    if (existing) {
-      // Save old version to version history before overwriting
-      appPackageStore.createVersion(existing.id, {
-        versionName: existing.versionName || undefined,
-        versionCode: existing.versionCode || undefined,
-        filePath: existing.filePath,
-        fileSize: existing.fileSize || undefined,
-      });
-      // Update the active entry (don't delete old file — it's now referenced by the version record)
-      pkg = appPackageStore.updateAppPackage(packageName, {
-        appName,
-        versionName,
-        versionCode: parsedVersionCode,
-        fileSize: req.file.size,
-        filePath,
-      });
-    } else {
-      // Create new entry
-      pkg = appPackageStore.createAppPackage({
+    // Package row and version history change together or not at all.
+    const pkg = appPackageStore.runInTransaction(() => {
+      if (existing) {
+        // Save old version to version history before overwriting
+        appPackageStore.createVersion(existing.id, {
+          versionName: existing.versionName || undefined,
+          versionCode: existing.versionCode || undefined,
+          filePath: existing.filePath,
+          fileSize: existing.fileSize || undefined,
+          sha256: existing.sha256,
+        });
+        // Update the active entry (don't delete old file: it is now referenced by the version record)
+        return appPackageStore.updateAppPackage(packageName, {
+          appName,
+          versionName,
+          versionCode: parsedVersionCode,
+          fileSize: file.size,
+          filePath,
+          sha256: file.sha256,
+        });
+      }
+      return appPackageStore.createAppPackage({
         packageName,
         appName,
         versionName,
         versionCode: parsedVersionCode,
-        fileSize: req.file.size,
+        fileSize: file.size,
         filePath,
+        sha256: file.sha256,
       });
-    }
+    });
+    storedPath = undefined; // now referenced by the database
 
     auditStore.log({
       actorType: 'admin',
       action: existing ? 'app.updated' : 'app.uploaded',
       resourceType: 'app',
       resourceId: packageName,
-      details: { versionName, fileSize: req.file.size },
+      details: { versionName, fileSize: file.size, sha256: file.sha256 },
     });
 
     res.status(201).json(pkg);
   } catch (err) {
     console.error('Upload error:', err);
+    await cleanup();
     res.status(500).json({ error: 'Failed to upload APK' });
   }
 });
@@ -1724,6 +1811,12 @@ app.post('/api/apps/packages/:packageName/install', (req: Request, res: Response
     return;
   }
 
+  const sha256 = appPackageStore.ensurePackageSha256(pkg);
+  if (!sha256) {
+    res.status(500).json({ error: 'APK file for this package is missing or unreadable' });
+    return;
+  }
+
   const commands = [];
   for (const deviceId of deviceIds) {
     const device = deviceStore.getDevice(deviceId);
@@ -1732,6 +1825,7 @@ app.post('/api/apps/packages/:packageName/install', (req: Request, res: Response
       const installPayload: Record<string, unknown> = {
         url: pkg.downloadUrl,
         packageName: pkg.packageName,
+        sha256,
         appName: pkg.appName,
         versionName: pkg.versionName,
       };
@@ -1785,6 +1879,12 @@ app.post('/api/apps/packages/:packageName/deploy', (req: Request, res: Response)
     targets = deviceStore.getAllDevices().map(d => d.id);
   }
 
+  const sha256 = appPackageStore.ensurePackageSha256(pkg);
+  if (!sha256) {
+    res.status(500).json({ error: 'APK file for this package is missing or unreadable' });
+    return;
+  }
+
   const commands = [];
   for (const deviceId of targets) {
     const device = deviceStore.getDevice(deviceId);
@@ -1793,6 +1893,7 @@ app.post('/api/apps/packages/:packageName/deploy', (req: Request, res: Response)
       const installPayload: Record<string, unknown> = {
         url: pkg.downloadUrl,
         packageName: pkg.packageName,
+        sha256,
         appName: pkg.appName,
         versionName: pkg.versionName,
       };
@@ -1848,6 +1949,7 @@ app.get('/api/devices/:id/app-updates', (req: Request, res: Response) => {
     latestVersionCode: number | null;
     latestVersionName: string | null;
     apkUrl: string | undefined;
+    sha256: string | null;
   }> = [];
 
   for (const pkg of packages) {
@@ -1866,6 +1968,7 @@ app.get('/api/devices/:id/app-updates', (req: Request, res: Response) => {
         latestVersionCode: latestCode,
         latestVersionName: pkg.versionName,
         apkUrl: pkg.downloadUrl,
+        sha256: appPackageStore.ensurePackageSha256(pkg),
       });
     }
   }
@@ -1899,7 +2002,12 @@ app.post('/api/commands/batch', (req: Request, res: Response) => {
       continue;
     }
     try {
-      const cmd = commandStore.queueCommand(deviceId, type, payload || {});
+      const prepared = finalizeCommandPayload(req, device, type, payload);
+      if ('error' in prepared) {
+        errors.push(`Device ${deviceId}: ${prepared.error}`);
+        continue;
+      }
+      const cmd = commandStore.queueCommand(deviceId, type, prepared.payload);
       commands.push(cmd);
       auditCommandQueued(req, cmd);
     } catch {
@@ -2303,14 +2411,8 @@ app.put('/api/policies/:id', (req: Request, res: Response) => {
     // Sync policy settings to all devices with this policy
     // Always send full policy when relevant settings change
     if (input.silentMode !== undefined || input.requiredApps !== undefined || input.kioskMode !== undefined) {
-      const db = getDatabase();
-      const devices = db.prepare(`SELECT id FROM devices WHERE policy_id = ?`).all(id) as { id: string }[];
-      for (const device of devices) {
-        auditCommandQueued(req, commandStore.queueCommand(device.id, 'SYNC_POLICY', {
-          silentMode: policy.silentMode,
-          kioskMode: policy.kioskMode,
-          requiredApps: policy.requiredApps || [],
-        }));
+      for (const deviceId of policyStore.getDeviceIdsForPolicy(id)) {
+        auditCommandQueued(req, queueSyncPolicy(deviceId, policy));
         commandsQueued++;
       }
     }
@@ -2436,11 +2538,7 @@ app.put('/api/devices/:id/policy', (req: Request, res: Response) => {
 
       // Also send SYNC_POLICY with full settings so device can apply
       // boot preferences for already-installed apps
-      auditCommandQueued(req, commandStore.queueCommand(id, 'SYNC_POLICY', {
-        silentMode: policy.silentMode,
-        kioskMode: policy.kioskMode,
-        requiredApps: policy.requiredApps || [],
-      }));
+      auditCommandQueued(req, queueSyncPolicy(id, policy));
       commandsQueued++;
     }
   }

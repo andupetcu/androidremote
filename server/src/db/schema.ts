@@ -25,6 +25,87 @@ export const COMMAND_TYPES = [
   'SEND_MESSAGE', 'PLAY_SOUND',
 ] as const;
 
+
+// Command lifecycle (contract C5). Defaults can be overridden with env vars, read at call time.
+export const COMMAND_SHORT_TTL_TYPES: readonly string[] = ['REBOOT', 'LOCK', 'WIPE', 'START_REMOTE'];
+
+export function commandTtlMs(type: string): number {
+  const short = Number(process.env.COMMAND_TTL_SHORT_MS) > 0 ? Number(process.env.COMMAND_TTL_SHORT_MS) : 15 * 60 * 1000;
+  const long = Number(process.env.COMMAND_TTL_DEFAULT_MS) > 0 ? Number(process.env.COMMAND_TTL_DEFAULT_MS) : 7 * 24 * 60 * 60 * 1000;
+  return COMMAND_SHORT_TTL_TYPES.includes(type) ? short : long;
+}
+
+function addColumnIfMissing(db: Database.Database, table: string, column: string, ddl: string): void {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  if (!cols.some(c => c.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
+  }
+}
+
+/**
+ * Create or upgrade device_commands (SR-16, C5). SQLite cannot alter a CHECK constraint, so an
+ * outdated table is rebuilt: new table, copy by column name, drop old, rename. The whole rebuild is one
+ * transaction, so a crash or error leaves the original table untouched. When the table is current this
+ * is a read of sqlite_master and nothing else, so running it on every initializeSchema is safe.
+ */
+function migrateDeviceCommands(db: Database.Database, commandTypeCheck: string): void {
+  const createSql = (name: string) => `
+    CREATE TABLE ${name} (
+      id TEXT PRIMARY KEY,
+      device_id TEXT NOT NULL,
+      type TEXT NOT NULL CHECK(type IN (${commandTypeCheck})),
+      payload TEXT NOT NULL,
+      status TEXT DEFAULT 'pending' CHECK(status IN ('pending', 'delivered', 'executing', 'completed', 'failed', 'expired')),
+      created_at INTEGER NOT NULL,
+      delivered_at INTEGER,
+      completed_at INTEGER,
+      error TEXT,
+      lease_expires_at INTEGER,
+      expires_at INTEGER,
+      FOREIGN KEY (device_id) REFERENCES devices(id) ON DELETE CASCADE
+    )`;
+
+  const existing = db.prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='device_commands'`)
+    .get() as { sql: string } | undefined;
+
+  if (!existing) {
+    db.exec(createSql('device_commands'));
+    return;
+  }
+
+  const sql = existing.sql || '';
+  const current =
+    COMMAND_TYPES.every(t => sql.includes(`'${t}'`)) &&
+    sql.includes(`'expired'`) &&
+    sql.includes('lease_expires_at') &&
+    sql.includes('expires_at');
+  if (current) return;
+
+  const oldCols = new Set((db.prepare('PRAGMA table_info(device_commands)').all() as Array<{ name: string }>).map(c => c.name));
+  const rebuild = db.transaction(() => {
+    db.exec('DROP TABLE IF EXISTS device_commands_new');
+    db.exec(createSql('device_commands_new'));
+    const shared = ['id', 'device_id', 'type', 'payload', 'status', 'created_at', 'delivered_at', 'completed_at', 'error',
+      'lease_expires_at', 'expires_at'].filter(c => oldCols.has(c));
+    const list = shared.join(', ');
+    const dropped = db.prepare(`SELECT COUNT(*) AS c FROM device_commands WHERE type NOT IN (${commandTypeCheck})`)
+      .get() as { c: number };
+    if (dropped.c > 0) {
+      console.warn(`[schema] device_commands migration drops ${dropped.c} row(s) with command types that no longer exist`);
+    }
+    db.exec(`INSERT INTO device_commands_new (${list}) SELECT ${list} FROM device_commands WHERE type IN (${commandTypeCheck})`);
+    // Rows still waiting get an expiry from their age, so stale pre-T6 commands are not delivered (SR-04).
+    const waiting = db.prepare(
+      `SELECT id, type, created_at FROM device_commands_new WHERE expires_at IS NULL AND status IN ('pending', 'delivered')`
+    ).all() as Array<{ id: string; type: string; created_at: number }>;
+    const setExpiry = db.prepare('UPDATE device_commands_new SET expires_at = ? WHERE id = ?');
+    for (const r of waiting) setExpiry.run(r.created_at + commandTtlMs(r.type), r.id);
+    db.exec('DROP TABLE device_commands');
+    db.exec('ALTER TABLE device_commands_new RENAME TO device_commands');
+  });
+  rebuild();
+}
+
 /**
  * Initialize the database schema
  */
@@ -268,65 +349,7 @@ export function initializeSchema(db: Database.Database): void {
   // Device commands table - queued commands for devices (Phase 4: expanded types)
   const commandTypeCheck = COMMAND_TYPES.map(t => `'${t}'`).join(', ');
 
-  // Check if device_commands table exists and needs migration
-  const tableExists = db.prepare(`
-    SELECT name FROM sqlite_master WHERE type='table' AND name='device_commands'
-  `).get();
-
-  if (tableExists) {
-    // Check if the CHECK constraint needs updating by trying to get the table schema
-    // SQLite doesn't let us modify CHECK constraints, so we need to recreate the table
-    // We detect this by checking if the constraint string length has changed
-    const tableInfo = db.prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='device_commands'`).get() as { sql: string } | undefined;
-    const currentSql = tableInfo?.sql || '';
-
-    // If the current schema doesn't include all command types, recreate the table
-    const hasAllTypes = COMMAND_TYPES.every(t => currentSql.includes(`'${t}'`));
-
-    if (!hasAllTypes) {
-      // Migrate: rename old table, create new, copy data, drop old
-      db.exec(`ALTER TABLE device_commands RENAME TO device_commands_old`);
-
-      db.exec(`
-        CREATE TABLE device_commands (
-          id TEXT PRIMARY KEY,
-          device_id TEXT NOT NULL,
-          type TEXT NOT NULL CHECK(type IN (${commandTypeCheck})),
-          payload TEXT NOT NULL,
-          status TEXT DEFAULT 'pending' CHECK(status IN ('pending', 'delivered', 'executing', 'completed', 'failed')),
-          created_at INTEGER NOT NULL,
-          delivered_at INTEGER,
-          completed_at INTEGER,
-          error TEXT,
-          FOREIGN KEY (device_id) REFERENCES devices(id) ON DELETE CASCADE
-        )
-      `);
-
-      // Copy existing data (only valid command types will be copied)
-      db.exec(`
-        INSERT INTO device_commands
-        SELECT * FROM device_commands_old
-        WHERE type IN (${commandTypeCheck})
-      `);
-
-      db.exec(`DROP TABLE device_commands_old`);
-    }
-  } else {
-    db.exec(`
-      CREATE TABLE device_commands (
-        id TEXT PRIMARY KEY,
-        device_id TEXT NOT NULL,
-        type TEXT NOT NULL CHECK(type IN (${commandTypeCheck})),
-        payload TEXT NOT NULL,
-        status TEXT DEFAULT 'pending' CHECK(status IN ('pending', 'delivered', 'executing', 'completed', 'failed')),
-        created_at INTEGER NOT NULL,
-        delivered_at INTEGER,
-        completed_at INTEGER,
-        error TEXT,
-        FOREIGN KEY (device_id) REFERENCES devices(id) ON DELETE CASCADE
-      )
-    `);
-  }
+  migrateDeviceCommands(db, commandTypeCheck);
 
   // Create indexes for command lookups
   db.exec(`
@@ -335,6 +358,10 @@ export function initializeSchema(db: Database.Database): void {
 
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_device_commands_pending ON device_commands(device_id, status) WHERE status = 'pending'
+  `);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_device_commands_status ON device_commands(device_id, status, lease_expires_at)
   `);
 
   // ============================================
@@ -474,6 +501,10 @@ export function initializeSchema(db: Database.Database): void {
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_app_versions_package ON app_versions(package_id, uploaded_at DESC)
   `);
+
+  // C6: SHA-256 of each stored APK (hex). Nullable for rows uploaded before T6; filled lazily from disk.
+  addColumnIfMissing(db, 'app_packages', 'sha256', 'TEXT');
+  addColumnIfMissing(db, 'app_versions', 'sha256', 'TEXT');
 
   // ============================================
   // Phase 3: Device Group Members

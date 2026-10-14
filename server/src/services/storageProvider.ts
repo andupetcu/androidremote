@@ -15,6 +15,14 @@ export interface StorageProvider {
   save(filename: string, data: Buffer): Promise<string>;
 
   /**
+   * Move an already written file (for example an upload temp file) into storage without reading it into memory
+   * @param sourcePath - Absolute path of the file to move
+   * @param filename - The filename to store it as
+   * @returns The relative path where the file was stored
+   */
+  adopt(sourcePath: string, filename: string): Promise<string>;
+
+  /**
    * Get a downloadable URL for a file
    * @param filePath - The relative path from save()
    * @returns Full URL to download the file
@@ -52,16 +60,40 @@ export class LocalStorageProvider implements StorageProvider {
     }
   }
 
-  async save(filename: string, data: Buffer): Promise<string> {
-    const filePath = path.join(this.baseDir, filename);
-    const dir = path.dirname(filePath);
-
-    // Ensure subdirectory exists
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
+  /**
+   * Resolve a storage-relative path to an absolute one and prove it is inside the base directory.
+   * Throws on traversal (`..`, absolute paths, NUL bytes), including after symlink-free normalisation (SS-10).
+   */
+  resolveSafe(filename: string): string {
+    if (typeof filename !== 'string' || filename.length === 0 || filename.includes('\0')) {
+      throw new Error('Invalid storage path');
     }
+    const root = path.resolve(this.baseDir);
+    const full = path.resolve(root, filename);
+    if (full !== root && !full.startsWith(root + path.sep)) {
+      throw new Error('Invalid storage path');
+    }
+    if (full === root) throw new Error('Invalid storage path');
+    return full;
+  }
 
+  async save(filename: string, data: Buffer): Promise<string> {
+    const filePath = this.resolveSafe(filename);
+    await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
     await fs.promises.writeFile(filePath, data);
+    return filename;
+  }
+
+  async adopt(sourcePath: string, filename: string): Promise<string> {
+    const filePath = this.resolveSafe(filename);
+    await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+    try {
+      await fs.promises.rename(sourcePath, filePath);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EXDEV') throw err;
+      await fs.promises.copyFile(sourcePath, filePath);
+      await fs.promises.unlink(sourcePath);
+    }
     return filename;
   }
 
@@ -70,22 +102,21 @@ export class LocalStorageProvider implements StorageProvider {
   }
 
   async delete(filePath: string): Promise<void> {
-    const fullPath = path.join(this.baseDir, filePath);
+    const fullPath = this.resolveSafe(filePath);
     if (fs.existsSync(fullPath)) {
       await fs.promises.unlink(fullPath);
     }
   }
 
   async exists(filePath: string): Promise<boolean> {
-    const fullPath = path.join(this.baseDir, filePath);
-    return fs.existsSync(fullPath);
+    return fs.existsSync(this.resolveSafe(filePath));
   }
 
   /**
    * Get the full filesystem path for a file
    */
   getFullPath(filePath: string): string {
-    return path.join(this.baseDir, filePath);
+    return this.resolveSafe(filePath);
   }
 }
 

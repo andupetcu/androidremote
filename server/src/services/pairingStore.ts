@@ -195,6 +195,26 @@ class PairingStore {
     };
   }
 
+  /**
+   * Hand the session token to the pairing device once (the device polls /pair/status for it).
+   * The stored copy is cleared in the same transaction, and nothing is returned after the pairing window
+   * (expires_at) has passed. The session itself stays valid; only this retrieval path closes.
+   */
+  consumeSessionToken(deviceId: string): string | null {
+    this.initialize();
+    const db = this.getDb();
+    return db.transaction(() => {
+      const row = db.prepare(`
+        SELECT id, session_token FROM pairing_sessions
+        WHERE device_id = ? AND status = 'paired' AND session_token IS NOT NULL AND expires_at >= ?
+        ORDER BY created_at DESC LIMIT 1
+      `).get(deviceId, Date.now()) as { id: string; session_token: string } | undefined;
+      if (!row) return null;
+      db.prepare('UPDATE pairing_sessions SET session_token = NULL WHERE id = ?').run(row.id);
+      return row.session_token;
+    })();
+  }
+
   expireSession(deviceId: string): void {
     this.initialize();
     const db = this.getDb();

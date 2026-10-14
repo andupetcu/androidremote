@@ -28,7 +28,6 @@ export const PUBLIC_ROUTES: PublicRoute[] = [
   { method: 'POST', pattern: /^\/enroll\/device$/ },
   // Deployment one-liners download the agent/installer without credentials.
   { method: 'GET', pattern: /^\/downloads\/(agent|installer)\/[^/]+$/ },
-  { method: 'GET', pattern: /^\/uploads\/.+$/ },
 ];
 
 interface DeviceRoute {
@@ -59,6 +58,15 @@ export const DEVICE_ROUTES: DeviceRoute[] = [
     allowAdmin: true,
     deviceOf: m => fileTransferStore.getTransfer(m[1])?.deviceId ?? null,
   },
+];
+
+/**
+ * Routes any enrolled device or the admin may call, not tied to one device ID in the path:
+ * APK downloads (SS-10) and the ICE server list (C7). The device ID is left in `res.locals.deviceId`.
+ */
+const ANY_PRINCIPAL_ROUTES: PublicRoute[] = [
+  { method: 'GET', pattern: /^\/uploads\/.+$/ },
+  { method: 'GET', pattern: /^\/ice-servers$/ },
 ];
 
 function extractDeviceToken(req: Request): string {
@@ -107,6 +115,18 @@ export function apiGate(req: Request, res: Response, next: NextFunction): void {
       res.status(401).json({ error: 'Invalid or expired session token.' });
       return;
     }
+    return next();
+  }
+
+  if (ANY_PRINCIPAL_ROUTES.some(r => r.method === method && r.pattern.test(path))) {
+    if (adminJwtOk(req)) return next();
+    const token = extractDeviceToken(req);
+    const deviceId = token ? deviceStore.getDeviceIdForSession(token) : null;
+    if (!deviceId) {
+      res.status(401).json({ error: 'Admin or device session token required.' });
+      return;
+    }
+    res.locals.deviceId = deviceId;
     return next();
   }
 

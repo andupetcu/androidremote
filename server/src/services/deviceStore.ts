@@ -229,14 +229,10 @@ class DeviceStore {
   updateDeviceStatus(id: string, status: 'online' | 'offline'): boolean {
     this.initialize();
 
-    const updates: Record<string, unknown> = { status };
-    if (status === 'online') {
-      updates.last_seen_at = Date.now();
-    }
-
+    // Going offline keeps the last time we heard from the device (SR-15).
     const result = this.getDb().prepare(`
-      UPDATE devices SET status = ?, last_seen_at = ? WHERE id = ?
-    `).run(status, status === 'online' ? Date.now() : null, id);
+      UPDATE devices SET status = ?, last_seen_at = CASE WHEN ? = 'online' THEN ? ELSE last_seen_at END WHERE id = ?
+    `).run(status, status, Date.now(), id);
 
     return result.changes > 0;
   }
@@ -277,6 +273,18 @@ class DeviceStore {
     if (!validateSessionToken(db, token, deviceId)) return false;
     db.prepare('UPDATE sessions SET last_activity = ? WHERE token = ?').run(Date.now(), token);
     return true;
+  }
+
+  /**
+   * Device that owns a valid (unexpired) session token, or null. Refreshes last_activity like validateDeviceSession.
+   */
+  getDeviceIdForSession(token: string): string | null {
+    this.initialize();
+    const db = this.getDb();
+    const deviceId = validateSessionToken(db, token);
+    if (!deviceId) return null;
+    db.prepare('UPDATE sessions SET last_activity = ? WHERE token = ?').run(Date.now(), token);
+    return deviceId;
   }
 
   /**

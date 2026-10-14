@@ -47,6 +47,7 @@ describe('Device Commands API', () => {
           payload: {
             url: 'https://example.com/app.apk',
             packageName: 'com.example.app',
+            sha256: 'a'.repeat(64), // C6: required for INSTALL_APK that does not point at an uploaded package
           },
         });
 
@@ -277,7 +278,7 @@ describe('Device Commands API', () => {
     it('acknowledges command as executing', async () => {
       const cmd = await request(app)
         .post('/api/devices/test-device/commands').set('Authorization', adminAuthHeader())
-        .send({ type: 'INSTALL_APK', payload: { url: 'http://x.com/a.apk', packageName: 'x' } });
+        .send({ type: 'INSTALL_APK', payload: { url: 'http://x.com/a.apk', packageName: 'x', sha256: 'b'.repeat(64) } });
 
       const response = await request(app)
         .patch(`/api/devices/test-device/commands/${cmd.body.id}`).set('Authorization', adminAuthHeader())
@@ -309,7 +310,7 @@ describe('Device Commands API', () => {
     it('acknowledges command as failed with error', async () => {
       const cmd = await request(app)
         .post('/api/devices/test-device/commands').set('Authorization', adminAuthHeader())
-        .send({ type: 'INSTALL_APK', payload: { url: 'http://x.com/a.apk', packageName: 'x' } });
+        .send({ type: 'INSTALL_APK', payload: { url: 'http://x.com/a.apk', packageName: 'x', sha256: 'b'.repeat(64) } });
 
       const response = await request(app)
         .patch(`/api/devices/test-device/commands/${cmd.body.id}`).set('Authorization', adminAuthHeader())

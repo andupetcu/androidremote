@@ -204,6 +204,13 @@ class PolicyStore {
     this.initialized = false;
   }
 
+  /** IDs of the devices assigned to a policy. */
+  getDeviceIdsForPolicy(policyId: string): string[] {
+    this.initialize();
+    const rows = this.getDb().prepare('SELECT id FROM devices WHERE policy_id = ?').all(policyId) as { id: string }[];
+    return rows.map(r => r.id);
+  }
+
   private generateId(): string {
     return `pol-${crypto.randomBytes(8).toString('hex')}`;
   }

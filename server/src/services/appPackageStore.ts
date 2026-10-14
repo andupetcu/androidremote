@@ -1,10 +1,19 @@
+import type Database from 'better-sqlite3';
 import { getDatabase } from '../db/connection';
 
-function getDb() {
-  return getDatabase();
+let injectedDb: Database.Database | null = null;
+
+/** Point the package store at another database (tests). */
+export function setDatabase(database: Database.Database | null): void {
+  injectedDb = database;
+}
+
+function getDb(): Database.Database {
+  return injectedDb ?? getDatabase();
 }
 import { getStorageProvider } from './storageProvider';
 import { randomUUID } from 'crypto';
+import { sha256FileSync } from './apkValidator';
 
 export interface AppPackage {
   id: string;
@@ -14,6 +23,7 @@ export interface AppPackage {
   versionCode: number | null;
   fileSize: number | null;
   filePath: string;
+  sha256: string | null;
   uploadedAt: number;
   uploadedBy: string | null;
   downloadUrl?: string;
@@ -26,6 +36,7 @@ export interface AppPackageInput {
   versionCode?: number;
   fileSize?: number;
   filePath: string;
+  sha256?: string;
   uploadedBy?: string;
 }
 
@@ -36,8 +47,14 @@ export interface AppVersion {
   versionCode: number | null;
   filePath: string;
   fileSize: number | null;
+  sha256: string | null;
   uploadedAt: number;
   downloadUrl?: string;
+}
+
+/** Run `fn` in one transaction on the package store's database. */
+export function runInTransaction<T>(fn: () => T): T {
+  return getDb().transaction(fn)();
 }
 
 /**
@@ -49,8 +66,8 @@ export function createAppPackage(input: AppPackageInput): AppPackage {
   const now = Date.now();
 
   db.prepare(`
-    INSERT INTO app_packages (id, package_name, app_name, version_name, version_code, file_size, file_path, uploaded_at, uploaded_by)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO app_packages (id, package_name, app_name, version_name, version_code, file_size, file_path, sha256, uploaded_at, uploaded_by)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     input.packageName,
@@ -59,6 +76,7 @@ export function createAppPackage(input: AppPackageInput): AppPackage {
     input.versionCode || null,
     input.fileSize || null,
     input.filePath,
+    input.sha256 || null,
     now,
     input.uploadedBy || null
   );
@@ -72,7 +90,7 @@ export function createAppPackage(input: AppPackageInput): AppPackage {
 export function getAppPackageById(id: string): AppPackage | null {
   const db = getDb();
   const row = db.prepare(`
-    SELECT id, package_name, app_name, version_name, version_code, file_size, file_path, uploaded_at, uploaded_by
+    SELECT id, package_name, app_name, version_name, version_code, file_size, file_path, sha256, uploaded_at, uploaded_by
     FROM app_packages WHERE id = ?
   `).get(id) as Record<string, unknown> | undefined;
 
@@ -86,7 +104,7 @@ export function getAppPackageById(id: string): AppPackage | null {
 export function getAppPackageByName(packageName: string): AppPackage | null {
   const db = getDb();
   const row = db.prepare(`
-    SELECT id, package_name, app_name, version_name, version_code, file_size, file_path, uploaded_at, uploaded_by
+    SELECT id, package_name, app_name, version_name, version_code, file_size, file_path, sha256, uploaded_at, uploaded_by
     FROM app_packages WHERE package_name = ?
   `).get(packageName) as Record<string, unknown> | undefined;
 
@@ -100,7 +118,7 @@ export function getAppPackageByName(packageName: string): AppPackage | null {
 export function listAppPackages(): AppPackage[] {
   const db = getDb();
   const rows = db.prepare(`
-    SELECT id, package_name, app_name, version_name, version_code, file_size, file_path, uploaded_at, uploaded_by
+    SELECT id, package_name, app_name, version_name, version_code, file_size, file_path, sha256, uploaded_at, uploaded_by
     FROM app_packages ORDER BY uploaded_at DESC
   `).all() as Record<string, unknown>[];
 
@@ -140,6 +158,11 @@ export function updateAppPackage(
   if (input.filePath !== undefined) {
     updates.push('file_path = ?');
     values.push(input.filePath);
+  }
+
+  if (input.sha256 !== undefined) {
+    updates.push('sha256 = ?');
+    values.push(input.sha256);
   }
 
   if (updates.length > 0) {
@@ -187,6 +210,7 @@ function mapRowToPackage(row: Record<string, unknown>): AppPackage {
     versionCode: row.version_code as number | null,
     fileSize: row.file_size as number | null,
     filePath,
+    sha256: (row.sha256 as string | null) ?? null,
     uploadedAt: row.uploaded_at as number,
     uploadedBy: row.uploaded_by as string | null,
     downloadUrl: storage.getUrl(filePath),
@@ -205,14 +229,15 @@ export function createVersion(packageId: string, input: {
   versionCode?: number;
   filePath: string;
   fileSize?: number;
+  sha256?: string | null;
 }): AppVersion {
   const db = getDb();
   const id = randomUUID();
   const now = Date.now();
 
   db.prepare(`
-    INSERT INTO app_versions (id, package_id, version_name, version_code, file_path, file_size, uploaded_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO app_versions (id, package_id, version_name, version_code, file_path, file_size, sha256, uploaded_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     packageId,
@@ -220,6 +245,7 @@ export function createVersion(packageId: string, input: {
     input.versionCode || null,
     input.filePath,
     input.fileSize || null,
+    input.sha256 || null,
     now
   );
 
@@ -232,7 +258,7 @@ export function createVersion(packageId: string, input: {
 export function getVersionById(id: string): AppVersion | null {
   const db = getDb();
   const row = db.prepare(`
-    SELECT id, package_id, version_name, version_code, file_path, file_size, uploaded_at
+    SELECT id, package_id, version_name, version_code, file_path, file_size, sha256, uploaded_at
     FROM app_versions WHERE id = ?
   `).get(id) as Record<string, unknown> | undefined;
 
@@ -246,7 +272,7 @@ export function getVersionById(id: string): AppVersion | null {
 export function listVersions(packageId: string): AppVersion[] {
   const db = getDb();
   const rows = db.prepare(`
-    SELECT id, package_id, version_name, version_code, file_path, file_size, uploaded_at
+    SELECT id, package_id, version_name, version_code, file_path, file_size, sha256, uploaded_at
     FROM app_versions WHERE package_id = ? ORDER BY uploaded_at DESC
   `).all(packageId) as Record<string, unknown>[];
 
@@ -282,7 +308,68 @@ function mapRowToVersion(row: Record<string, unknown>): AppVersion {
     versionCode: row.version_code as number | null,
     filePath,
     fileSize: row.file_size as number | null,
+    sha256: (row.sha256 as string | null) ?? null,
     uploadedAt: row.uploaded_at as number,
     downloadUrl: storage.getUrl(filePath),
   };
+}
+
+/**
+ * SHA-256 of a package's APK (C6). Packages uploaded before hashing existed have none stored: hash the file
+ * once from disk and persist it. Returns null if the file is missing.
+ */
+export function ensurePackageSha256(pkg: AppPackage): string | null {
+  if (pkg.sha256) return pkg.sha256;
+  try {
+    const storage = getStorageProvider() as { getFullPath?: (p: string) => string };
+    if (!storage.getFullPath) return null;
+    const sha = sha256FileSync(storage.getFullPath(pkg.filePath));
+    getDb().prepare('UPDATE app_packages SET sha256 = ? WHERE id = ?').run(sha, pkg.id);
+    pkg.sha256 = sha;
+    return sha;
+  } catch {
+    return null;
+  }
+}
+
+const UPLOADS_URL_PREFIX = '/api/uploads/';
+
+/**
+ * SHA-256 of the stored APK that `url` points at, or null when it is not one of our uploads.
+ * Accepts the relative form we hand out (`/api/uploads/apks/...`) or the same path on `baseUrl`.
+ * Both current packages and old versions are looked up. Legacy rows are hashed from disk on first use.
+ */
+export function getSha256ForDownloadUrl(url: string, baseUrl?: string): string | null {
+  let pathname: string;
+  try {
+    if (/^https?:\/\//i.test(url)) {
+      if (!baseUrl || !url.startsWith(baseUrl.replace(/\/+$/, '') + '/')) return null;
+    }
+    pathname = decodeURIComponent(new URL(url, 'http://placeholder').pathname);
+  } catch {
+    return null;
+  }
+  if (!pathname.startsWith(UPLOADS_URL_PREFIX)) return null;
+  const filePath = pathname.slice(UPLOADS_URL_PREFIX.length);
+
+  const db = getDb();
+  const pkgRow = db.prepare('SELECT id FROM app_packages WHERE file_path = ?').get(filePath) as { id: string } | undefined;
+  if (pkgRow) {
+    const pkg = getAppPackageById(pkgRow.id);
+    return pkg ? ensurePackageSha256(pkg) : null;
+  }
+
+  const verRow = db.prepare('SELECT id, sha256 FROM app_versions WHERE file_path = ?').get(filePath) as
+    { id: string; sha256: string | null } | undefined;
+  if (!verRow) return null;
+  if (verRow.sha256) return verRow.sha256;
+  try {
+    const storage = getStorageProvider() as { getFullPath?: (p: string) => string };
+    if (!storage.getFullPath) return null;
+    const sha = sha256FileSync(storage.getFullPath(filePath));
+    db.prepare('UPDATE app_versions SET sha256 = ? WHERE id = ?').run(sha, verRow.id);
+    return sha;
+  } catch {
+    return null;
+  }
 }
