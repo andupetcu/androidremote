@@ -1,8 +1,10 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import { IncomingMessage } from 'http';
+import { Duplex } from 'stream';
 import { URL } from 'url';
-import jwt from 'jsonwebtoken';
-import { getJwtSecret } from './middleware/auth';
+import type Database from 'better-sqlite3';
+import { wsTicketStore } from './services/wsTicketStore';
+import { validateSessionToken } from './db/schema';
 import { agentConnectionStore, AgentConnection } from './services/agentConnectionStore';
 import { deviceStore } from './services/deviceStore';
 import { telemetryStore } from './services/telemetryStore';
@@ -100,32 +102,126 @@ function jsonMessage(
   return encodeMessage(type, channel, requestId, payload);
 }
 
+// --- Shared WebSocket hardening helpers (also used by signaling.ts) ---
+
+/** Read a positive integer from the environment at call time (so tests and operators can change it). */
+export function envInt(name: string, fallback: number): number {
+  const n = Number.parseInt(process.env[name] ?? '', 10);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
+/** Largest message the binary protocol can carry: u16 payload length plus the 9 byte header. */
+const RELAY_MAX_PAYLOAD = 70 * 1024;
+/** Bytes an unauthenticated relay agent may buffer before AUTH_REQUEST completes. */
+const PRE_AUTH_BUFFER_LIMIT = 64 * 1024;
+const DEFAULT_AUTH_TIMEOUT_MS = 10_000;
+const DEFAULT_MAX_BUFFERED_BYTES = 8 * 1024 * 1024;
+
+const pingMisses = new WeakMap<WebSocket, number>();
+
+/**
+ * Ping every client of `wss` each WS_PING_INTERVAL_MS (default 30 s). A client that has not answered
+ * two pings in a row is terminated, so half-open TCP connections cannot pile up. Returns the timer.
+ */
+export function startPingSweep(wss: WebSocketServer): ReturnType<typeof setInterval> {
+  const timer = setInterval(() => {
+    for (const ws of wss.clients) {
+      const misses = pingMisses.get(ws) ?? 0;
+      if (misses >= 2) {
+        ws.terminate();
+        continue;
+      }
+      pingMisses.set(ws, misses + 1);
+      try {
+        ws.ping();
+      } catch {
+        ws.terminate();
+      }
+    }
+  }, envInt('WS_PING_INTERVAL_MS', 30_000));
+  timer.unref?.();
+  wss.on('connection', (ws) => {
+    pingMisses.set(ws, 0);
+    ws.on('pong', () => pingMisses.set(ws, 0));
+  });
+  wss.on('close', () => clearInterval(timer));
+  return timer;
+}
+
+/** Reject an HTTP upgrade before any WebSocket exists. */
+export function rejectUpgrade(socket: Duplex, status: 401 | 503, text: string): void {
+  socket.write(`HTTP/1.1 ${status} ${text}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
+  socket.destroy();
+}
+
+/**
+ * Send with backpressure protection. When the socket already buffers more than WS_MAX_BUFFERED_BYTES
+ * (default 8 MiB) video frames are dropped and anything else closes the slow peer (1013).
+ */
+export function sendWithBackpressure(ws: WebSocket, data: Buffer | Uint8Array): void {
+  if (ws.readyState !== WebSocket.OPEN) return;
+  if (ws.bufferedAmount > envInt('WS_MAX_BUFFERED_BYTES', DEFAULT_MAX_BUFFERED_BYTES)) {
+    if (data[0] === DESKTOP_FRAME) return;
+    ws.close(1013, 'slow consumer');
+    return;
+  }
+  ws.send(data);
+}
+
 // --- Relay WebSocket Server ---
+
+type SessionType = 'desktop' | 'terminal' | 'files';
+
+interface ViewerAuth {
+  deviceId: string;
+  sessionType: SessionType;
+  subject: string;
+}
 
 let relayWss: WebSocketServer;
 let staleCheckInterval: ReturnType<typeof setInterval>;
+let relayDb: Database.Database | null = null;
+const viewerAuths = new WeakMap<IncomingMessage, ViewerAuth>();
 
-export function createRelayWss(): WebSocketServer {
-  relayWss = new WebSocketServer({ noServer: true });
+function database(): Database.Database {
+  return relayDb ?? getDatabase();
+}
+
+/**
+ * Authenticate a `/relay` HTTP upgrade. Viewers (`deviceId` + `session` in the query) must present a
+ * single-use `ticket` of purpose relay bound to that same deviceId. Desktop agents carry no query
+ * parameters and authenticate with AUTH_REQUEST after the upgrade, so they pass through here.
+ */
+export function authenticateRelayUpgrade(request: IncomingMessage): boolean {
+  const params = new URL(request.url || '', 'http://relay.invalid').searchParams;
+  const deviceId = params.get('deviceId');
+  const session = params.get('session');
+  if (!deviceId && !session) return true; // agent path
+  if (!deviceId || (session !== 'desktop' && session !== 'terminal' && session !== 'files')) return false;
+  const ticket = params.get('ticket');
+  if (!ticket) return false;
+  const claims = wsTicketStore.consume(ticket, 'relay');
+  if (!claims || !claims.deviceId || claims.deviceId !== deviceId) return false;
+  viewerAuths.set(request, { deviceId, sessionType: session, subject: claims.subject });
+  return true;
+}
+
+export function relayCapacityAvailable(): boolean {
+  return agentConnectionStore.getTotalSessionCount() < envInt('RELAY_MAX_VIEWERS_TOTAL', 200);
+}
+
+export function createRelayWss(opts: { db?: Database.Database } = {}): WebSocketServer {
+  relayDb = opts.db ?? null;
+  relayWss = new WebSocketServer({ noServer: true, maxPayload: RELAY_MAX_PAYLOAD });
+  startPingSweep(relayWss);
 
   relayWss.on('connection', (ws: WebSocket, request: IncomingMessage) => {
-    const url = new URL(request.url || '', `http://${request.headers.host}`);
-    const params = url.searchParams;
-
-    // Determine if this is an agent or viewer connection
-    const deviceIdParam = params.get('deviceId');
-    const sessionType = params.get('session') as
-      | 'desktop'
-      | 'terminal'
-      | 'files'
-      | null;
-    const token = params.get('token');
-
-    if (deviceIdParam && sessionType && token) {
-      // Viewer connection
-      handleViewerConnection(ws, deviceIdParam, sessionType, token);
+    const viewer = viewerAuths.get(request);
+    viewerAuths.delete(request);
+    if (viewer) {
+      handleViewerConnection(ws, viewer);
     } else {
-      // Agent connection — waits for AUTH_REQUEST binary message
+      // Agent connection: waits for the AUTH_REQUEST binary message
       handleAgentConnection(ws);
     }
   });
@@ -164,16 +260,24 @@ function handleAgentConnection(ws: WebSocket): void {
   let deviceId: string | null = null;
   let readBuffer = Buffer.alloc(0);
 
+  let authPending = false;
+
+  // Stays armed until authentication succeeds or fails; a partial AUTH_REQUEST does not disarm it
   const authTimeout = setTimeout(() => {
     if (!authenticated) {
       console.log('[Relay] Agent auth timeout');
       ws.close(4001, 'authentication timeout');
     }
-  }, 10_000);
+  }, envInt('RELAY_AUTH_TIMEOUT_MS', DEFAULT_AUTH_TIMEOUT_MS));
 
   ws.on('message', (data: Buffer) => {
     // Accumulate data in read buffer
     readBuffer = Buffer.concat([readBuffer, data]);
+    if (!authenticated && readBuffer.length > PRE_AUTH_BUFFER_LIMIT) {
+      clearTimeout(authTimeout);
+      ws.close(1009, 'pre-auth buffer limit');
+      return;
+    }
 
     // Process complete messages
     while (readBuffer.length >= HEADER_SIZE) {
@@ -188,13 +292,15 @@ function handleAgentConnection(ws: WebSocket): void {
 
       if (!authenticated) {
         // Only accept AUTH_REQUEST before authentication
-        if (header.type === AUTH_REQUEST) {
-          clearTimeout(authTimeout);
+        if (header.type === AUTH_REQUEST && !authPending) {
+          authPending = true;
           handleAgentAuth(ws, payload, header.requestId).then((result) => {
-            if (result) {
+            clearTimeout(authTimeout);
+            if (result && ws.readyState === WebSocket.OPEN) {
               authenticated = true;
               deviceId = result;
             } else {
+              if (result) agentConnectionStore.removeAgentIfSocket(result, ws);
               ws.close(4003, 'authentication failed');
             }
           });
@@ -211,15 +317,16 @@ function handleAgentConnection(ws: WebSocket): void {
     clearTimeout(authTimeout);
     if (deviceId) {
       console.log(`[Relay] Agent ${deviceId} disconnected`);
-      agentConnectionStore.removeAgent(deviceId);
-      deviceStore.updateDeviceStatus(deviceId, 'offline');
+      // Only the socket that owns the registration may tear it down (a replaced socket closes late)
+      if (agentConnectionStore.removeAgentIfSocket(deviceId, ws)) {
+        deviceStore.updateDeviceStatus(deviceId, 'offline');
+      }
     }
   });
 
   ws.on('error', (err) => {
     console.error(`[Relay] Agent WebSocket error:`, err.message);
-    if (deviceId) {
-      agentConnectionStore.removeAgent(deviceId);
+    if (deviceId && agentConnectionStore.removeAgentIfSocket(deviceId, ws)) {
       deviceStore.updateDeviceStatus(deviceId, 'offline');
     }
   });
@@ -239,18 +346,14 @@ async function handleAgentAuth(
       return null;
     }
 
-    // Validate session token against the sessions table
-    const db = getDatabase();
-    const session = db
-      .prepare('SELECT device_id FROM sessions WHERE token = ?')
-      .get(token) as { device_id: string } | undefined;
+    // Validate the session token (must exist and not be expired)
+    const db = database();
+    const deviceId = typeof token === 'string' ? validateSessionToken(db, token) : null;
 
-    if (!session) {
+    if (!deviceId) {
       sendAuthResponse(ws, requestId, false, undefined, undefined, 'invalid session token');
       return null;
     }
-
-    const deviceId = session.device_id;
 
     // Verify device exists
     const device = deviceStore.getDevice(deviceId);
@@ -394,7 +497,7 @@ function handleAgentInfo(deviceId: string, payload: Buffer): void {
     );
 
     // Update device info in database
-    const db = getDatabase();
+    const db = database();
     try {
       db.prepare(`
         UPDATE devices SET
@@ -441,7 +544,7 @@ function handleAgentTelemetry(deviceId: string, payload: Buffer): void {
 
     // Store full telemetry JSON for rich display
     try {
-      const db = getDatabase();
+      const db = database();
       db.prepare(`
         UPDATE devices SET agent_telemetry_json = ? WHERE id = ?
       `).run(JSON.stringify(data), deviceId);
@@ -492,37 +595,23 @@ function relayToViewer(
 
 // --- Viewer Connection Handling ---
 
-function handleViewerConnection(
-  ws: WebSocket,
-  deviceId: string,
-  sessionType: 'desktop' | 'terminal' | 'files',
-  token: string
-): void {
-  // Validate JWT token
-  let userId: string;
-  try {
-    // Try to validate as JWT
-    const decoded = jwt.verify(token, getJwtSecret()) as { username?: string; sub?: string };
-    userId = decoded.username || decoded.sub || 'admin';
-  } catch {
-    // Also accept session tokens (for simpler auth)
-    const db = getDatabase();
-    const session = db
-      .prepare('SELECT device_id FROM sessions WHERE token = ?')
-      .get(token) as { device_id: string } | undefined;
-    if (!session) {
-      console.log('[Relay] Viewer auth failed: invalid token');
-      ws.close(4003, 'authentication failed');
-      return;
-    }
-    userId = 'agent-session';
-  }
+function handleViewerConnection(ws: WebSocket, viewer: ViewerAuth): void {
+  const { deviceId, sessionType } = viewer;
+  const userId = viewer.subject;
 
   // Check if agent is connected
   const conn = agentConnectionStore.getAgent(deviceId);
   if (!conn || conn.ws.readyState !== WebSocket.OPEN) {
     console.log(`[Relay] Viewer requested device ${deviceId} but agent is not connected`);
     ws.close(4004, 'agent not connected');
+    return;
+  }
+
+  if (
+    conn.activeSessions.size >= envInt('RELAY_MAX_VIEWERS_PER_DEVICE', 3) ||
+    !relayCapacityAvailable()
+  ) {
+    ws.close(4006, 'too many sessions');
     return;
   }
 
@@ -556,6 +645,8 @@ function handleViewerConnection(
     if (data.length >= HEADER_SIZE) {
       const header = decodeHeader(data);
       if (header) {
+        // A viewer may only send message types that belong to its own session type
+        if (!viewerMaySend(sessionType, header.type)) return;
         // Rewrite the channel to match what the agent expects
         const payload = data.subarray(HEADER_SIZE, HEADER_SIZE + header.length);
         const relayed = encodeMessage(
@@ -569,8 +660,7 @@ function handleViewerConnection(
       }
     }
 
-    // If not a valid protocol message, just forward raw
-    sendBinary(conn.ws, data);
+    // Not a valid protocol message: drop it
   });
 
   ws.on('close', () => {
@@ -585,13 +675,27 @@ function handleViewerConnection(
 
   ws.on('error', () => {
     agentConnectionStore.removeSession(deviceId, channelId);
+    sendSessionClose(conn, channelId, sessionType);
   });
+}
+
+/** Message type ranges a viewer of each session type may forward to the agent (plus telemetry requests). */
+function viewerMaySend(sessionType: SessionType, type: number): boolean {
+  if (type === TELEMETRY_REQ) return true;
+  switch (sessionType) {
+    case 'desktop':
+      return type >= 0x10 && type <= 0x1f;
+    case 'terminal':
+      return type >= 0x20 && type <= 0x2f;
+    case 'files':
+      return type >= 0x30 && type <= 0x3f;
+  }
 }
 
 function sendSessionOpen(
   conn: AgentConnection,
   channelId: number,
-  sessionType: 'desktop' | 'terminal' | 'files'
+  sessionType: SessionType
 ): void {
   let type: number;
   let payload: object;
@@ -620,7 +724,7 @@ function sendSessionOpen(
 function sendSessionClose(
   conn: AgentConnection,
   channelId: number,
-  sessionType: 'desktop' | 'terminal' | 'files'
+  sessionType: SessionType
 ): void {
   if (conn.ws.readyState !== WebSocket.OPEN) return;
 
@@ -643,7 +747,5 @@ function sendSessionClose(
 // --- Utilities ---
 
 function sendBinary(ws: WebSocket, data: Buffer | Uint8Array): void {
-  if (ws.readyState === WebSocket.OPEN) {
-    ws.send(data);
-  }
+  sendWithBackpressure(ws, data);
 }

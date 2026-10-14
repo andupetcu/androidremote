@@ -2,6 +2,8 @@ import { createServer, Server } from 'http';
 import WebSocket, { WebSocketServer } from 'ws';
 import { setupSignaling, clearRooms, getRoomCount } from '../src/signaling';
 import { shutdownRelay } from '../src/relay';
+import { wsTicketStore } from '../src/services/wsTicketStore';
+import { setupTestDatabase, cleanupTestDatabase, closeTestDatabase } from './setup';
 
 describe('Signaling Server', () => {
   let server: Server;
@@ -10,11 +12,22 @@ describe('Signaling Server', () => {
   // Every client socket opened by a test, so teardown can close them all
   let sockets: WebSocket[] = [];
 
+  const DEVICE_TOKEN = 'a'.repeat(32);
+  let db: ReturnType<typeof setupTestDatabase>;
+
+  beforeAll(() => {
+    db = setupTestDatabase();
+  });
+  afterAll(() => closeTestDatabase());
+
   beforeEach((done) => {
     clearRooms();
     sockets = [];
+    db.prepare('INSERT INTO devices (id, name) VALUES (?, ?)').run('test-device', 'test-device');
+    db.prepare('INSERT INTO sessions (token, device_id, expires_at) VALUES (?, ?, ?)')
+      .run(DEVICE_TOKEN, 'test-device', Date.now() + 3_600_000);
     server = createServer();
-    wss = setupSignaling(server);
+    wss = setupSignaling(server, { db });
     server.listen(0, () => {
       const addr = server.address();
       port = typeof addr === 'object' && addr ? addr.port : 0;
@@ -31,12 +44,16 @@ describe('Signaling Server', () => {
     wss.close();
     // setupSignaling starts the relay's stale-check interval; stop it or jest cannot exit
     shutdownRelay();
+    cleanupTestDatabase();
     server.close(done);
   });
 
-  function connect(): Promise<WebSocket> {
+  // Authenticated connect: devices present their session token, controllers a signaling ticket
+  function connect(role: 'device' | 'controller' = 'controller'): Promise<WebSocket> {
     return new Promise((resolve, reject) => {
-      const ws = new WebSocket(`ws://localhost:${port}/ws`);
+      const ws = role === 'device'
+        ? new WebSocket(`ws://localhost:${port}/ws`, { headers: { Authorization: `Bearer ${DEVICE_TOKEN}` } })
+        : new WebSocket(`ws://localhost:${port}/ws?ticket=${wsTicketStore.issue({ purpose: 'signaling', subject: 'admin' }).ticket}`);
       sockets.push(ws);
       ws.on('open', () => resolve(ws));
       ws.on('error', reject);
@@ -53,7 +70,7 @@ describe('Signaling Server', () => {
 
   describe('Join', () => {
     it('accepts device join', async () => {
-      const ws = await connect();
+      const ws = await connect('device');
 
       ws.send(JSON.stringify({
         type: 'join',
@@ -96,41 +113,40 @@ describe('Signaling Server', () => {
       const response = await messagePromise;
       expect(response).toEqual({
         type: 'error',
-        message: 'Missing deviceId or role',
+        message: 'Missing deviceId',
       });
 
       ws.close();
     });
 
-    it('rejects join without role', async () => {
+    it('does not need a role in the message: it comes from the credential', async () => {
       const ws = await connect();
-      const messagePromise = waitForMessage(ws);
 
       ws.send(JSON.stringify({
         type: 'join',
         deviceId: 'test-device',
       }));
 
-      const response = await messagePromise;
-      expect(response).toEqual({
-        type: 'error',
-        message: 'Missing deviceId or role',
-      });
+      await new Promise((r) => setTimeout(r, 50));
+      expect(getRoomCount()).toBe(1);
 
       ws.close();
     });
 
-    // KNOWN-BUG C4: an unauthenticated join evicts the existing peer for that role (signaling.ts
-    // "Replacing stale" branch) instead of being rejected. Contract C4 says an unauthenticated
-    // socket must never evict an authenticated peer. Assertion kept as the target behaviour.
-    it.skip('rejects duplicate role in same room', async () => {
+    // C4: a different principal can never take over an occupied role (formerly KNOWN-BUG, SR-07/SS-02)
+    it('rejects duplicate role in same room', async () => {
       const ws1 = await connect();
-      const ws2 = await connect();
+      const ws2 = await new Promise<WebSocket>((resolve, reject) => {
+        const ticket = wsTicketStore.issue({ purpose: 'signaling', subject: 'someone-else' }).ticket;
+        const ws = new WebSocket(`ws://localhost:${port}/ws?ticket=${ticket}`);
+        sockets.push(ws);
+        ws.on('open', () => resolve(ws));
+        ws.on('error', reject);
+      });
 
       ws1.send(JSON.stringify({
         type: 'join',
         deviceId: 'test-device',
-        role: 'device',
       }));
 
       // Small delay to ensure first join processes
@@ -140,13 +156,12 @@ describe('Signaling Server', () => {
       ws2.send(JSON.stringify({
         type: 'join',
         deviceId: 'test-device',
-        role: 'device',
       }));
 
       const response = await messagePromise;
       expect(response).toEqual({
         type: 'error',
-        message: 'Role device already taken in this room',
+        message: 'Role controller already taken in this room',
       });
 
       ws1.close();
@@ -156,7 +171,7 @@ describe('Signaling Server', () => {
 
   describe('Peer Notifications', () => {
     it('notifies when second peer joins', async () => {
-      const device = await connect();
+      const device = await connect('device');
       const controller = await connect();
 
       device.send(JSON.stringify({
@@ -189,7 +204,7 @@ describe('Signaling Server', () => {
     });
 
     it('notifies when peer disconnects', async () => {
-      const device = await connect();
+      const device = await connect('device');
       const controller = await connect();
 
       device.send(JSON.stringify({
@@ -220,7 +235,7 @@ describe('Signaling Server', () => {
 
   describe('Message Relay', () => {
     it('relays offer from controller to device', async () => {
-      const device = await connect();
+      const device = await connect('device');
       const controller = await connect();
 
       device.send(JSON.stringify({
@@ -259,7 +274,7 @@ describe('Signaling Server', () => {
     });
 
     it('relays answer from device to controller', async () => {
-      const device = await connect();
+      const device = await connect('device');
       const controller = await connect();
 
       device.send(JSON.stringify({
@@ -297,7 +312,7 @@ describe('Signaling Server', () => {
     });
 
     it('relays ICE candidates', async () => {
-      const device = await connect();
+      const device = await connect('device');
       const controller = await connect();
 
       device.send(JSON.stringify({
@@ -363,7 +378,7 @@ describe('Signaling Server', () => {
 
   describe('Room Cleanup', () => {
     it('removes empty rooms when all peers disconnect', async () => {
-      const device = await connect();
+      const device = await connect('device');
       const controller = await connect();
 
       device.send(JSON.stringify({

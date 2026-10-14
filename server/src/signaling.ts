@@ -1,8 +1,18 @@
 import { WebSocketServer, WebSocket } from 'ws';
-import { Server } from 'http';
+import { Server, IncomingMessage } from 'http';
+import type Database from 'better-sqlite3';
 import { eventStore, DeviceEvent } from './services/eventStore';
-import { deviceStore } from './services/deviceStore';
-import { createRelayWss, getRelayWss } from './relay';
+import { wsTicketStore } from './services/wsTicketStore';
+import { validateSessionToken } from './db/schema';
+import { getDatabase } from './db/connection';
+import {
+  createRelayWss,
+  authenticateRelayUpgrade,
+  relayCapacityAvailable,
+  rejectUpgrade,
+  startPingSweep,
+  envInt,
+} from './relay';
 
 // ICE candidate as received from WebRTC (browser-agnostic definition)
 interface IceCandidate {
@@ -24,6 +34,36 @@ interface Peer {
   ws: WebSocket;
   role: 'device' | 'controller';
   deviceId: string;
+  /** Who authenticated: `device:<id>` for a device token, `controller:<subject>` for a ticket */
+  principal: string;
+}
+
+/** Credential established during the HTTP upgrade (never taken from messages). */
+type SignalingAuth =
+  | { kind: 'controller'; subject: string; deviceId?: string }
+  | { kind: 'device'; deviceId: string; token: string };
+
+const upgradeAuth = new WeakMap<IncomingMessage, SignalingAuth>();
+let signalingDb: Database.Database | null = null;
+
+function database(): Database.Database {
+  return signalingDb ?? getDatabase();
+}
+
+function authenticateSignalingUpgrade(request: IncomingMessage): SignalingAuth | null {
+  const params = new URL(request.url || '', 'http://signaling.invalid').searchParams;
+  const ticket = params.get('ticket');
+  if (ticket) {
+    const claims = wsTicketStore.consume(ticket, 'signaling');
+    return claims ? { kind: 'controller', subject: claims.subject, deviceId: claims.deviceId } : null;
+  }
+  const header = request.headers['authorization'];
+  const match = typeof header === 'string' ? /^Bearer\s+(\S+)$/i.exec(header) : null;
+  if (match) {
+    const deviceId = validateSessionToken(database(), match[1]);
+    return deviceId ? { kind: 'device', deviceId, token: match[1] } : null;
+  }
+  return null;
 }
 
 // Admin WebSocket types
@@ -164,28 +204,49 @@ function handleAdminMessage(ws: WebSocket, message: AdminMessage, subscription: 
   }
 }
 
-export function setupSignaling(server: Server): WebSocketServer {
+export function setupSignaling(server: Server, opts: { db?: Database.Database } = {}): WebSocketServer {
+  signalingDb = opts.db ?? null;
   // Setup event broadcasting
   setupEventBroadcasting();
 
   // Use noServer mode to handle multiple WebSocket paths
-  const wss = new WebSocketServer({ noServer: true });
-  const adminWss = new WebSocketServer({ noServer: true });
-  const relayWss = createRelayWss();
+  const wss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 });
+  const adminWss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
+  const relayWss = createRelayWss({ db: opts.db });
+  startPingSweep(wss);
+  startPingSweep(adminWss);
+  server.on('close', () => {
+    wss.close();
+    adminWss.close();
+  });
 
-  // Handle HTTP upgrade requests manually
+  // Authenticate during the HTTP upgrade, before any WebSocket exists (contracts C3, C4)
   server.on('upgrade', (request, socket, head) => {
     const pathname = (request.url || '').split('?')[0];
 
     if (pathname === '/ws') {
+      const auth = authenticateSignalingUpgrade(request);
+      if (!auth) return rejectUpgrade(socket, 401, 'Unauthorized');
+      if (wss.clients.size >= envInt('WS_MAX_SIGNALING_CONNECTIONS', 500)) {
+        return rejectUpgrade(socket, 503, 'Service Unavailable');
+      }
+      upgradeAuth.set(request, auth);
       wss.handleUpgrade(request, socket, head, (ws) => {
         wss.emit('connection', ws, request);
       });
     } else if (pathname === '/admin') {
+      const params = new URL(request.url || '', 'http://admin.invalid').searchParams;
+      const ticket = params.get('ticket');
+      if (!ticket || !wsTicketStore.consume(ticket, 'admin')) return rejectUpgrade(socket, 401, 'Unauthorized');
+      if (adminWss.clients.size >= envInt('WS_MAX_ADMIN_CONNECTIONS', 50)) {
+        return rejectUpgrade(socket, 503, 'Service Unavailable');
+      }
       adminWss.handleUpgrade(request, socket, head, (ws) => {
         adminWss.emit('connection', ws, request);
       });
     } else if (pathname === '/relay') {
+      if (!authenticateRelayUpgrade(request)) return rejectUpgrade(socket, 401, 'Unauthorized');
+      if (!relayCapacityAvailable()) return rejectUpgrade(socket, 503, 'Service Unavailable');
       relayWss.handleUpgrade(request, socket, head, (ws) => {
         relayWss.emit('connection', ws, request);
       });
@@ -229,15 +290,21 @@ export function setupSignaling(server: Server): WebSocketServer {
     send(ws, { type: 'connected', adminCount: adminConnections.size });
   });
 
-  wss.on('connection', (ws: WebSocket) => {
+  wss.on('connection', (ws: WebSocket, request: IncomingMessage) => {
     // eslint-disable-next-line no-console
     console.log('[WS] New WebSocket connection');
+    const auth = upgradeAuth.get(request);
+    upgradeAuth.delete(request);
+    if (!auth) {
+      ws.close(4401, 'unauthorized');
+      return;
+    }
     let currentPeer: Peer | null = null;
 
     ws.on('message', (data: Buffer) => {
       try {
         const message: SignalingMessage = JSON.parse(data.toString());
-        handleMessage(ws, message, currentPeer, (peer) => {
+        handleMessage(ws, auth, message, currentPeer, (peer) => {
           currentPeer = peer;
         });
       } catch (e) {
@@ -263,18 +330,34 @@ export function setupSignaling(server: Server): WebSocketServer {
 
 function handleMessage(
   ws: WebSocket,
+  auth: SignalingAuth,
   message: SignalingMessage,
   currentPeer: Peer | null,
   setPeer: (peer: Peer) => void
 ): void {
   switch (message.type) {
     case 'join': {
-      if (!message.deviceId || !message.role) {
-        sendError(ws, 'Missing deviceId or role');
+      if (!message.deviceId || typeof message.deviceId !== 'string') {
+        sendError(ws, 'Missing deviceId');
+        return;
+      }
+      if (currentPeer) {
+        sendError(ws, 'Already joined a room');
         return;
       }
 
-      const { deviceId, role } = message;
+      const { deviceId } = message;
+      // The role comes from the credential; whatever the message claims is ignored (contract C4)
+      const role: 'device' | 'controller' = auth.kind === 'device' ? 'device' : 'controller';
+      const authorized =
+        auth.kind === 'device'
+          ? auth.deviceId === deviceId && validateSessionToken(database(), auth.token, deviceId) !== null
+          : auth.deviceId === undefined || auth.deviceId === deviceId;
+      if (!authorized) {
+        sendError(ws, 'Not authorized for this device');
+        return;
+      }
+      const principal = auth.kind === 'device' ? `device:${auth.deviceId}` : `controller:${auth.subject}`;
       // eslint-disable-next-line no-console
       console.log(`[WS] Join: deviceId=${deviceId}, role=${role}`);
       let room = rooms.get(deviceId);
@@ -284,23 +367,22 @@ function handleMessage(
         rooms.set(deviceId, room);
       }
 
-      // If role already taken, evict the stale peer so reconnects always succeed
+      // A role can only be taken over by the same authenticated principal (or when the old socket is dead)
       const existingPeer = room[role];
-      if (existingPeer) {
+      if (existingPeer && existingPeer.ws !== ws) {
+        const dead = existingPeer.ws.readyState !== WebSocket.OPEN;
+        if (existingPeer.principal !== principal && !dead) {
+          sendError(ws, `Role ${role} already taken in this room`);
+          return;
+        }
         // eslint-disable-next-line no-console
         console.log(`[WS] Replacing stale ${role} in room ${deviceId}`);
-        // Notify the other peer that the old connection left
-        const otherRole = role === 'device' ? 'controller' : 'device';
-        const otherPeer = room[otherRole];
-        if (otherPeer) {
-          send(otherPeer.ws, { type: 'peer-left' });
-        }
-        // Close the old WebSocket cleanly
+        // The slot is reassigned below; the old socket's late close finds it no longer owns the slot
         delete room[role];
         existingPeer.ws.close(1000, 'Replaced by new connection');
       }
 
-      const peer: Peer = { ws, role, deviceId };
+      const peer: Peer = { ws, role, deviceId, principal };
       room[role] = peer;
       setPeer(peer);
 
@@ -356,10 +438,9 @@ function handleDisconnect(peer: Peer): void {
   const room = rooms.get(peer.deviceId);
   if (!room) return;
 
-  // Remove peer from room
-  if (room[peer.role] === peer) {
-    delete room[peer.role];
-  }
+  // A replaced peer no longer owns the slot: its late close must not notify anyone (SR-07)
+  if (room[peer.role] !== peer) return;
+  delete room[peer.role];
 
   // Notify other peer
   const otherRole = peer.role === 'device' ? 'controller' : 'device';
