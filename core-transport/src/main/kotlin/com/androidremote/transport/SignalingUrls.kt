@@ -30,6 +30,7 @@ object SignalingUrls {
         val host = uri.host ?: throw IllegalArgumentException("Missing host in server URL")
         val port = if (uri.port > 0) ":${uri.port}" else ""
         val path = uri.path.orEmpty().trimEnd('/')
-        return "$scheme://$host$port${path.ifEmpty { WS_PATH }}"
+        val query = uri.rawQuery?.takeIf { it.isNotEmpty() }?.let { "?$it" } ?: ""
+        return "$scheme://$host$port${path.ifEmpty { WS_PATH }}$query"
     }
 }

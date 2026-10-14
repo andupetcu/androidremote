@@ -155,7 +155,9 @@ sealed class RemoteCommand {
     @Serializable
     @SerialName("WIPE_DEVICE")
     data class WipeDevice(
-        val wipeExternalStorage: Boolean = false
+        val wipeExternalStorage: Boolean = false,
+        /** Must equal this device's ID, or the device refuses the wipe (contract C10). */
+        val confirm: String? = null
     ) : RemoteCommand()
 
     /**

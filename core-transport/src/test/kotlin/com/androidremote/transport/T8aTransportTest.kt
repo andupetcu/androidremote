@@ -339,6 +339,11 @@ class T8aTransportTest {
     }
 
     @Test
+    fun `an existing path and query are preserved`() {
+        assertEquals("ws://h:3000/signaling?x=1", SignalingUrls.fromServerBase("ws://h:3000/signaling?x=1"))
+    }
+
+    @Test
     fun `unsupported or malformed base urls are rejected`() {
         assertThrows(IllegalArgumentException::class.java) { SignalingUrls.fromServerBase("ftp://h") }
         assertThrows(IllegalArgumentException::class.java) { SignalingUrls.fromServerBase("not a url") }

@@ -64,7 +64,10 @@ class SessionControllerTest {
         commandChannelFactory = { _ -> mockCommandChannel },
         scope = scope,
         maxReconnectAttempts = 3,
-        initialReconnectDelayMs = 100
+        initialReconnectDelayMs = 100,
+        // These tests use advanceUntilIdle(), which would run the idle and max-duration timers.
+        idleTimeoutMs = Long.MAX_VALUE,
+        maxSessionMs = Long.MAX_VALUE
     )
 
     @AfterEach

@@ -6,13 +6,13 @@
 - [T12] Remaining `window.confirm` in DeviceCard, DevicesPage, group and policy deletes; PairingFlow uses raw fetch; command status by live events instead of 5 s polling. (from T5)
 - [T7] The relay screens still pass `token` to the relay hook as a "signed in" gate only. (from T5)
 - [T8b] BLOCKING: ScreenServerManager.kt (around lines 250 and 302) and the RemoteSessionService hint strings must pass `-u <Process.myUid()>` to the screen-server `app_process` command. Until then the server rejects every client. (from T4)
-- [T8a] `DeviceCommandChannel.kt:75` (core-transport) logs raw message text, which may include typed passwords (AR-18). (from T4)
-- [T8a] `RemoteSessionService.kt:286` uses `takeIf { it.isAvailable() }` on Main, so the text handler never gets the shell injector. Drop the `takeIf`; TextInputHandler checks at use time. (from T4)
+- [T8a] DONE: `DeviceCommandChannel.kt:75` (core-transport) logs raw message text, which may include typed passwords (AR-18). (from T4)
+- [T8a] DONE: `RemoteSessionService.kt:286` uses `takeIf { it.isAvailable() }` on Main, so the text handler never gets the shell injector. Drop the `takeIf`; TextInputHandler checks at use time. (from T4)
 - [user] The release default `PAIRING_SERVER_URL` in app/build.gradle.kts is `http://192.168.68.209:7899`. Release builds are now HTTPS-only (or listed host names), so deployments need HTTPS. (from T4)
 - [T11] `POST /api/devices/:id/telemetry/batch` body `{"samples":[{...telemetry, collectedAt:<epoch ms>}]}`; respond with `nextReportIn` (seconds) on the telemetry endpoints. (from T10)
 - [T9] Replace the 6th-poll telemetry counter with `telemetryCollector.reportIfDue(serverUrl, deviceId)` (sent to T9 by message). (from T10)
 - [T12] DeviceRemote.tsx: remove the fixed 6 s sleep, wait on `devicePresent` from useWebRTC, show a failed START_REMOTE (rest of WU-09). Add a default MSW handler for `/api/ice-servers` in tests/mocks. (from T7)
-- [T8b] DONE: ScreenServerManager passes `-u <myUid>` (ScreenServerCommand). Still open for T8a: replace the RemoteSessionService hint strings with `ScreenServerManager.adbStartHint()` and adopt ScreenCaptureController (see evidence/T8b.md "Interface for T8a").
+- [T8b] DONE: ScreenServerManager passes `-u <myUid>` (ScreenServerCommand). T8a DONE: replace the RemoteSessionService hint strings with `ScreenServerManager.adbStartHint()` and adopt ScreenCaptureController (see evidence/T8b.md "Interface for T8a").
 - [boot/update receivers owner] Call `ScreenServerManager(context).prestart(restart=false)` on BOOT_COMPLETED and `prestart(restart=true)` on MY_PACKAGE_REPLACED, off Main (AR-07 pre-start). (from T8b)
 - [T11] Server: the six C10 command types; WIPE `{confirm: deviceId, wipeExternalStorage?}` with an audit reason; optional `updateWindow {start,end}` ("HH:mm") in SYNC_POLICY. Per-package backoff/staged rollout for auto-updates is optional. (from T9)
 - [user] Silent mode: Do-Not-Disturb access needs a one-time `adb shell cmd notification allow_dnd com.androidremote.app` per device. Kiosk foreground detection needs PACKAGE_USAGE_STATS (the Device Owner self-grants it where allowed). (from T9)
@@ -21,3 +21,5 @@
 - [T11] Audit login failures; event acknowledge must take `acknowledgedBy` from the JWT, not the client. (from T1)
 - [T12] PairingFlow must send the Authorization header to `/pair/complete`, which now requires the admin JWT. (from T1)
 - [user] Deploy env: set `ADMIN_INITIAL_PASSWORD` (or `ADMIN_PASSWORD_HASH`) and `TRUST_PROXY=1` behind the proxy. Use `ALLOW_TOKENLESS_DEVICES=true` only during the device-app rollout. (from T1)
+
+- [T3] `CommandPollingService.executeStartRemote`: add `putExtra(RemoteSessionService.EXTRA_ICE_SERVERS, command.payload["iceServers"]?.toString())` so START_REMOTE ICE servers reach the session (T8a falls back to GET /api/ice-servers). (from T8a)

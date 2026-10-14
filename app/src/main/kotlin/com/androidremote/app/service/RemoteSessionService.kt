@@ -20,6 +20,7 @@ import com.androidremote.app.ScreenCaptureRequestActivity
 import com.androidremote.app.controller.InputHandler
 import com.androidremote.app.controller.MdmHandler
 import com.androidremote.app.controller.SessionController
+import com.androidremote.app.controller.SessionListener
 import com.androidremote.app.controller.SessionState
 import com.androidremote.app.controller.TextInputHandler
 import com.androidremote.app.webrtc.WebRtcPeerConnectionFactory
@@ -27,7 +28,12 @@ import com.androidremote.feature.input.InputInjectorFactory
 import com.androidremote.feature.input.TextInputService
 import com.androidremote.feature.screen.EncoderConfig
 import com.androidremote.feature.screen.ScreenCaptureManager
+import com.androidremote.app.api.DeviceHttpClient
+import com.androidremote.app.ui.SessionStorage
 import com.androidremote.transport.DeviceCommandChannel
+import com.androidremote.transport.IceServerParser
+import com.androidremote.transport.PeerConnectionConfig
+import com.androidremote.transport.SignalingUrls
 import com.androidremote.transport.FrameData
 import com.androidremote.transport.KtorWebSocketProvider
 import com.androidremote.transport.RemoteSession
@@ -36,6 +42,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.launch
@@ -58,6 +66,9 @@ class RemoteSessionService : Service() {
         const val EXTRA_SERVER_URL = "server_url"
         const val EXTRA_SESSION_TOKEN = "session_token"
         const val EXTRA_DEVICE_ID = "device_id"
+
+        /** Optional JSON array of ICE servers from the START_REMOTE payload (contract C7). */
+        const val EXTRA_ICE_SERVERS = "ice_servers"
 
         fun startService(context: Context) {
             val intent = Intent(context, RemoteSessionService::class.java)
@@ -89,20 +100,21 @@ class RemoteSessionService : Service() {
     private val _frameDataFlow = MutableSharedFlow<FrameData>(replay = 0, extraBufferCapacity = 64)
     private val frameDataFlow: SharedFlow<FrameData> = _frameDataFlow
 
-    // Screen server client (scrcpy-style - preferred)
-    private var screenServerClient: ScreenServerClient? = null
-    private var screenServerManager: ScreenServerManager? = null
-
-    // Track whether this is an auto-started session (needs automatic screen capture)
-    private var isAutoStartedSession = false
-    private var isScreenCaptureActive = false
+    // Screen-server capture supervisor (scrcpy-style, preferred): retries, rotation, CAPTURE_FAILED reasons
+    private var captureController: ScreenCaptureController? = null
+    private var frameForwardJob: Job? = null
     private var screenCaptureReceiver: BroadcastReceiver? = null
 
-    // Capture mode preference
-    private var useScreenServer = true
+    // Decides when capture starts and stops from the session state (AR-15, AR-10)
+    private val captureCoordinator = CaptureCoordinator()
+    private var stateObserverJob: Job? = null
 
-    // Track the state observer job to cancel on re-entry
-    private var stateObserverJob: kotlinx.coroutines.Job? = null
+    // Input and MDM commands run here, never on Main (AR-06)
+    private val inputDispatcher = InputDispatcher.create()
+    private lateinit var inputHandler: InputHandler
+
+    // ICE servers for the current session (START_REMOTE payload, else fetched from the server)
+    @Volatile private var iceConfig: PeerConnectionConfig = com.androidremote.transport.RemoteSession.DEFAULT_CONFIG
 
     // Device Owner manager for checking MDM privileges
     private val deviceOwnerManager by lazy {
@@ -127,11 +139,20 @@ class RemoteSessionService : Service() {
                     val resultCode = intent.getIntExtra(ScreenCaptureRequestActivity.EXTRA_RESULT_CODE, 0)
                     val data = intent.getParcelableExtra<Intent>(ScreenCaptureRequestActivity.EXTRA_RESULT_DATA)
 
+                    startService(ScreenCaptureService.cancelIntent(this@RemoteSessionService))
                     if (resultCode == android.app.Activity.RESULT_OK && data != null) {
                         Log.i(TAG, "Screen capture permission received, starting capture")
-                        startScreenCapture(resultCode, data)
+                        // MediaProjection takes over from the screen-server supervisor.
+                        captureController?.stop()
+                        try {
+                            startScreenCapture(resultCode, data)
+                        } catch (e: Exception) {
+                            Log.e(TAG, "MediaProjection capture failed to start", e)
+                            sessionController.reportCaptureFailed("capture_setup_failed")
+                        }
                     } else {
                         Log.w(TAG, "Screen capture permission denied or data missing")
+                        sessionController.reportCaptureFailed("consent_denied")
                     }
                 }
             }
@@ -171,66 +192,84 @@ class RemoteSessionService : Service() {
         val notification = createNotification()
         startForeground(NOTIFICATION_ID, notification)
 
-        // Handle auto-start from BootReceiver (MDM mode)
+        // Handle auto-start (START_REMOTE from the command poller, or boot in MDM mode)
         if (intent?.getBooleanExtra(EXTRA_AUTO_START, false) == true) {
             val serverUrl = intent.getStringExtra(EXTRA_SERVER_URL)
             val sessionToken = intent.getStringExtra(EXTRA_SESSION_TOKEN)
             val deviceId = intent.getStringExtra(EXTRA_DEVICE_ID)
+            val icePayload = intent.getStringExtra(EXTRA_ICE_SERVERS)
 
-            Log.i(TAG, "Auto-start: serverUrl=$serverUrl, deviceId=$deviceId, hasToken=${sessionToken != null}")
+            Log.i(TAG, "Auto-start: deviceId=$deviceId, hasToken=${sessionToken != null}, hasIce=${icePayload != null}")
 
             if (serverUrl != null && deviceId != null) {
-                // Clean up any previous capture state from a prior session
-                if (isScreenCaptureActive) {
-                    Log.i(TAG, "Cleaning up previous screen capture before new session")
-                    stopScreenCapture()
-                }
-
-                isAutoStartedSession = true
-
-                // Cancel any previous state observer to avoid leaked collectors
-                stateObserverJob?.cancel()
-
-                // Observe session state to manage screen capture lifecycle
-                stateObserverJob = serviceScope.launch {
-                    sessionController.state.collect { state ->
-                        Log.d(TAG, "Session state changed: $state")
-                        if (state is SessionState.Connected && isAutoStartedSession && !isScreenCaptureActive) {
-                            Log.i(TAG, "Session connected, starting screen capture")
-                            isAutoStartedSession = false // Only request once
-                            isScreenCaptureActive = true
-
-                            if (useScreenServer) {
-                                // Try scrcpy-style screen server first
-                                startScreenServerCapture()
-                            } else {
-                                // Fall back to MediaProjection
-                                requestScreenCapturePermission()
-                            }
-                        } else if (state is SessionState.Disconnected || state is SessionState.Error) {
-                            if (isScreenCaptureActive) {
-                                Log.i(TAG, "Session disconnected/error, stopping screen capture")
-                                stopScreenCapture()
-                            }
-                        }
-                    }
-                }
-
-                serviceScope.launch {
-                    try {
-                        Log.i(TAG, "Calling sessionController.connect($serverUrl, token, $deviceId)")
-                        sessionController.connect(serverUrl, sessionToken ?: "", deviceId)
-                        Log.i(TAG, "sessionController.connect returned")
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Auto-connect failed", e)
-                    }
-                }
+                startAutoSession(serverUrl, sessionToken, deviceId, icePayload)
             } else {
-                Log.w(TAG, "Auto-start missing params: serverUrl=$serverUrl, deviceId=$deviceId, hasToken=${sessionToken != null}")
+                // Don't leave a "Screen is being shared" notification behind (AR-10)
+                Log.w(TAG, "Auto-start missing params, stopping service")
+                endServiceIfIdle()
             }
         }
 
         return START_STICKY
+    }
+
+    private fun startAutoSession(serverUrl: String, sessionToken: String?, deviceId: String, icePayload: String?) {
+        // Clean up capture of a previous session (a re-sent START_REMOTE restarts video cleanly, AR-15)
+        applyCaptureAction(captureCoordinator.beginSession(autoStarted = true))
+        stateObserverJob?.cancel()
+
+        serviceScope.launch {
+            // ICE servers: payload first (C7), else ask the server with the device token
+            iceConfig = if (!icePayload.isNullOrBlank()) {
+                IceServerParser.parseConfigFromString(icePayload)
+            } else {
+                fetchIceServers()
+            }
+            try {
+                // connect() moves the state to Connecting synchronously, so the observer
+                // below can never act on the previous session's Connected value.
+                sessionController.connect(serverUrl, sessionToken ?: "", deviceId)
+            } catch (e: Exception) {
+                Log.e(TAG, "Auto-connect failed", e)
+            }
+            stateObserverJob = launch {
+                sessionController.state.collect { state ->
+                    Log.d(TAG, "Session state changed: $state")
+                    applyCaptureAction(captureCoordinator.onState(state))
+                }
+            }
+        }
+    }
+
+    private suspend fun fetchIceServers(): PeerConnectionConfig = withContext(Dispatchers.IO) {
+        val storage = SessionStorage.create(this@RemoteSessionService)
+        val base = storage.getServerUrl() ?: return@withContext com.androidremote.transport.RemoteSession.DEFAULT_CONFIG
+        val client = DeviceHttpClient.create(base, { storage.getSessionToken() })
+        try {
+            IceServersFetcher.fetch(client, base)
+        } finally {
+            client.close()
+        }
+    }
+
+    private fun applyCaptureAction(action: CaptureAction) {
+        when (action) {
+            CaptureAction.NONE -> {}
+            CaptureAction.START_CAPTURE -> {
+                Log.i(TAG, "Session connected, starting screen capture")
+                startScreenServerCapture()
+            }
+            CaptureAction.STOP_CAPTURE -> stopScreenCapture()
+            CaptureAction.STOP_CAPTURE_AND_SERVICE -> {
+                stopScreenCapture()
+                endServiceIfIdle()
+            }
+        }
+    }
+
+    private fun endServiceIfIdle() {
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
     }
 
     override fun onDestroy() {
@@ -246,11 +285,13 @@ class RemoteSessionService : Service() {
         sessionController.disconnect()
         disposeCurrentResources()
         serviceScope.cancel()
+        inputDispatcher.close()
         super.onDestroy()
     }
 
     private fun createSessionController(): SessionController {
         val inputHandler = InputHandler()
+        this.inputHandler = inputHandler
 
         // Initialize coordinate mapper with current screen dimensions
         val displayManager = getSystemService(Context.DISPLAY_SERVICE) as android.hardware.display.DisplayManager
@@ -283,7 +324,7 @@ class RemoteSessionService : Service() {
 
         val textInputService = TextInputService(accessibilityServiceProvider, clipboardProvider)
         // Reuse shell injector for text input (same root detection as InputHandler)
-        val shellInjector = InputInjectorFactory.create()?.takeIf { it.isAvailable() }
+        val shellInjector = InputInjectorFactory.create() // availability is checked at use time (the probe runs off Main)
         val textInputHandler = TextInputHandler(textInputService, shellInjector)
 
         // Create MDM handler for Device Owner features
@@ -295,8 +336,27 @@ class RemoteSessionService : Service() {
             mdmHandler = mdmHandler,
             sessionFactory = { serverUrl, deviceId -> createRemoteSession(serverUrl, deviceId) },
             commandChannelFactory = { session -> createCommandChannel(session) },
-            scope = serviceScope
-        )
+            scope = serviceScope,
+            inputDispatcher = inputDispatcher.dispatcher
+        ).also { it.listener = sessionListener }
+    }
+
+    private val sessionListener = object : SessionListener {
+        override fun onViewerReady() {
+            // A (re)attached viewer needs a decodable frame right away (AR-04)
+            requestKeyFrame()
+        }
+
+        override fun onKeyFrameRequested() = requestKeyFrame()
+
+        override fun onSessionEnded(reason: String) {
+            Log.i(TAG, "Session ended by controller: $reason")
+        }
+    }
+
+    private fun requestKeyFrame() {
+        captureController?.requestKeyFrame()
+        screenCaptureManager?.requestKeyFrame()
     }
 
     /**
@@ -317,8 +377,14 @@ class RemoteSessionService : Service() {
         currentWebSocketProvider = webSocketProvider
         currentPeerConnectionFactory = peerConnectionFactory
 
+        // The enrolment URL is http(s); signaling needs ws(s)://host/ws (AR-10)
+        val signalingUrl = SignalingUrls.fromServerBase(serverUrl)
+        val token = SessionStorage.create(this).getSessionToken()
+
         return RemoteSession(
-            serverUrl = serverUrl,
+            serverUrl = signalingUrl,
+            authToken = token,
+            peerConnectionConfig = iceConfig,
             deviceId = deviceId,
             webSocketProvider = webSocketProvider,
             peerConnectionFactory = peerConnectionFactory,
@@ -388,6 +454,8 @@ class RemoteSessionService : Service() {
         )
 
         manager.start(mediaProjection, config)
+        inputHandler.updateScreenConfig(config.width, config.height, 0)
+        sessionController.publishScreenInfo(config.width, config.height, 0)
 
         // Collect encoded frames and forward to FrameData flow
         serviceScope.launch {
@@ -414,101 +482,45 @@ class RemoteSessionService : Service() {
     }
 
     /**
-     * Start screen capture using the scrcpy-style screen server.
+     * Start screen capture using the scrcpy-style screen server (supervised: retries with backoff,
+     * reports CAPTURE_FAILED reasons, follows rotation).
      *
-     * The screen server provides consent-free screen capture using SurfaceControl.
-     * It must be started via adb shell with elevated privileges:
-     *   adb shell CLASSPATH=/data/local/tmp/screen-server.apk \
-     *     app_process / com.androidremote.screenserver.Server
-     *
-     * In Device Owner mode with root access, we attempt to auto-start it.
+     * Manual start without root: [ScreenServerManager.adbStartHint] (includes the required -u uid).
      */
     private fun startScreenServerCapture() {
         serviceScope.launch {
-            // IMPORTANT: Set up the VideoStreamBridge subscription FIRST, before
-            // connecting to the screen server. This ensures no early keyframes are
-            // lost due to SharedFlow's replay=0 dropping emissions with no subscribers.
+            // Subscribe the video bridge FIRST so no early keyframe is lost (SharedFlow replay=0).
             try {
                 Log.i(TAG, "Setting up video stream bridge (waiting for data channel)...")
                 sessionController.startVideoStream(frameDataFlow)
-                Log.i(TAG, "Video stream bridge ready, now connecting to screen server")
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to set up video stream bridge", e)
-                isScreenCaptureActive = false
+                captureCoordinator.onCaptureStartFailed()
                 return@launch
             }
 
-            // Initialize screen server manager if needed
-            if (screenServerManager == null) {
-                screenServerManager = ScreenServerManager(this@RemoteSessionService)
+            val manager = ScreenServerManager(this@RemoteSessionService)
+            Log.i(TAG, "Screen server hint if it must be started by hand: ${manager.adbStartHint()}")
+            val controller = ScreenCaptureController(serviceScope, ScreenServerBackend(manager))
+            captureController = controller
+
+            controller.onScreenInfo = { w, h, rotation ->
+                inputHandler.updateScreenConfig(w, h, rotation)
+                sessionController.publishScreenInfo(w, h, rotation)
             }
-            val manager = screenServerManager!!
-
-            // Always restart the screen server for a fresh session.
-            // A stuck server (e.g. SurfaceControl not rendering) can't accept new
-            // client connections because its encode loop never exits.
-            if (manager.isRooted()) {
-                Log.i(TAG, "Restarting screen server for fresh session...")
-                val started = manager.restartScreenServer()
-                if (started) {
-                    Log.i(TAG, "Screen server restarted successfully via root")
-                    kotlinx.coroutines.delay(500)
-                } else {
-                    Log.w(TAG, "Failed to restart screen server via root")
-                }
-            } else if (!manager.isScreenServerRunning()) {
-                Log.w(TAG, "Screen server not running and device is not rooted. " +
-                        "Start it via ADB: adb shell CLASSPATH=/data/local/tmp/screen-server.apk " +
-                        "app_process / com.androidremote.screenserver.Server")
-            }
-
-            // Retry connecting to screen server — it may take a moment to start
-            val maxRetries = 5
-            val retryDelayMs = 1000L
-            var connected = false
-
-            for (attempt in 1..maxRetries) {
-                val client = ScreenServerClient()
-                screenServerClient = client
-
-                if (client.connect()) {
-                    Log.i(TAG, "Connected to screen server: ${client.videoWidth}x${client.videoHeight}")
-
-                    // Handle early death: server crashes during capture setup
-                    client.onEarlyDeath = {
-                        Log.w(TAG, "Screen server died during capture setup")
-                        client.disconnect()
-                        screenServerClient = null
-                        isScreenCaptureActive = false
-                    }
-
-                    // Forward frames to WebRTC — VideoStreamBridge is already subscribed
-                    // to _frameDataFlow, so frames will be sent immediately
-                    launch {
-                        client.frames.collect { frame ->
-                            _frameDataFlow.emit(frame)
-                        }
-                    }
-
-                    Log.i(TAG, "Video streaming started via screen server")
-                    connected = true
-                    break
-                } else {
-                    client.disconnect()
-                    screenServerClient = null
-                    if (attempt < maxRetries) {
-                        Log.w(TAG, "Screen server not available (attempt $attempt/$maxRetries), retrying in ${retryDelayMs}ms...")
-                        kotlinx.coroutines.delay(retryDelayMs)
-                    }
+            controller.onCaptureFailed = { reason ->
+                Log.w(TAG, "Capture failed: $reason")
+                sessionController.reportCaptureFailed(reason)
+                if (reason == CaptureFailureReason.CONSENT_REQUIRED) {
+                    startService(ScreenCaptureService.promptIntent(this@RemoteSessionService))
                 }
             }
 
-            if (!connected) {
-                Log.e(TAG, "Screen server not available after $maxRetries attempts. " +
-                        "Start it via ADB: adb shell CLASSPATH=/data/local/tmp/screen-server.apk " +
-                        "app_process / com.androidremote.screenserver.Server")
-                isScreenCaptureActive = false
+            frameForwardJob?.cancel()
+            frameForwardJob = launch {
+                controller.frames.collect { frame -> _frameDataFlow.emit(frame) }
             }
+            controller.start()
         }
     }
 
@@ -518,13 +530,13 @@ class RemoteSessionService : Service() {
     fun stopScreenCapture() {
         sessionController.stopVideoStream()
 
-        screenServerClient?.disconnect()
-        screenServerClient = null
+        captureController?.stop()
+        captureController = null
+        frameForwardJob?.cancel()
+        frameForwardJob = null
 
         screenCaptureManager?.stop()
         screenCaptureManager = null
-
-        isScreenCaptureActive = false
     }
 
     private fun createNotificationChannel() {
