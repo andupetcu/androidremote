@@ -683,6 +683,9 @@ class CommandPollingService : Service() {
                 com.androidremote.app.service.RemoteSessionService.EXTRA_DEVICE_ID,
                 sessionStorage.getDeviceId()
             )
+            StartRemotePayload.iceServersExtra(command.payload)?.let {
+                putExtra(com.androidremote.app.service.RemoteSessionService.EXTRA_ICE_SERVERS, it)
+            }
         }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
