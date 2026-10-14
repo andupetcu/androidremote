@@ -11,3 +11,4 @@
 - [user] The release default `PAIRING_SERVER_URL` in app/build.gradle.kts is `http://192.168.68.209:7899`. Release builds are now HTTPS-only (or listed host names), so deployments need HTTPS. (from T4)
 - [T11] `POST /api/devices/:id/telemetry/batch` body `{"samples":[{...telemetry, collectedAt:<epoch ms>}]}`; respond with `nextReportIn` (seconds) on the telemetry endpoints. (from T10)
 - [T9] Replace the 6th-poll telemetry counter with `telemetryCollector.reportIfDue(serverUrl, deviceId)` (sent to T9 by message). (from T10)
+- [T12] DeviceRemote.tsx: remove the fixed 6 s sleep, wait on `devicePresent` from useWebRTC, show a failed START_REMOTE (rest of WU-09). Add a default MSW handler for `/api/ice-servers` in tests/mocks. (from T7)
