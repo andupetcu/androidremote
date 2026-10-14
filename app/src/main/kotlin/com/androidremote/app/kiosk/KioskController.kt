@@ -120,7 +120,7 @@ class KioskController(private val context: Context, private val owner: DeviceOwn
      * Foreground package from UsageStats. Null when the usage-access permission is missing or no
      * recent event exists; the watchdog then treats the target as not in front.
      */
-    private fun foregroundPackage(): String? = try {
+    fun foregroundPackage(): String? = try {
         val usm = context.getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
         val now = System.currentTimeMillis()
         val events = usm.queryEvents(now - 10 * 60_000L, now)

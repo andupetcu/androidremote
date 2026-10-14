@@ -25,6 +25,7 @@ import com.androidremote.app.api.DeviceCommand
 import com.androidremote.app.ui.SessionStorage
 import com.androidremote.app.api.AppUpdatesResponse
 import com.androidremote.app.api.DeviceHttpClient
+import com.androidremote.app.mdm.telemetry.KioskReport
 import com.androidremote.app.kiosk.AppManagement
 import com.androidremote.app.kiosk.BootApps
 import com.androidremote.app.kiosk.BootAppsMerge
@@ -146,6 +147,9 @@ class CommandPollingService : Service() {
         telemetryCollector = TelemetryCollector(this)
         kioskController = KioskController(this, deviceOwnerManager)
         appManagement = AppManagement(this, deviceOwnerManager)
+        telemetryCollector.kioskStateProvider = {
+            KioskReport.build(kioskController.config(), kioskController.foregroundPackage(), appManagement.protectedPackages())
+        }
 
         createNotificationChannel()
     }
@@ -467,6 +471,17 @@ class CommandPollingService : Service() {
     /** Run the handler for one command. Lifecycle, timeout and dedup are in [CommandProcessor]. */
     private suspend fun dispatchCommand(command: DeviceCommand): CommandResult {
         Log.i(TAG, "Executing command: ${command.type} (${command.id})")
+        val result = runCommand(command)
+        if (InventoryRules.refreshAfter(command.type, result.success)) {
+            // Keep the web UI's app list and enabled flags in step with what just changed
+            try { executeSyncApps() } catch (e: CancellationException) { throw e } catch (e: Exception) {
+                Log.w(TAG, "Inventory refresh after ${command.type} failed", e)
+            }
+        }
+        return result
+    }
+
+    private suspend fun runCommand(command: DeviceCommand): CommandResult {
         return when (command.type) {
             "INSTALL_APK" -> executeInstallApk(command)
             "UNINSTALL_APP" -> executeUninstallApp(command)
@@ -775,11 +790,22 @@ class CommandPollingService : Service() {
         }
     }
 
+    private fun isInstalledFlag(pkg: android.content.pm.PackageInfo): Boolean =
+        ((pkg.applicationInfo?.flags ?: 0) and android.content.pm.ApplicationInfo.FLAG_INSTALLED) != 0
+
+    private fun isHidden(pkg: String): Boolean = try {
+        deviceOwnerManager.isDeviceOwner() &&
+            deviceOwnerManager.policyManager.isApplicationHidden(deviceOwnerManager.adminComponent, pkg)
+    } catch (e: Exception) { false }
+
     private suspend fun executeSyncApps(): CommandResult {
         val api = commandApiClient ?: return CommandResult.failure("Server URL not configured")
 
         val pm = packageManager
-        val packages = pm.getInstalledPackages(0)
+        // MATCH_UNINSTALLED_PACKAGES so apps hidden by DISABLE_APP still show up (as disabled)
+        @Suppress("DEPRECATION")
+        val packages = pm.getInstalledPackages(android.content.pm.PackageManager.GET_UNINSTALLED_PACKAGES)
+            .filter { InventoryRules.include(isInstalledFlag(it), isHidden(it.packageName)) }
         Log.i(TAG, "Syncing ${packages.size} installed apps to server")
 
         val apps = packages.map { pkg ->
@@ -794,7 +820,7 @@ class CommandPollingService : Service() {
                     pkg.versionCode.toLong()
                 },
                 isSystemApp = ((pkg.applicationInfo?.flags ?: 0) and android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0,
-                enabled = pkg.applicationInfo?.enabled ?: true
+                enabled = InventoryRules.enabled(pkg.applicationInfo?.enabled ?: true, isHidden(pkg.packageName))
             )
         }
 

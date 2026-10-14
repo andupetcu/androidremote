@@ -18,6 +18,8 @@ import android.os.SystemClock
 import android.provider.Settings
 import android.util.Log
 import androidx.core.content.ContextCompat
+import kotlinx.serialization.EncodeDefault
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -28,6 +30,7 @@ import io.ktor.client.HttpClient
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import com.androidremote.app.mdm.telemetry.BatchOutcome
+import com.androidremote.app.mdm.telemetry.KioskReport
 import com.androidremote.app.mdm.telemetry.LocationFix
 import com.androidremote.app.mdm.telemetry.LocationPolicy
 import com.androidremote.app.mdm.telemetry.ReportSchedule
@@ -79,6 +82,15 @@ class TelemetryCollector(
 
     private val json = Json { ignoreUnknownKeys = true }
 
+    /** Set by the polling service; supplies the kiosk and protected-package state for each sample. */
+    @Volatile var kioskStateProvider: (() -> KioskReport?)? = null
+
+    private fun TelemetryData.withKiosk(k: KioskReport?) =
+        if (k == null) this else copy(
+            kioskActive = k.kioskActive, kioskPackage = k.kioskPackage,
+            lockTask = k.lockTask, protectedPackages = k.protectedPackages
+        )
+
     /**
      * Collect all telemetry data.
      * Each metric is collected independently - failures don't stop other metrics.
@@ -116,7 +128,7 @@ class TelemetryCollector(
             // System
             uptimeMs = safeCall { getUptimeMs() },
             androidSecurityPatch = safeCall { getSecurityPatch() }
-        )
+        ).withKiosk(safeCall { kioskStateProvider?.invoke() })
     }
 
     private inline fun <T> safeCall(block: () -> T?): T? {
@@ -417,5 +429,10 @@ data class TelemetryData(
     val uptimeMs: Long? = null,
     val androidSecurityPatch: String? = null,
     /** Epoch ms when the sample was taken; lets the server place buffered samples correctly. */
-    val collectedAt: Long? = null
+    val collectedAt: Long? = null,
+    val kioskActive: Boolean? = null,
+    /** Always sent (null when no kiosk) so the server can clear a stale package. */
+    @OptIn(ExperimentalSerializationApi::class) @EncodeDefault val kioskPackage: String? = null,
+    val lockTask: Boolean? = null,
+    val protectedPackages: List<String>? = null
 )
