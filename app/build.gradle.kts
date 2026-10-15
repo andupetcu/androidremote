@@ -87,7 +87,6 @@ dependencies {
     implementation(project(":core-transport"))
 
     // Feature modules
-    implementation(project(":feature-screen"))
     implementation(project(":feature-input"))
     implementation(project(":feature-files"))
     implementation(project(":feature-camera"))

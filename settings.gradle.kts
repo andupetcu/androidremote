@@ -28,7 +28,6 @@ include(":core-protocol")
 include(":core-transport")
 
 // Feature modules (Android-specific)
-include(":feature-screen")
 include(":feature-input")
 include(":feature-files")
 include(":feature-camera")

@@ -266,4 +266,27 @@ describe('SR-11 follow-up: agent binary and installer uploads are streamed to di
     expect(bad.status).toBe(400);
     expect(leftovers(instDir)).toEqual([]);
   });
+
+  it('streams the installer download (never reads the whole file) and appends the config trailer', async () => {
+    fs.writeFileSync(path.join(instDir, 'windows-x64.exe'), big);
+    const t = enrollmentStore.createToken({ maxUses: 5 });
+    const nodeFs = require('fs');
+    const spy = jest.spyOn(nodeFs, 'readFileSync');
+    try {
+      const r = await request(app).get(`/api/downloads/installer/windows?token=${t.token}`)
+        .buffer(true).parse((res, cb) => { const parts: Buffer[] = []; res.on('data', (c: Buffer) => parts.push(c)); res.on('end', () => cb(null, Buffer.concat(parts))); });
+      expect(r.status).toBe(200);
+      expect(spy.mock.calls.some(c => String(c[0]).endsWith('windows-x64.exe'))).toBe(false);
+      const body = r.body as Buffer;
+      expect(Number(r.headers['content-length'])).toBe(body.length);
+      expect(body.subarray(0, big.length).equals(big)).toBe(true);
+      expect(body.subarray(body.length - 8).toString('ascii').startsWith('ARCFG')).toBe(true);
+      const len = body.readUInt32LE(body.length - 12);
+      const cfg = JSON.parse(body.subarray(big.length, big.length + len).toString('utf-8'));
+      expect(cfg).toEqual({ serverUrl: 'https://mdm.example.com', enrollToken: t.token });
+      expect(big.length + len + 12).toBe(body.length);
+    } finally {
+      spy.mockRestore();
+    }
+  });
 });

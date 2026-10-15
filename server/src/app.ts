@@ -992,9 +992,6 @@ app.get('/api/downloads/installer/:platform', agentDownloadLimiter, (req: Reques
     return;
   }
 
-  // Read the base installer
-  const baseExe = require('fs').readFileSync(installerPath) as Buffer;
-
   // Build the server URL from the current request
   const serverUrl = getBaseUrl(req);
 
@@ -1010,14 +1007,29 @@ app.get('/api/downloads/installer/:platform', agentDownloadLimiter, (req: Reques
   const magicBuf = Buffer.alloc(8, 0);
   magicBuf.write('ARCFG', 0, 'ascii');
 
-  const result = Buffer.concat([baseExe, configBuf, lengthBuf, magicBuf]);
+  const trailer = Buffer.concat([configBuf, lengthBuf, magicBuf]);
 
-  // Serve as a download
+  // Stream the base installer (up to 200 MB) and append the trailer, instead of buffering it all
+  let baseSize: number;
+  try {
+    baseSize = fs.statSync(installerPath).size;
+  } catch {
+    res.status(404).json({ error: 'installer binary not found' });
+    return;
+  }
   const filename = platform === 'windows' ? 'Setup-AndroidRemote.exe' : `setup-android-remote-${platform}`;
   res.setHeader('Content-Type', 'application/octet-stream');
   res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-  res.setHeader('Content-Length', result.length);
-  res.send(result);
+  res.setHeader('Content-Length', baseSize + trailer.length);
+
+  const stream = fs.createReadStream(installerPath);
+  stream.on('error', (err) => {
+    console.error('Installer download failed:', err);
+    res.destroy(err);
+  });
+  stream.on('end', () => res.end(trailer));
+  res.on('close', () => stream.destroy());
+  stream.pipe(res, { end: false });
 });
 
 /**

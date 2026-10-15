@@ -110,6 +110,8 @@ class CommandPollingService : Service() {
     /** Installs, uninstalls and app updates run here so they never hold up the poll loop. */
     private val installScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var appUpdateJob: Job? = null
+    // A broken update is not downloaded again every minute; each package backs off on its own
+    private val updateBackoff = UpdateBackoff()
     private var pollJob: Job? = null
 
     private lateinit var sessionStorage: SessionStorage
@@ -410,6 +412,11 @@ class CommandPollingService : Service() {
             Log.i(TAG, "Found ${body.updates.size} app update(s) available")
 
             for (update in body.updates) {
+                val version = update.latestVersionCode.toLong()
+                if (!updateBackoff.mayAttempt(update.packageName, version, System.currentTimeMillis())) {
+                    Log.d(TAG, "Skipping ${update.packageName} v$version: backing off after a failed install")
+                    continue
+                }
                 val apkUrl = if (update.apkUrl.startsWith("/")) {
                     "$baseUrl${update.apkUrl}"
                 } else {
@@ -423,6 +430,7 @@ class CommandPollingService : Service() {
                 }
                 when (result) {
                     is InstallResult.Success -> {
+                        updateBackoff.recordSuccess(update.packageName)
                         Log.i(TAG, "Auto-update installed: ${update.packageName}")
                         // Package replace force-stops the app; bring the target back (AM-08)
                         if (update.packageName == kioskController.target()) {
@@ -430,8 +438,14 @@ class CommandPollingService : Service() {
                             kioskController.launch(update.packageName)
                         }
                     }
-                    is InstallResult.Failure -> Log.w(TAG, "Auto-update failed for ${update.packageName}: ${result.message}")
-                    null -> Log.w(TAG, "Auto-update timed out for ${update.packageName}")
+                    is InstallResult.Failure -> {
+                        updateBackoff.recordFailure(update.packageName, version, System.currentTimeMillis())
+                        Log.w(TAG, "Auto-update failed for ${update.packageName}: ${result.message}")
+                    }
+                    null -> {
+                        updateBackoff.recordFailure(update.packageName, version, System.currentTimeMillis())
+                        Log.w(TAG, "Auto-update timed out for ${update.packageName}")
+                    }
                 }
             }
         } catch (e: CancellationException) {
